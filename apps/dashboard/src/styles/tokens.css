@@ -1,0 +1,148 @@
+/* ─────────────────────────────────────────────────────────────
+   HomePi — Design tokens
+   Source unique de vérité pour espacement / typo / rayons / élévation.
+   Toute valeur en dur dans un composant (padding:'13px', fontSize:15…)
+   est un bug de cohérence. Si un token manque, on l'ajoute ici,
+   on ne le réinvente pas localement.
+   ───────────────────────────────────────────────────────────── */
+
+:root {
+  /* Couleurs de base — écarts creusés pour une hiérarchie de surfaces lisible
+     au premier coup d'œil, pas seulement en comparant les valeurs hex */
+  --bg:      #0a0c11;   /* était #0d0f14 — fond le plus profond */
+  --bg2:     #151926;   /* était #141720 — cards standard, écart net avec --bg */
+  --bg3:     #212739;   /* était #1c2030 — inputs, éléments imbriqués */
+  --bg-elev: #262d42;   /* était #191d29 — surfaces "élevées" (modales, cards actives) nettement détachées */
+  --text:    #eef0f7;   /* légèrement plus clair pour plus de contraste avec le fond assombri */
+  --text2:   #979dbb;   /* était #8b90a8 — plus lisible sur les nouveaux fonds plus sombres */
+  --text3:   #656c8c;   /* était #565c72 */
+  --border:  rgba(255,255,255,.10);        /* était .08 */
+  --border-strong: rgba(255,255,255,.18);  /* était .14 */
+  --accent:       #2F8CFF;   /* était #378ADD — plus saturé, plus de "punch" */
+  --accent-vivid: #4FA3FF;   /* nouveau — hover / éléments interactifs primaires uniquement, jamais pour du texte informatif */
+  --accent-soft:  rgba(47,140,255,.18);    /* était .14 */
+
+  /* Status — repris de l'existant, centralisés */
+  --ok:      #1D9E75;
+  --warn:    #EF9F27;
+  --danger:  #E24B4A;
+  --info:    #7F77DD;
+
+  --font:    system-ui,-apple-system,'Segoe UI',sans-serif;
+  --mono:    'JetBrains Mono','Fira Code',ui-monospace,monospace;
+
+  /* Échelle typographique — 7 paliers, jamais de valeur hors échelle */
+  --fs-2xs:  10px;   /* micro-labels, unités */
+  --fs-xs:   11px;   /* labels de champ, badges */
+  --fs-sm:   12px;   /* texte secondaire, sous-titres de card */
+  --fs-base: 14px;   /* corps de texte par défaut */
+  --fs-md:   16px;   /* titres de section, valeurs de card */
+  --fs-lg:   20px;   /* valeurs clés (KPI), titres de tab */
+  --fs-xl:   28px;   /* chiffres héros (rare, 1-2 par écran max) */
+
+  /* Échelle d'espacement — base 4px */
+  --sp-1:  4px;
+  --sp-2:  8px;
+  --sp-3:  12px;
+  --sp-4:  16px;
+  --sp-5:  24px;
+  --sp-6:  32px;
+  --sp-7:  48px;
+
+  /* Rayons — 3 paliers seulement */
+  --r-sm:  8px;   /* inputs, badges, petits boutons */
+  --r-md:  12px;  /* cards standard */
+  --r-lg:  16px;  /* panels, modales, surfaces conteneur */
+
+  /* Élévation — écarts renforcés pour que le niveau "élevé" se détache
+     clairement, pas juste une bordure de 0.5px quasi invisible */
+  --shadow-1: 0 1px 3px rgba(0,0,0,.45), 0 0 0 0.5px var(--border);
+  --shadow-2: 0 6px 24px rgba(0,0,0,.55), 0 0 0 0.5px var(--border);
+  --shadow-3: 0 16px 56px rgba(0,0,0,.65), 0 0 0 0.5px var(--border-strong);
+  --shadow-focus: 0 0 0 2px var(--bg), 0 0 0 4px var(--accent-vivid);
+
+  /* Layout */
+  --sidebar-w:        220px;
+  --sidebar-w-compact: 68px;
+  --header-h:         56px;
+  --bottomnav-h:      58px;
+
+  /* Transitions */
+  --ease: cubic-bezier(.4,0,.2,1);
+  --dur-fast: .15s;
+  --dur-base: .25s;
+}
+
+[data-theme="light"] {
+  --bg:      #f4f5f9;
+  --bg2:     #ffffff;
+  --bg3:     #eef0f6;
+  --bg-elev: #ffffff;
+  --text:    #111218;
+  --text2:   #6b7280;
+  --text3:   #9ca3af;
+  --border:  rgba(0,0,0,.08);
+  --border-strong: rgba(0,0,0,.14);
+  --accent-soft: rgba(55,138,221,.10);
+  --shadow-1: 0 1px 2px rgba(0,0,0,.06), 0 0 0 0.5px var(--border);
+  --shadow-2: 0 4px 16px rgba(0,0,0,.08), 0 0 0 0.5px var(--border);
+  --shadow-3: 0 12px 40px rgba(0,0,0,.12), 0 0 0 0.5px var(--border-strong);
+}
+
+/* ─── Primitives partagées ─────────────────────────────────────
+   Classes utilitaires pour remplacer les styles inline dupliqués
+   (chaque fichier réinventait sa propre "Card"). On garde les
+   composants React tels quels, on leur fait juste consommer ça. */
+
+.hp-card {
+  background: var(--bg2);
+  border-radius: var(--r-md);
+  box-shadow: var(--shadow-1);
+  padding: var(--sp-4);
+}
+
+.hp-card--elevated {
+  background: var(--bg-elev);
+  box-shadow: var(--shadow-2);
+}
+
+.hp-card--interactive {
+  cursor: pointer;
+  transition: box-shadow var(--dur-fast) var(--ease), transform var(--dur-fast) var(--ease);
+}
+.hp-card--interactive:hover {
+  box-shadow: var(--shadow-2);
+  transform: translateY(-1px);
+}
+
+.hp-eyebrow {
+  font-size: var(--fs-xs);
+  color: var(--text3);
+  text-transform: uppercase;
+  letter-spacing: .08em;
+  font-weight: 600;
+}
+
+.hp-kpi-value {
+  font-size: var(--fs-lg);
+  font-family: var(--mono);
+  font-weight: 700;          /* était 600 — plus de présence sur les chiffres clés */
+  letter-spacing: -.015em;
+}
+
+.hp-kpi-value--hero {
+  font-size: var(--fs-xl);
+  font-family: var(--mono);
+  font-weight: 700;
+  letter-spacing: -.02em;
+  color: var(--accent-vivid);
+}
+
+.hp-focus-visible:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { animation-duration: 0.001ms !important; transition-duration: 0.001ms !important; }
+}

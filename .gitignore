@@ -1,0 +1,29 @@
+# Secrets and key material (never commit)
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.age
+age.key
+keys.txt
+secrets/
+batch_*.json
+# Terraform local state and variables
+terraform.tfstate*
+.terraform/
+*.tfvars
+# Build output and caches
+node_modules/
+dist/
+__pycache__/
+*.pyc
+# Editor backups and leftovers
+*.save
+*.bak
+*.bak-*
+*.swp
+.lgd-*
+.DS_Store
+# Firmware binaries: build artifacts, publish as release assets instead
+*.bin
