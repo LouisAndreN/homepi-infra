@@ -167,7 +167,7 @@ def on_sensor_message(client, userdata, msg):
         with db() as conn:
             conn.execute("""
                 UPDATE devices
-                SET fw_version = ?, last_seen = datetime('now', 'utc')
+                SET fw_version = ?, last_seen = strftime('%Y-%m-%dT%H:%M:%SZ','now')
                 WHERE device_id = ?
             """, (fw, device_id))
     except Exception as e:
@@ -265,7 +265,7 @@ def _send_ota_to_device(device_id: str, firmware: dict, deployment_id: int, phas
         with db() as conn:
             conn.execute("""
                 UPDATE ota_deployment_devices
-                SET status='sent', sent_at=datetime('now','utc')
+                SET status='sent', sent_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
                 WHERE deployment_id=? AND device_id=?
             """, (deployment_id, device_id))
     except Exception as e:
@@ -320,7 +320,7 @@ def _check_phase_and_advance(deployment_id: int, phase: int, version: str, chip_
     with db() as conn:
         conn.execute("""
             UPDATE ota_deployment_devices
-            SET status='confirmed', confirmed_at=datetime('now','utc')
+            SET status='confirmed', confirmed_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
             WHERE deployment_id=? AND phase=?
         """, (deployment_id, phase))
     log.info(
@@ -471,7 +471,7 @@ async def lifespan(app: FastAPI):
             );
             CREATE TABLE IF NOT EXISTS audit_log (
               id        INTEGER  PRIMARY KEY AUTOINCREMENT,
-              ts        TEXT     DEFAULT (datetime('now','utc')),
+              ts        TEXT     DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
               device_id TEXT,
               event     TEXT     NOT NULL,
               detail    TEXT     DEFAULT '',
@@ -484,7 +484,7 @@ async def lifespan(app: FastAPI):
               hw_model          TEXT DEFAULT '',
               sha256            TEXT NOT NULL,
               url               TEXT NOT NULL,
-              uploaded_at       TEXT DEFAULT (datetime('now','utc')),
+              uploaded_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
               notes             TEXT DEFAULT '',
               UNIQUE(version, chip_target)
             );
@@ -493,7 +493,7 @@ async def lifespan(app: FastAPI):
               version     TEXT NOT NULL,
               chip_target TEXT NOT NULL,
               status      TEXT DEFAULT 'in_progress',
-              created_at  TEXT DEFAULT (datetime('now','utc')),
+              created_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
               created_by  TEXT DEFAULT 'auto'
             );
             CREATE TABLE IF NOT EXISTS ota_deployment_devices (
@@ -555,7 +555,7 @@ async def announce(req: AnnounceRequest):
         conn.execute("""
             INSERT INTO devices
               (device_id, chip_id, fw_version, capabilities, status, last_seen)
-            VALUES (?, ?, ?, ?, 'pre_announced', datetime('now', 'utc'))
+            VALUES (?, ?, ?, ?, 'pre_announced', strftime('%Y-%m-%dT%H:%M:%SZ','now'))
             ON CONFLICT(device_id) DO UPDATE SET
               chip_id=excluded.chip_id,
               fw_version=excluded.fw_version,
@@ -630,8 +630,8 @@ async def x5c_enrolled(req: X5CEnrolledRequest):
               (device_id, chip_id, chip_target, hw_model, fw_version, capabilities, status,
                cert_fingerprint, cert_expiry, enrolled_at, last_seen,
                confirmed_by)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, datetime('now','utc'),
-                    datetime('now','utc'), 'zero-touch')
+            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
+                    strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'zero-touch')
             ON CONFLICT(device_id) DO UPDATE SET
               chip_target      = excluded.chip_target,
               hw_model         = excluded.hw_model,
@@ -710,7 +710,7 @@ async def enroll(req: EnrollRequest):
         conn.execute("""
             UPDATE devices SET
               status='active', cert_fingerprint=?, cert_expiry=?,
-              enrolled_at=datetime('now','utc'), confirmed_by='operator'
+              enrolled_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), confirmed_by='operator'
             WHERE device_id=?
         """, (fp, exp.replace("notAfter=","").strip(), req.device_id))
     audit(req.device_id, "enrolled", f"fp={fp}", "api")
@@ -764,7 +764,7 @@ async def renew(device_id: str, req: EnrollRequest, request: Request):
             UPDATE devices SET
               cert_fingerprint = ?,
               cert_expiry      = ?,
-              enrolled_at      = datetime('now','utc')
+              enrolled_at      = strftime('%Y-%m-%dT%H:%M:%SZ','now')
             WHERE device_id = ?
          """, (fp, exp.replace("notAfter=","").strip(), device_id))
 
