@@ -27,6 +27,13 @@ import uuid
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from versions import same_version, version_key
+from fastapi import Depends
+
+
+def _self_enrollment_enabled():
+    """Secure by default: these routes accept unauthenticated requests from the IoT VLAN."""
+    if os.environ.get("API_ALLOW_DEVICE_SELF_ENROLLMENT", "0") != "1":
+        raise HTTPException(403, "Disabled: unauthenticated device enrollment")
 
 # --- Config -------------------
 DB_PATH         = "/var/lib/homepi/devices.db"
@@ -610,7 +617,7 @@ class X5CEnrolledRequest(BaseModel):
 
 
 
-@app.post("/api/devices/x5c-enrolled")
+@app.post("/api/devices/x5c-enrolled", dependencies=[Depends(_self_enrollment_enabled)])
 async def x5c_enrolled(req: X5CEnrolledRequest):
     """
     Called by ESP32 after enrollment X5C succedded.
@@ -730,7 +737,7 @@ def _extract_cn(dn: str) -> str:
 
 
 
-@app.post("/api/devices/{device_id}/renew")
+@app.post("/api/devices/{device_id}/renew", dependencies=[Depends(_self_enrollment_enabled)])
 async def renew(device_id: str, req: EnrollRequest, request: Request):
     """
     ESP32 renouvelle son LDevID (a J-30).
