@@ -29,5 +29,9 @@ Last updated: 2026-10-28.
 - **The Pi can decrypt every secret in the repository.** Its age key sits in `/etc/homepi-gitops`, outside `/etc/homepi`, readable by root only; whoever controls the Pi reads the secrets, but cannot sign a release.
 - **The signing key and the repository feed are on the laptop.** The Pi pulls from a bare repository on itself, fed from the laptop; the signature, not the storage, is the trust. The signing key is protected by a passphrase only.
 - **The reconciler virtualenv pins ansible-core and one collection, not their dependencies.** A requirements file with hashes is planned. On a failed run the metric file keeps only the success flag and a timestamp.
+- **The Terraform service account token never expires.** It has the Admin role in the main organisation, is kept SOPS-encrypted, and was created through the Grafana API with the administrator account. Rotating it is a manual step.
+- **Terraform and the Grafana provider are pinned, not signature-checked.** The Terraform archive is verified against the checksum published on the same site; the PGP signature of that checksum file is not verified. The provider lock file records hashes for linux_arm64 and linux_amd64 only.
+- **The influxdb data source in Grafana has basic authentication enabled with an empty user name.** It was imported as found; changing it is a separate reviewed commit.
+- **Data source secrets are not in the code.** Terraform manages the settings of the Grafana data sources, not their stored credentials (the InfluxDB token). The Grafana `secret_key` that encrypts them lives in `grafana.ini`, which is not managed yet.
 - **Rebuild reproduces configuration, not state.** Restoring state is an explicit step.
 - **Terraform state is local** on the Pi (S3 backend planned for v1.2).
