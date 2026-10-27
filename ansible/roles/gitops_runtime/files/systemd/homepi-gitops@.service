@@ -1,0 +1,10 @@
+[Unit]
+Description=HomePi GitOps reconciler (%i)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-gitops-sync %i
+TimeoutStartSec=30min
+Nice=10

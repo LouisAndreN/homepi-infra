@@ -13,3 +13,6 @@ gitops_push_user: srvpi
 
 # Trust anchors created by hand, deliberately outside this role
 gitops_trust_dir: /etc/homepi-gitops
+
+# The timers are installed but stay off until the verification tests have passed
+gitops_timers_enabled: false

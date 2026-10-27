@@ -1,0 +1,11 @@
+[Unit]
+Description=Apply the newest signed release tag
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+Unit=homepi-gitops@apply.service
+
+[Install]
+WantedBy=timers.target

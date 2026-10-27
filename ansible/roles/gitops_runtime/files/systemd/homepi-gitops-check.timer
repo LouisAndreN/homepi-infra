@@ -1,0 +1,11 @@
+[Unit]
+Description=Check the host against the deployed release (drift detection)
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=300
+Persistent=true
+Unit=homepi-gitops@check.service
+
+[Install]
+WantedBy=timers.target
