@@ -1,0 +1,11 @@
+#!/bin/sh
+# Block the commit when gitleaks finds a possible secret in the staged changes.
+top=$(git rev-parse --show-toplevel)
+if ! command -v gitleaks > /dev/null 2>&1; then
+  echo "pre-commit: gitleaks is not installed, commit blocked" >&2
+  exit 1
+fi
+if ! gitleaks git --pre-commit --staged --redact --no-banner --config "$top/.gitleaks.toml"; then
+  echo "pre-commit: gitleaks found a possible secret, commit blocked" >&2
+  exit 1
+fi

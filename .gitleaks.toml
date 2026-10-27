@@ -1,0 +1,11 @@
+title = "homepi-infra"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "yaml-literal-secret"
+description = "Literal password, secret or token in a YAML, template, conf or env file"
+path = '''\.(ya?ml|template|conf|env)$'''
+# (?m) makes ^ and $ match at each line, not only at the start and end of the file
+regex = '''(?im)^\s*(?:password|passwd|secret|token)\s*:\s*['"]?[A-Za-z0-9_.\/+=!@#%^&*-]{4,}['"]?\s*$'''
