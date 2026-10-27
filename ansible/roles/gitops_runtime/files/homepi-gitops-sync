@@ -109,7 +109,7 @@ main() {
   flock -n 9 || { log "another run is in progress"; exit 0; }
 
   [ -d "$WORK/.git" ] || git clone --quiet "$REMOTE" "$WORK" || fail "$mode" "cannot clone $REMOTE"
-  git -C "$WORK" fetch --quiet --tags --force origin || fail "$mode" "cannot fetch from $REMOTE"
+  git -C "$WORK" fetch --quiet --force --prune --prune-tags origin || fail "$mode" "cannot fetch from $REMOTE"
 
   CUR_TAG="" CUR_COMMIT=""
   [ ! -f "$DEPLOYED" ] || read -r CUR_TAG CUR_COMMIT < "$DEPLOYED"

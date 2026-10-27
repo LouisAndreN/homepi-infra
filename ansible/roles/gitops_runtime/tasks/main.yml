@@ -8,6 +8,7 @@
 - name: Stop if a trust anchor is missing
   ansible.builtin.assert:
     that: item.stat.exists
+    quiet: true
     fail_msg: "{{ item.item }} is missing in {{ gitops_trust_dir }}: create it by hand, it is deliberately not managed by this repository"
   loop: "{{ gitops_anchors.results }}"
   loop_control:
