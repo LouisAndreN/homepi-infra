@@ -8,14 +8,15 @@
     mode: "0644"
   notify: Restart prometheus
 
-- name: Install the Prometheus alert rules
+- name: Install the Prometheus alert rules (each file is validated before it replaces the live one)
   ansible.builtin.copy:
-    src: prometheus/rules/
-    dest: /etc/prometheus/rules/
+    src: "prometheus/rules/{{ item }}"
+    dest: "/etc/prometheus/rules/{{ item }}"
     owner: root
     group: root
     mode: "0644"
-    directory_mode: "0755"
+    validate: /usr/local/bin/promtool check rules %s
+  loop: [alerts.yml, gitops.yml]
   notify: Restart prometheus
 
 - name: Validate the Prometheus configuration and rules

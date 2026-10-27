@@ -1,0 +1,56 @@
+groups:
+  - name: homepi-gitops
+    rules:
+      - alert: GitopsApplyFailing
+        expr: homepi_gitops_apply_success == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The Pi cannot apply its release tag"
+          description: "homepi-gitops-sync apply has failed for 15 minutes. Read: journalctl -u homepi-gitops@apply.service"
+
+      - alert: GitopsUntrustedTag
+        expr: homepi_gitops_untrusted_tags > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A release tag without a trusted signature exists"
+          description: "{{ $value }} tag(s) were skipped because no key in allowed_signers signed them."
+
+      - alert: GitopsDrift
+        expr: homepi_gitops_drift_changed_tasks > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Pi differs from its deployed release"
+          description: "{{ $value }} task(s) would change if the deployed release were applied again."
+
+      - alert: GitopsSilent
+        expr: time() - homepi_gitops_apply_timestamp_seconds > 3600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No reconciliation run for over an hour"
+          description: "The apply timer is stopped or failing silently."
+
+      - alert: GitopsCheckSilent
+        expr: time() - homepi_gitops_check_timestamp_seconds > 10800
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No drift check for over three hours"
+          description: "The check timer is stopped or the check keeps failing."
+
+      - alert: GitopsMetricsMissing
+        expr: absent(homepi_gitops_apply_timestamp_seconds)
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The reconciler exports no metrics"
+          description: "The textfile of homepi-gitops-sync is missing or node_exporter does not read it."

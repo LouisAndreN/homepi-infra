@@ -14,5 +14,6 @@ gitops_push_user: srvpi
 # Trust anchors created by hand, deliberately outside this role
 gitops_trust_dir: /etc/homepi-gitops
 
-# The timers are installed but stay off until the verification tests have passed
-gitops_timers_enabled: false
+# The timers apply the newest signed tag every 10 minutes and check drift every hour.
+# They stayed off until the unsigned, older and moved tag tests had passed.
+gitops_timers_enabled: true
