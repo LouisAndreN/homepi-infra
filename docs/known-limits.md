@@ -1,7 +1,7 @@
 # Known limits (v1)
 
 Each entry states what was observed, where, and what is still unknown.
-Last updated: 2026-10-27.
+Last updated: 2026-10-28.
 
 ## Security
 - **Unauthenticated device routes.** `POST /api/devices/x5c-enrolled` and `POST /api/devices/{id}/renew` accept requests from the whole IoT VLAN without authenticating the caller (source review). They answer 403 by default since commit bf3d15a and are blocked in nginx on the production host. Planned fix: client certificate on the notification call (firmware change).
@@ -24,5 +24,10 @@ Last updated: 2026-10-27.
 ## Operations
 - **Firewall.** `nftables.conf` starts with `flush ruleset`; `netfilter-persistent` loads a separate iptables file holding the IoT NAT rule and the Docker chains; systemd does not order the two services (nftables started 10 s before netfilter-persistent on the last boot). Restarting nftables by hand removes the NAT table until netfilter-persistent reloads. Untested; to verify on the rebuild Pi.
 - **Journal retention.** The journal was volatile (no `/var/log/journal`): it held about 22 hours of logs and lost them all at each reboot. Fixed by the `common` role (persistent storage, 2 GB, one month); the real daily volume is still to be measured over several days.
+- **No approval gate between a tag and production.** The Pi applies the newest tag signed by a key in `allowed_signers` within about ten minutes; the signature is the approval, and the recovery from a bad release is a newer signed tag.
+- **Drift is detected, not repaired.** The hourly simulation measures it and an alert fires after two hours; the apply run only replays the playbook when the tag changes.
+- **The Pi can decrypt every secret in the repository.** Its age key sits in `/etc/homepi-gitops`, outside `/etc/homepi`, readable by root only; whoever controls the Pi reads the secrets, but cannot sign a release.
+- **The signing key and the repository feed are on the laptop.** The Pi pulls from a bare repository on itself, fed from the laptop; the signature, not the storage, is the trust. The signing key is protected by a passphrase only.
+- **The reconciler virtualenv pins ansible-core and one collection, not their dependencies.** A requirements file with hashes is planned. On a failed run the metric file keeps only the success flag and a timestamp.
 - **Rebuild reproduces configuration, not state.** Restoring state is an explicit step.
 - **Terraform state is local** on the Pi (S3 backend planned for v1.2).
