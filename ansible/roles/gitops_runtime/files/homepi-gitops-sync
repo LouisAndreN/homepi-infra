@@ -18,6 +18,7 @@ SIGNERS=/etc/homepi-gitops/allowed_signers
 AGE_KEY=/etc/homepi-gitops/age.key
 RUNTIME=/opt/homepi-gitops
 METRICS_DIR=/var/lib/node_exporter/textfile_collector
+TF_STATE_DIR=/var/lib/homepi-terraform
 
 log() { echo "homepi-gitops: $*"; }
 
@@ -102,6 +103,58 @@ record_apply() {
     "homepi_gitops_deployed_info{tag=\"$TAG\",commit=\"${COMMIT:0:12}\"} 1"
 }
 
+tag_allows_destroy() {
+  git -C "$WORK" tag -l --format='%(contents)' "$TAG" | grep -qF '[allow-destroy]'
+}
+
+# Textfile metrics of the Terraform step: success flag, planned changes and planned destroys
+tf_metrics() {
+  write_metrics homepi_gitops_terraform.prom \
+    "homepi_gitops_terraform_success $1" \
+    "homepi_gitops_terraform_timestamp_seconds $(date +%s)" \
+    "homepi_gitops_terraform_planned_changes ${PLANNED:-0}" \
+    "homepi_gitops_terraform_planned_destroys ${DESTROYS:-0}"
+}
+
+# Plan the Grafana root. In apply mode, refuse a plan that destroys anything unless the signed
+# tag message contains [allow-destroy], then apply the very plan that was checked.
+run_terraform() {
+  local mode="$1" root="$WORK/terraform/grafana" secrets="$WORK/ansible/secrets/grafana.sops.yaml"
+  local plan="$TF_STATE_DIR/plan.bin"
+  PLANNED=0 DESTROYS=0 TF_REASON=""
+  [ -d "$root" ] || { log "no Terraform root in $TAG, skipping"; return 0; }
+
+  export CHECKPOINT_DISABLE=1 TF_IN_AUTOMATION=1 TF_DATA_DIR="$TF_STATE_DIR/data"
+  TF_VAR_grafana_token=$(SOPS_AGE_KEY_FILE="$AGE_KEY" sops decrypt --extract '["grafana_terraform_token"]' "$secrets") \
+    || { TF_REASON="cannot decrypt the Grafana token"; tf_metrics 0; return 1; }
+  export TF_VAR_grafana_token
+
+  cd "$root"
+  terraform init -input=false -no-color -lockfile=readonly \
+    -backend-config="path=$TF_STATE_DIR/grafana.tfstate" > /dev/null \
+    || { TF_REASON="terraform init failed"; tf_metrics 0; return 1; }
+  terraform plan -input=false -no-color -lock-timeout=60s -out="$plan" > /dev/null \
+    || { TF_REASON="terraform plan failed"; tf_metrics 0; return 1; }
+
+  PLANNED=$(terraform show -json "$plan" | jq '[.resource_changes[]? | select((.change.actions != ["no-op"] and .change.actions != ["read"]) or (.change.importing != null))] | length') \
+    || { TF_REASON="cannot read the plan"; rm -f "$plan"; tf_metrics 0; return 1; }
+  DESTROYS=$(terraform show -json "$plan" | jq '[.resource_changes[]? | select(.change.actions | index("delete"))] | length') \
+    || { TF_REASON="cannot read the plan"; rm -f "$plan"; tf_metrics 0; return 1; }
+  log "terraform: $PLANNED change(s) planned, $DESTROYS destroy(s)"
+
+  if [ "$mode" = apply ]; then
+    if [ "$DESTROYS" -gt 0 ] && ! tag_allows_destroy; then
+      terraform show -json "$plan" | jq -r '.resource_changes[] | select(.change.actions | index("delete")) | "  would destroy: " + .address'
+      TF_REASON="REFUSED: the plan destroys $DESTROYS resource(s) and the signed tag message has no [allow-destroy]"
+      rm -f "$plan"; tf_metrics 0; return 1
+    fi
+    terraform apply -input=false -no-color -lock-timeout=60s "$plan" > /dev/null \
+      || { TF_REASON="terraform apply failed"; rm -f "$plan"; tf_metrics 0; return 1; }
+  fi
+  rm -f "$plan"
+  tf_metrics 1
+}
+
 main() {
   local mode="${1:-}"
   case "$mode" in apply | check) ;; *) echo "usage: $0 apply|check" >&2; exit 2 ;; esac
@@ -128,6 +181,7 @@ main() {
   git -C "$WORK" checkout --quiet --force --detach "$COMMIT"
   log "$mode: $TAG ($COMMIT)"
   run_playbook "$mode" || fail "$mode" "ansible-playbook failed"
+  run_terraform "$mode" || fail "$mode" "$TF_REASON"
 
   if [ "$mode" = apply ]; then
     printf '%s %s\n' "$TAG" "$COMMIT" > "$DEPLOYED"
