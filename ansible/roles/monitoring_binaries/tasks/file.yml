@@ -1,0 +1,56 @@
+---
+- name: "Install {{ probe.item.dest }} from the verified release"
+  when: (probe.stat.checksum | default('')) != probe.item.sha256
+  block:
+    - name: Download the release archive (checksum verified)
+      ansible.builtin.get_url:
+        url: "{{ rel.value.url }}"
+        dest: "{{ monitoring_cache_dir }}/{{ rel.value.url | basename }}"
+        checksum: "sha256:{{ rel.value.archive_sha256 }}"
+        mode: "0644"
+
+    - name: Create the unpack directory
+      ansible.builtin.file:
+        path: "{{ monitoring_cache_dir }}/{{ rel.key }}-{{ rel.value.version }}"
+        state: directory
+        mode: "0755"
+
+    - name: Unpack the archive
+      ansible.builtin.unarchive:
+        src: "{{ monitoring_cache_dir }}/{{ rel.value.url | basename }}"
+        dest: "{{ monitoring_cache_dir }}/{{ rel.key }}-{{ rel.value.version }}"
+        remote_src: true
+        creates: "{{ monitoring_cache_dir }}/{{ rel.key }}-{{ rel.value.version }}/{{ probe.item.src }}"
+      when: not ansible_check_mode
+
+    - name: Install the binary
+      ansible.builtin.copy:
+        src: "{{ monitoring_cache_dir }}/{{ rel.key }}-{{ rel.value.version }}/{{ probe.item.src }}"
+        dest: "{{ probe.item.dest }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0755"
+      when: not ansible_check_mode
+      notify: "Restart {{ rel.value.service }}"
+
+    - name: Read back the installed binary checksum
+      ansible.builtin.stat:
+        path: "{{ probe.item.dest }}"
+        checksum_algorithm: sha256
+      register: installed_file
+      when: not ansible_check_mode
+
+    - name: Fail if the installed binary is not the pinned one
+      ansible.builtin.assert:
+        that: installed_file.stat.checksum == probe.item.sha256
+        fail_msg: "{{ probe.item.dest }} does not match the pinned checksum"
+      when: not ansible_check_mode
+
+- name: "Set owner and mode of {{ probe.item.dest }}"
+  ansible.builtin.file:
+    path: "{{ probe.item.dest }}"
+    owner: root
+    group: root
+    mode: "0755"
+  when: probe.stat.exists

@@ -1,0 +1,17 @@
+---
+# unzip: the Loki release is a zip archive
+monitoring_packages:
+  - unzip
+
+monitoring_cache_dir: /var/cache/homepi
+
+# uids match the accounts that already exist on the Pi
+monitoring_users:
+  - { name: node_exporter, uid: 1001 }
+  - { name: prometheus, uid: 1002 }
+  - { name: alertmanager, uid: 1003 }
+  - { name: loki, uid: 1004 }
+
+monitoring_symlinks:
+  - { src: /opt/prometheus/prometheus, dest: /usr/local/bin/prometheus }
+  - { src: /opt/prometheus/promtool, dest: /usr/local/bin/promtool }

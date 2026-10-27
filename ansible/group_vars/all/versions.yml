@@ -1,0 +1,47 @@
+---
+# Pinned monitoring releases (linux-arm64), generated on 2026-10-27.
+# archive_sha256 comes from the official checksum file of each release;
+# the file hashes were computed from the unpacked official archives.
+monitoring_releases:
+  prometheus:
+    service: prometheus
+    version: "3.10.0"
+    url: https://github.com/prometheus/prometheus/releases/download/v3.10.0/prometheus-3.10.0.linux-arm64.tar.gz
+    archive_sha256: f6fc81c7955b6e1ddd532c62b55896f7e7a61d997a3817ac3534114f2dd33ab1
+    files:
+      - src: prometheus-3.10.0.linux-arm64/prometheus
+        dest: /opt/prometheus/prometheus
+        sha256: 63bea31ae772aa8307e77988d732bd51c16a1f0e45c9d4050001d26194c07869
+      - src: prometheus-3.10.0.linux-arm64/promtool
+        dest: /opt/prometheus/promtool
+        sha256: bc17ef8a06e35361d115fc6b47c3b5e8ea71446c38c75364dea0e6663f72c166
+  alertmanager:
+    service: alertmanager
+    version: "0.31.1"
+    url: https://github.com/prometheus/alertmanager/releases/download/v0.31.1/alertmanager-0.31.1.linux-arm64.tar.gz
+    archive_sha256: 266dda88b64318c27847ef9af4ff450fc178c827550a8039420c5ca8657a4a8b
+    files:
+      - src: alertmanager-0.31.1.linux-arm64/alertmanager
+        dest: /opt/alertmanager/alertmanager
+        sha256: a72122bd66ed48ae7e96b3e52cd48090660add4f64405dadebea1fe470507127
+      - src: alertmanager-0.31.1.linux-arm64/amtool
+        dest: /opt/alertmanager/amtool
+        sha256: c9865948d1ab55c394c25d60a79bb2c424e5d224b41b378e46fa3a8e258f9c3c
+  node_exporter:
+    service: node_exporter
+    version: "1.11.1"
+    url: https://github.com/prometheus/node_exporter/releases/download/v1.11.1/node_exporter-1.11.1.linux-arm64.tar.gz
+    archive_sha256: ba1886efbd76cb96b0087c695ea8d1b9cb6e8aa946c996d744e9ee16c8e3591a
+    files:
+      - src: node_exporter-1.11.1.linux-arm64/node_exporter
+        dest: /usr/local/bin/node_exporter
+        sha256: c92bd1e9eeb4061f1bdbf60a7b41d446220a4a44d87fb77ae889f034cb8cf3bc
+  loki:
+    service: loki
+    version: "3.7.1"
+    url: https://github.com/grafana/loki/releases/download/v3.7.1/loki-linux-arm64.zip
+    archive_sha256: 7cc8c1246fa6466cbcf5c64898ba6e77f5ef20541fb156790eb20d7cd146638c
+    files:
+      - src: loki-linux-arm64
+        dest: /usr/local/bin/loki
+        sha256: 2e77b83530e853ed57ce094e268610505138d50675abd5229cb4ebf1b991e2a1

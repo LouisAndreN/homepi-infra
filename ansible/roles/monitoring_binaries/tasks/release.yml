@@ -1,0 +1,16 @@
+---
+- name: "Checksum the installed {{ rel.key }} files"
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    checksum_algorithm: sha256
+  loop: "{{ rel.value.files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  register: release_probes
+
+- name: "Install or re-own each {{ rel.key }} file"
+  ansible.builtin.include_tasks: file.yml
+  loop: "{{ release_probes.results }}"
+  loop_control:
+    loop_var: probe
+    label: "{{ probe.item.dest }}"
