@@ -57,3 +57,11 @@
 
 - name: Install the pinned tools
   ansible.builtin.include_tasks: tools.yml
+
+- name: Install the reconciler script
+  ansible.builtin.copy:
+    src: homepi-gitops-sync
+    dest: /usr/local/sbin/homepi-gitops-sync
+    owner: root
+    group: root
+    mode: "0750"

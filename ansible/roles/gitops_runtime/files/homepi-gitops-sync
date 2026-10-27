@@ -1,0 +1,144 @@
+#!/bin/bash
+# homepi-gitops-sync: reconcile this host from the newest signed release tag.
+#
+#   homepi-gitops-sync apply   deploy the newest signed tag (never an older one)
+#   homepi-gitops-sync check   dry run of the deployed tag, to detect drift
+#
+# The trust anchor is /etc/homepi-gitops/allowed_signers: created by hand and
+# deliberately outside the repository that this script deploys.
+set -euo pipefail
+umask 077
+export HOME=/root PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+REMOTE="${HOMEPI_GITOPS_REMOTE:-/var/lib/homepi-gitops/origin.git}"
+STATE_DIR=/var/lib/homepi-gitops
+WORK="$STATE_DIR/work"
+DEPLOYED="$STATE_DIR/deployed"
+SIGNERS=/etc/homepi-gitops/allowed_signers
+AGE_KEY=/etc/homepi-gitops/age.key
+RUNTIME=/opt/homepi-gitops
+METRICS_DIR=/var/lib/node_exporter/textfile_collector
+
+log() { echo "homepi-gitops: $*"; }
+
+# Write a Prometheus textfile atomically: write a hidden temp file, then rename it
+write_metrics() {
+  local file="$1" tmp
+  shift
+  tmp=$(mktemp "$METRICS_DIR/.tmp.XXXXXX")
+  printf '%s\n' "$@" > "$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$METRICS_DIR/$file"
+}
+
+# Record a failure for the given mode, then stop
+fail() {
+  log "FAILED: $2"
+  write_metrics "homepi_gitops_$1.prom" \
+    "homepi_gitops_${1}_success 0" \
+    "homepi_gitops_${1}_timestamp_seconds $(date +%s)"
+  exit 1
+}
+
+verify_tag() {
+  git -C "$WORK" -c gpg.format=ssh -c gpg.ssh.allowedSignersFile="$SIGNERS" tag -v "$1"
+}
+
+# Run the playbook locally; print its output and keep the number of changed tasks
+run_playbook() {
+  local out rc=0 check=()
+  [ "$1" = check ] && check=(--check)
+  out=$(mktemp)
+  cd "$WORK/ansible"
+  ANSIBLE_COLLECTIONS_PATH="$RUNTIME/collections" SOPS_AGE_KEY_FILE="$AGE_KEY" ANSIBLE_NOCOLOR=1 \
+    "$RUNTIME/venv/bin/ansible-playbook" -i inventory/pi-local.yml site.yml "${check[@]}" > "$out" 2>&1 || rc=$?
+  cat "$out"
+  CHANGED=$(sed -nE 's/^homepi +: .*changed=([0-9]+).*/\1/p' "$out")
+  rm -f "$out"
+  return "$rc"
+}
+
+# Pick the tag to work on. To check: the deployed tag. To apply: the newest tag with a
+# trusted signature. Tags without one are skipped, logged and counted, so a rogue tag
+# can neither be deployed nor block a legitimate release.
+select_tag() {
+  local candidate
+  UNTRUSTED=0
+  if [ "$1" = check ]; then
+    [ -n "$CUR_TAG" ] || { log "nothing deployed yet, nothing to check"; exit 0; }
+    TAG="$CUR_TAG"
+    verify_tag "$TAG" || fail "$1" "REFUSED: the deployed tag $TAG is no longer trusted"
+    return 0
+  fi
+  TAG=""
+  while read -r candidate; do
+    if verify_tag "$candidate"; then
+      TAG="$candidate"
+      break
+    fi
+    log "REFUSED: tag $candidate is not signed by a key listed in $SIGNERS"
+    UNTRUSTED=$((UNTRUSTED + 1))
+  done < <(git -C "$WORK" tag --list 'v[0-9]*' --sort=-version:refname | sed -n '1,20p')
+  [ -n "$TAG" ] || fail "$1" "no tag with a trusted signature"
+}
+
+# Refuse a moved tag and any tag older than the one already deployed
+guard_downgrade() {
+  local newest
+  [ -n "$CUR_TAG" ] || return 0
+  if [ "$TAG" = "$CUR_TAG" ]; then
+    [ "$COMMIT" = "$CUR_COMMIT" ] || fail "$1" "REFUSED: tag $TAG moved from $CUR_COMMIT to $COMMIT"
+    return 0
+  fi
+  newest=$(printf '%s\n%s\n' "$CUR_TAG" "$TAG" | sort -V | sed -n '$p')
+  [ "$newest" = "$TAG" ] || fail "$1" "REFUSED: $TAG is older than the deployed $CUR_TAG"
+}
+
+record_apply() {
+  write_metrics homepi_gitops_apply.prom \
+    "homepi_gitops_apply_success 1" \
+    "homepi_gitops_apply_timestamp_seconds $(date +%s)" \
+    "homepi_gitops_untrusted_tags ${UNTRUSTED:-0}" \
+    "homepi_gitops_deployed_info{tag=\"$TAG\",commit=\"${COMMIT:0:12}\"} 1"
+}
+
+main() {
+  local mode="${1:-}"
+  case "$mode" in apply | check) ;; *) echo "usage: $0 apply|check" >&2; exit 2 ;; esac
+  exec 9> /run/homepi-gitops.lock
+  flock -n 9 || { log "another run is in progress"; exit 0; }
+
+  [ -d "$WORK/.git" ] || git clone --quiet "$REMOTE" "$WORK" || fail "$mode" "cannot clone $REMOTE"
+  git -C "$WORK" fetch --quiet --tags --force origin || fail "$mode" "cannot fetch from $REMOTE"
+
+  CUR_TAG="" CUR_COMMIT=""
+  [ ! -f "$DEPLOYED" ] || read -r CUR_TAG CUR_COMMIT < "$DEPLOYED"
+
+  select_tag "$mode"
+  # Deploy the commit the verified tag points to, not the tag name
+  COMMIT=$(git -C "$WORK" rev-list -n 1 "$TAG")
+  guard_downgrade "$mode"
+
+  if [ "$mode" = apply ] && [ "$TAG" = "$CUR_TAG" ]; then
+    log "tag $TAG is already deployed"
+    record_apply
+    exit 0
+  fi
+
+  git -C "$WORK" checkout --quiet --force --detach "$COMMIT"
+  log "$mode: $TAG ($COMMIT)"
+  run_playbook "$mode" || fail "$mode" "ansible-playbook failed"
+
+  if [ "$mode" = apply ]; then
+    printf '%s %s\n' "$TAG" "$COMMIT" > "$DEPLOYED"
+    record_apply
+  else
+    write_metrics homepi_gitops_check.prom \
+      "homepi_gitops_check_success 1" \
+      "homepi_gitops_check_timestamp_seconds $(date +%s)" \
+      "homepi_gitops_drift_changed_tasks ${CHANGED:-0}"
+  fi
+  log "$mode finished: $TAG, changed tasks: ${CHANGED:-0}"
+}
+
+main "$@"
