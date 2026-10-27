@@ -1,0 +1,64 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  group_by: ['alertname', 'severity']
+  group_wait: 30s
+  group_interval: 5m
+  repeat_interval: 4h
+  receiver: 'slack-warning'
+  routes:
+#    - matchers:
+#        - severity = critical
+#      receiver: 'pagerduty-critical'
+#      repeat_interval: 1h
+#      continue: true
+    - matchers:
+        - severity = critical
+      receiver: 'slack-critical'
+      repeat_interval: 1h
+    - matchers:
+        - severity = warning
+      receiver: 'slack-warning'
+      repeat_interval: 4h
+
+receivers:
+#  - name: 'pagerduty-critical'
+#    pagerduty_configs:
+#      - routing_key: '${PAGERDUTY_INTEGRATION_KEY}'
+#        severity: 'critical'
+#        description: '{{ .GroupLabels.alertname }} - {{ .CommonAnnotations.summary }}'
+#        details:
+#          firing: '{{ .Alerts.Firing | len }}'
+#          instance: '{{ .CommonLabels.instance }}'
+#          description: '{{ .commonAnnotations.description }}'
+
+  - name: 'slack-critical'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_CRITICAL}'
+        channel: '#alerts-critical'
+        icon_emoji: ':red_circle:'
+        title: 'CRITICAL - {{ .GroupLabels.alertname }}'
+        text: |
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          *Severity:* {{ .CommonLabels.severity }}
+        send_resolved: true
+
+  - name: 'slack-warning'
+    slack_configs:
+      - api_url: '${SLACK_WEBHOOK_WARNING}'
+        channel: '#alerts-warning'
+        icon_emoji: ':warning:'
+        title: 'WARNING - {{ .GroupLabels.alertname }}'
+        text: |
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+        send_resolved: true
+
+inhibit_rules:
+  - source_matchers:
+      - severity = critical
+    target_matchers:
+      - severity = warning
+    equal: ['alertname']

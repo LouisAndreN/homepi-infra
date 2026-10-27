@@ -1,0 +1,227 @@
+groups:
+  - name: system-alerts
+    rules:
+      - alert: HighCPUUsage
+        expr: 100 - (avg by (instance) (irate(node_cpu_seconds_total{mode="idle"}[5m])) * 100) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High CPU usage on {{ $labels.instance }}"
+          description: "CPU usage is above 85% for more than 5 minutes."
+
+      - alert: HighMemoryUsage
+        expr: 100 * (1 - node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes) > 90
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High Memory usage"
+          description: "Memory usage is above 90%."
+
+      - alert: HighDiskUsage
+        expr: 100 * ((node_filesystem_size_bytes{mountpoint="/"} - node_filesystem_free_bytes{mountpoint="/"}) / node_filesystem_size_bytes{mountpoint="/"}) > 90
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Root disk almost full"
+          description: "Root filesystem usage is above 90%."
+
+      - alert: ZramHighUsage
+        expr: 100 * (node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes) / node_memory_SwapTotal_bytes > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Zram usage high."
+          description: "Zram is over 80% used."
+
+      - alert: HighDiskIOWait
+        expr: avg by (instance) (rate(node_cpu_seconds_total{mode="iowait"}[5m])) * 100 > 20
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High disk I/O wait"
+          description: "iowait is {{ $value | printf \"%.1f\" }}% - storage bottleneck"
+
+  - name: temperature
+    rules:
+      - alert: CPUHighTemperature
+        expr: node_thermal_zone_temp{type="cpu-thermal"} > 75
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Pi 5 CPU temperature high"
+          description: "CPU temp is {{ $value | printf \"%.1f\" }}°C - thermal throttling risk"
+
+      - alert: CPUCriticalTemperature
+        expr: node_thermal_zone_temp{type="cpu-thermal"} > 85
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Pi 5 CPU overheating"
+          description: "CPU temp is {{ $value | printf \"%.1f\" }}°C - immediate action required"
+
+      - alert: NVMeHighTemperature
+        expr: node_hwmon_temp_celsius{chip="nvme_nvme0",sensor="temp1"} > 70
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "NVMe temperature high"
+          description: "NVMe temp is {{ $value | printf \"%.1f\" }}°C (max: 81.85°C, crit: 84.85°C)"
+
+      - alert: NVMeCriticalTemperature
+        expr: node_hwmon_temp_celsius{chip="nvme_nvme0",sensor="temp1"} > 80
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "NVMe overheating - data loss risk"
+          description: "NVMe temp is {{ $value | printf \"%.1f\" }}°C - approaching hardware critical threshold"
+
+  - name: storage
+    rules:
+      - alert: LowDiskSpaceVar
+        expr: 100 * (1 - node_filesystem_free_bytes{mountpoint="/var"} / node_filesystem_size_bytes{mountpoint="/var"}) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Low space on /var (LUKS)"
+          description: "{{ $value | printf \"%.1f\" }}% used on /var"
+
+      - alert: LowDiskSpaceInfluxDB
+        expr: 100 * (1 - node_filesystem_free_bytes{mountpoint="/var/lib/influxdb"} / node_filesystem_size_bytes{mountpoint="/var/lib/influxdb"}) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "InfluxDB volume filling up"
+          description: "{{ $value | printf \"%.1f\" }}% used on /var/lib/influxdb"
+
+      - alert: LowDiskSpaceLogs
+        expr: 100 * (1 - node_filesystem_free_bytes{mountpoint="/var/log"} / node_filesystem_size_bytes{mountpoint="/var/log"}) > 85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Log volume filling up"
+          description: "{{ $value | printf \"%.1f\" }}% used on /var/log"
+
+  - name: network
+    rules:
+      - alert: HighNetworkErrors
+        expr: rate(node_network_receive_errs_total{device="eth0"}[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High network errors on eth0"
+          description: "{{ $value | printf \"%.1f\" }} errors/s on eth0"
+
+      - alert: NFTDropSpike
+        expr: rate(node_network_receive_drop_total{device="eth0"}[5m]) > 100
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High packet drops - possible attack"
+          description: "{{ $value | printf \"%.1f\" }} drops/s on eth0"
+
+  - name: security
+    rules:
+      - alert: AuditdDown
+        expr: node_systemd_unit_state{name="auditd.service",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Auditd is down - compliance monitoring stopped"
+
+      - alert: CrowdSecDown
+        expr: node_systemd_unit_state{name="crowdsec.service",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "CrowdSec is down - threat detection stopped"
+
+
+      - alert: NetBirdDown
+        expr: node_systemd_unit_state{name="netbird.service",state="active"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Netbird VPN down - Zero-Trust access lost"
+
+  - name: services
+    rules:
+      - alert: NginxDown
+        expr: node_systemd_unit_state{name="nginx.service", state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Nginx down - all services unreachable"
+
+      - alert: UnboundDown
+        expr: node_systemd_unit_state{name="unbound.service",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Unbound down - DNS resolution broken"
+
+      - alert: StepCADown
+        expr: node_systemd_unit_state{name="step-ca.service",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Step CA down - certificate renewal broken"
+
+      - alert: AutheliaDown
+        expr: node_systemd_unit_state{name="authelia.service",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Authelia down = Zero-Trust auth broken"
+
+      - alert: InfluxDBDown
+        expr: node_systemd_unit_state{name="influxdb.service",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "InfluxDB down - IoT data ingestion stopped"
+
+      - alert: GrafanaDown
+        expr: node_systemd_unit_state{name="grafana-server.service",state="active"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Grafana down - dashboards unavailable"
+
+      - alert: LokiDown
+        expr: node_systemd_unit_state{name="loki.service",state="active"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki down - log aggregation stopped"
+
+      - alert: StepRenewTimerDown
+        expr: node_systemd_unit_state{name="step-renew.timer",state="active"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Step-renew timer stopped - certificates will expire"

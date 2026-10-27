@@ -1,0 +1,43 @@
+---
+- name: Install the Prometheus configuration
+  ansible.builtin.copy:
+    src: prometheus/prometheus.yml
+    dest: /etc/prometheus/prometheus.yml
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart prometheus
+
+- name: Install the Prometheus alert rules
+  ansible.builtin.copy:
+    src: prometheus/rules/
+    dest: /etc/prometheus/rules/
+    owner: root
+    group: root
+    mode: "0644"
+    directory_mode: "0755"
+  notify: Restart prometheus
+
+- name: Validate the Prometheus configuration and rules
+  ansible.builtin.command: /usr/local/bin/promtool check config /etc/prometheus/prometheus.yml
+  changed_when: false
+  check_mode: false
+
+- name: Install the Loki configuration (validated before it replaces the file)
+  ansible.builtin.copy:
+    src: loki/loki.yml
+    dest: /etc/loki/loki.yml
+    owner: root
+    group: root
+    mode: "0644"
+    validate: /usr/local/bin/loki -verify-config -config.file=%s
+  notify: Restart loki
+
+- name: Install the Alertmanager template (rendered by envsubst at each start)
+  ansible.builtin.copy:
+    src: alertmanager/alertmanager.yml.template
+    dest: /etc/alertmanager/alertmanager.yml.template
+    owner: alertmanager
+    group: alertmanager
+    mode: "0640"
+  notify: Restart alertmanager

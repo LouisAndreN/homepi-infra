@@ -27,3 +27,6 @@ __pycache__/
 .DS_Store
 # Firmware binaries: build artifacts, publish as release assets instead
 *.bin
+
+# SOPS-encrypted files are meant to be committed
+!ansible/secrets/

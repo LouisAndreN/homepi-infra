@@ -1,0 +1,32 @@
+---
+- name: Create the Alertmanager drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/alertmanager.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the service units
+  ansible.builtin.copy:
+    src: "systemd/{{ item }}.service"
+    dest: "/etc/systemd/system/{{ item }}.service"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [prometheus, alertmanager, node_exporter, loki]
+  register: observability_unit_files
+
+- name: Install the Alertmanager drop-in (renders the config from the template at each start)
+  ansible.builtin.copy:
+    src: systemd/alertmanager.service.d/secrets.conf
+    dest: /etc/systemd/system/alertmanager.service.d/secrets.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: observability_dropin
+
+- name: Reload systemd before any restart when a unit changed
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: observability_unit_files is changed or observability_dropin is changed

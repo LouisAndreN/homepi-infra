@@ -1,0 +1,41 @@
+---
+# The "Restart <service>" handlers are defined in the monitoring_binaries role: list it before this one.
+- name: Install envsubst (renders the Alertmanager config at each start)
+  ansible.builtin.apt:
+    name: gettext-base
+    state: present
+
+- name: Create the config and data directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "0755"
+  loop:
+    - { path: /etc/prometheus, owner: prometheus, group: prometheus }
+    - { path: /etc/prometheus/rules, owner: root, group: root }
+    - { path: /etc/loki, owner: loki, group: loki }
+    - { path: /etc/alertmanager, owner: alertmanager, group: alertmanager }
+    - { path: /var/lib/prometheus, owner: prometheus, group: prometheus }
+    - { path: /var/lib/loki, owner: loki, group: loki }
+    - { path: /var/lib/alertmanager, owner: alertmanager, group: alertmanager }
+    - { path: /var/lib/node_exporter/textfile_collector, owner: root, group: root }
+  loop_control:
+    label: "{{ item.path }}"
+
+- name: Install the systemd units
+  ansible.builtin.include_tasks: units.yml
+
+- name: Install the service secrets
+  ansible.builtin.include_tasks: secrets.yml
+
+- name: Install the service configurations
+  ansible.builtin.include_tasks: configs.yml
+
+- name: Enable and start the services
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: [prometheus, alertmanager, node_exporter, loki]
