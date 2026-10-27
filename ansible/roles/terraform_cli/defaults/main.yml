@@ -1,0 +1,4 @@
+---
+terraform_cache_dir: /var/cache/homepi
+# Local state, readable by root only (a remote backend is planned for v1.2)
+terraform_state_dir: /var/lib/homepi-terraform

@@ -8,3 +8,9 @@ gitops_tools:
   # ansible-core 2.20 needs Python 3.12 or newer; the Pi runs 3.12.3
   ansible_core_version: "2.20.1"
   community_sops_version: "2.2.7"
+  terraform:
+    version: "1.17.0"
+    url: https://releases.hashicorp.com/terraform/1.17.0/terraform_1.17.0_linux_arm64.zip
+    sha256: f32478134ffc6d710eec474bbd316652cdddc0f4e336973a3745e8d3a3309cdf
+  # Pinned by terraform/grafana/.terraform.lock.hcl once the first init has run
+  grafana_provider_version: "4.52.0"

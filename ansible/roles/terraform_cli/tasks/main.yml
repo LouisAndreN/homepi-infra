@@ -1,0 +1,46 @@
+---
+- name: Create the download cache and the versioned install directory
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ terraform_cache_dir }}"
+    - "/opt/terraform/{{ gitops_tools.terraform.version }}"
+
+- name: Create the Terraform state directory
+  ansible.builtin.file:
+    path: "{{ terraform_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Download the pinned Terraform release (checksum verified)
+  ansible.builtin.get_url:
+    url: "{{ gitops_tools.terraform.url }}"
+    dest: "{{ terraform_cache_dir }}/{{ gitops_tools.terraform.url | basename }}"
+    checksum: "sha256:{{ gitops_tools.terraform.sha256 }}"
+    mode: "0644"
+
+- name: Unpack the terraform binary
+  ansible.builtin.unarchive:
+    src: "{{ terraform_cache_dir }}/{{ gitops_tools.terraform.url | basename }}"
+    dest: "/opt/terraform/{{ gitops_tools.terraform.version }}"
+    remote_src: true
+    include: [terraform]
+    owner: root
+    group: root
+    mode: "0755"
+    creates: "/opt/terraform/{{ gitops_tools.terraform.version }}/terraform"
+  when: not ansible_check_mode
+
+- name: Point /usr/local/bin/terraform at the pinned version
+  ansible.builtin.file:
+    src: "/opt/terraform/{{ gitops_tools.terraform.version }}/terraform"
+    dest: /usr/local/bin/terraform
+    state: link
+    # In check mode the archive is not unpacked yet, so the link target may not exist
+    force: "{{ ansible_check_mode }}"

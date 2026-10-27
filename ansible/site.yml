@@ -7,3 +7,4 @@
     - monitoring_binaries
     - observability_core
     - gitops_runtime
+    - terraform_cli
