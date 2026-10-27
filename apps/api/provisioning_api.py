@@ -26,6 +26,7 @@ import uuid
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
+from versions import same_version, version_key
 
 # --- Config -------------------
 DB_PATH         = "/var/lib/homepi/devices.db"
@@ -241,14 +242,12 @@ def get_latest_firmware(chip_target: str) -> dict | None:
     hw_model is managed by ESP32 via I2C table dispatch.
     """
     with db() as conn:
-        row = conn.execute("""
+        rows = conn.execute("""
             SELECT version, chip_target, sha256, url, hw_model, notes
             FROM firmware_catalog
             WHERE chip_target = ?
-            ORDER BY uploaded_at DESC
-            LIMIT 1
-        """, (chip_target,)).fetchone()
-    return dict(row) if row else None
+        """, (chip_target,)).fetchall()
+    return dict(max(rows, key=lambda r: version_key(r["version"]))) if rows else None
 
 # --- Staged Rollout ------------------------------
 
@@ -284,8 +283,8 @@ def _check_phase_and_advance(deployment_id: int, phase: int, version: str, chip_
             WHERE dd.deployment_id = ? AND dd.phase = ?
         """, (deployment_id, phase)).fetchall()
 
-    rolled_back = [r for r in rows if r["fw_version"] != version]
-    confirmed   = [r for r in rows if r["fw_version"] == version]
+    rolled_back = [r for r in rows if not same_version(r["fw_version"], version)]
+    confirmed = [r for r in rows if same_version(r["fw_version"], version)]
 
     if rolled_back:
         log.error(
@@ -395,11 +394,11 @@ def start_staged_deployment(version: str, chip_target: str, created_by: str = "a
     """
     with db() as conn:
         rows = conn.execute("""
-            SELECT device_id FROM devices
+            SELECT device_id, fw_version FROM devices
             WHERE status='active' AND chip_target=?
-            AND fw_version != ?
             ORDER BY enrolled_at ASC
-        """, (chip_target, version)).fetchall()
+        """, (chip_target,)).fetchall()
+    rows = [r for r in rows if not same_version(r["fw_version"], version)]
 
     if not rows:
         log.info(f"All {chip_target} devices already on v{version}")
@@ -654,7 +653,7 @@ async def x5c_enrolled(req: X5CEnrolledRequest):
 
     # --- OTA auto if most recent firmware available ----------------------
     latest = get_latest_firmware(chip_target)
-    if latest and latest["version"] != req.fw_version:
+    if latest and not same_version(latest["version"], req.fw_version):
         log.info(
             f"Auto-OTA: {req.device_id} "
             f"{req.fw_version} -> {latest['version']}"
@@ -672,7 +671,7 @@ async def x5c_enrolled(req: X5CEnrolledRequest):
                     f"iot/{req.device_id}/commands",
                     payload, qos=1, retain=False)
                 audit(req.device_id, "auto_ota_sent",
-                      f"v{req.fw_version}->{latest['version']}")
+                      f"{req.fw_version}->{latest['version']}")
             except Exception as e:
                 log.error(f"Auto-OTA failed: {e}")
         threading.Thread(target=_delayed_ota, daemon=True).start()
