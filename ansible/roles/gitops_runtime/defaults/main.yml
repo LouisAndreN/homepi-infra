@@ -1,0 +1,15 @@
+---
+gitops_packages:
+  - git
+  - python3-venv
+
+gitops_dir: /opt/homepi-gitops
+gitops_state_dir: /var/lib/homepi-gitops
+
+# Bare repository the laptop pushes signed tags to; the Pi reconciles from it.
+# Trust comes from the tag signature, not from where the repository is stored.
+gitops_origin: /var/lib/homepi-gitops/origin.git
+gitops_push_user: srvpi
+
+# Trust anchors created by hand, deliberately outside this role
+gitops_trust_dir: /etc/homepi-gitops

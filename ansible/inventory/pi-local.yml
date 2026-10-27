@@ -1,0 +1,9 @@
+---
+# Used by the reconciler on the Pi itself: same playbook, local connection instead of ssh
+all:
+  children:
+    pi_hosts:
+      hosts:
+        homepi:
+          ansible_connection: local
+          ansible_python_interpreter: /usr/bin/python3

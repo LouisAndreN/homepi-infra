@@ -1,0 +1,20 @@
+---
+- name: Install the pinned sops binary (checksum verified)
+  ansible.builtin.get_url:
+    url: "{{ gitops_tools.sops.url }}"
+    dest: /usr/local/bin/sops
+    checksum: "sha256:{{ gitops_tools.sops.sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Create the virtualenv and install the pinned ansible-core
+  ansible.builtin.pip:
+    name: "ansible-core=={{ gitops_tools.ansible_core_version }}"
+    virtualenv: "{{ gitops_dir }}/venv"
+    virtualenv_command: python3 -m venv
+
+- name: Install the pinned community.sops collection
+  ansible.builtin.command:
+    cmd: "{{ gitops_dir }}/venv/bin/ansible-galaxy collection install community.sops:=={{ gitops_tools.community_sops_version }} -p {{ gitops_dir }}/collections"
+    creates: "{{ gitops_dir }}/collections/ansible_collections/community/sops/MANIFEST.json"

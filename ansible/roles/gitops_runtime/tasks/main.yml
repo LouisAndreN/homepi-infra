@@ -1,0 +1,59 @@
+---
+- name: Check the trust anchors that are created by hand
+  ansible.builtin.stat:
+    path: "{{ gitops_trust_dir }}/{{ item }}"
+  loop: [age.key, allowed_signers]
+  register: gitops_anchors
+
+- name: Stop if a trust anchor is missing
+  ansible.builtin.assert:
+    that: item.stat.exists
+    fail_msg: "{{ item.item }} is missing in {{ gitops_trust_dir }}: create it by hand, it is deliberately not managed by this repository"
+  loop: "{{ gitops_anchors.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: Install the packages the runtime needs
+  ansible.builtin.apt:
+    name: "{{ gitops_packages }}"
+    state: present
+
+- name: Create the runtime and state directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - "{{ gitops_dir }}"
+    - "{{ gitops_dir }}/collections"
+    - "{{ gitops_state_dir }}"
+
+- name: Create the bare repository the laptop pushes signed tags to
+  ansible.builtin.command:
+    cmd: "git init --bare --initial-branch=main {{ gitops_origin }}"
+    creates: "{{ gitops_origin }}/HEAD"
+
+- name: Let the push user own the bare repository
+  ansible.builtin.file:
+    path: "{{ gitops_origin }}"
+    state: directory
+    owner: "{{ gitops_push_user }}"
+    group: "{{ gitops_push_user }}"
+    recurse: true
+
+- name: Trust the bare repository for every local user (it is owned by the push user)
+  ansible.builtin.blockinfile:
+    path: /etc/gitconfig
+    create: true
+    owner: root
+    group: root
+    mode: "0644"
+    marker: "# {mark} homepi-gitops"
+    block: |
+      [safe]
+          directory = {{ gitops_origin }}
+
+- name: Install the pinned tools
+  ansible.builtin.include_tasks: tools.yml

@@ -1,0 +1,10 @@
+---
+# Tools the Pi needs to reconcile itself from signed tags (linux-arm64 builds)
+gitops_tools:
+  sops:
+    version: "3.13.3"
+    url: https://github.com/getsops/sops/releases/download/v3.13.3/sops-v3.13.3.linux.arm64
+    sha256: 53b0abacd38ef1b12a66d6c100956691b9cefce018d91f81e73ddf7438b94d77
+  # ansible-core 2.20 needs Python 3.12 or newer; the Pi runs 3.12.3
+  ansible_core_version: "2.20.1"
+  community_sops_version: "2.2.7"
