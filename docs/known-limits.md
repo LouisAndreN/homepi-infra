@@ -1,13 +1,14 @@
 # Known limits (v1)
 
 Each entry states what was observed, where, and what is still unknown.
-Last updated: 2026-10-28.
+Last updated: 2026-10-27.
 
 ## Security
 - **Unauthenticated device routes.** `POST /api/devices/x5c-enrolled` and `POST /api/devices/{id}/renew` accept requests from the whole IoT VLAN without authenticating the caller (source review). They answer 403 by default since commit bf3d15a and are blocked in nginx on the production host. Planned fix: client certificate on the notification call (firmware change).
-- **Secrets in the device-facing process.** `provisioning_api.py` reads the HMAC master key and the step-ca provisioner password at import. Both API processes (ports 8090 and 8091) run the same code as the same user, so the process reachable from the IoT VLAN holds them. Planned fix: split by role, separate users.
+- **Secrets in the device-facing process.** `provisioning_api.py` reads the HMAC master key and the step-ca provisioner password at import. Both API processes (ports 8090 and 8091) run the same code as the same user, so the process reachable from the IoT VLAN holds them (file modes checked: both files are 0640 root:homepi-api and the API runs as homepi-api). Planned fix: split by role, separate users.
 - **CA keys on an unencrypted partition.** The step-ca keys and password file live under `/etc/step-ca`, on the unencrypted root filesystem. Planned fix: move them to the LUKS volume or rotate the CA.
 - **Laptop disk encryption not verified.** The Manufacturer CA key and `master.key` sit unencrypted in WSL; the BitLocker status was not checked.
+- **Passwordless sudo for the deployment account.** `srvpi` runs sudo without a password, so whoever holds its SSH key is root on the Pi; the only barrier is the key passphrase. Not addressed in v1.
 - **OTA integrity, not authenticity.** The OTA hash comes from the same API that serves the file; there is no firmware signature and no secure boot.
 
 ## Reliability
@@ -20,6 +21,6 @@ Last updated: 2026-10-28.
 
 ## Operations
 - **Firewall.** `nftables.conf` starts with `flush ruleset`; `netfilter-persistent` loads a separate iptables file holding the IoT NAT rule and the Docker chains; systemd does not order the two services (nftables started 10 s before netfilter-persistent on the last boot). Restarting nftables by hand removes the NAT table until netfilter-persistent reloads. Untested; to verify on the rebuild Pi.
-- **Journal retention.** The oldest journal entry was about 1.5 days old when checked on 2026-10-23.
+- **Journal retention.** The journal was volatile (no `/var/log/journal`): it held about 22 hours of logs and lost them all at each reboot. Fixed by the `common` role (persistent storage, 2 GB, one month); the real daily volume is still to be measured over several days.
 - **Rebuild reproduces configuration, not state.** Restoring state is an explicit step.
 - **Terraform state is local** on the Pi (S3 backend planned for v1.2).
