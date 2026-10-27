@@ -1,0 +1,16 @@
+---
+# Base packages every HomePi host needs (API venv, backups and the GitOps runner depend on them)
+common_packages:
+  - ca-certificates
+  - curl
+  - git
+  - jq
+  - sqlite3
+  - age
+  - python3-venv
+
+common_timezone: Asia/Tokyo
+
+# Measured on the Pi: about 80 MB of journal per day (mostly loki), so 2G keeps roughly 25 days
+common_journal_max_use: 2G
+common_journal_retention: 1month

@@ -1,0 +1,6 @@
+---
+- name: HomePi base configuration
+  hosts: pi_hosts
+  become: true
+  roles:
+    - common
