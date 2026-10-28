@@ -41,11 +41,16 @@ done
 # 2) Configuration and state files. step-ca (BadgerDB) is stopped briefly: unsafe to copy live.
 #    tar exit code 1 only means "a file changed while reading": acceptable here.
 if systemctl is-active --quiet step-ca; then systemctl stop step-ca; CA_STOPPED=1; fi
+# Pinned binaries are reinstalled by Ansible. Terraform keeps its state, not its provider cache or plans.
 rc=0
 tar -C / -cf "$WORK/etc-and-state.tar" \
   --exclude='etc/homepi/age.key' --exclude='etc/shadow*' --exclude='etc/gshadow*' \
   --exclude='var/lib/homepi/*.db*' \
-  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets || rc=$?
+  --exclude='usr/local/bin/loki' --exclude='usr/local/bin/node_exporter' --exclude='usr/local/bin/sops' \
+  --exclude='var/lib/homepi-terraform/data' --exclude='var/lib/homepi-terraform/review-data' \
+  --exclude='var/lib/homepi-terraform/*.plan' --exclude='var/lib/homepi-terraform/*.bin' \
+  --exclude='var/lib/homepi-terraform/*.json' \
+  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets var/lib/homepi-terraform || rc=$?
 [ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
 if [ "$CA_STOPPED" = 1 ]; then systemctl start step-ca; CA_STOPPED=0; fi
 
@@ -54,6 +59,7 @@ rc=0
 tar -C / -cf "$WORK/opt.tar" \
   --exclude='*/node_modules' --exclude='*/venv' --exclude='*/api-venv' --exclude='*/dist' \
   --exclude='*/__pycache__' --exclude='opt/prometheus' --exclude='opt/alertmanager' --exclude='opt/containerd' \
+  --exclude='opt/terraform' --exclude='opt/homepi-gitops' \
   opt || rc=$?
 [ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
 
