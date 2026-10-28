@@ -6,8 +6,18 @@ homepi_tools_units:
   - homepi-netbird-status.timer
   - zram-metrics.service
   - zram-metrics.timer
+  - homepi-backup@.service
+  - homepi-backup-state.timer
+  - homepi-backup-influx-lp.timer
 
 homepi_tools_timers:
   - homepi-cert-expiry.timer
   - homepi-netbird-status.timer
   - zram-metrics.timer
+  - homepi-backup-state.timer
+  - homepi-backup-influx-lp.timer
+
+# Backups are encrypted for the laptop key and the recovery key, never for the Pi itself
+homepi_backup_recipients:
+  - age19pzszgu50mddaw92mmeg8yqs7jl45pywszqlmp27mwfuvjx3xe7q62d8ls
+  - age1f0lezhj8mddsqjt4mtyswtp4yyuek9hpc57azkxz4q5358fxgyssx4kgqt

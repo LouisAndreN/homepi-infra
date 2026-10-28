@@ -1,0 +1,11 @@
+[Unit]
+Description=Weekly portable InfluxDB export (stops influxdb for a few seconds)
+
+[Timer]
+OnCalendar=Sun *-*-* 04:15
+RandomizedDelaySec=600
+Persistent=true
+Unit=homepi-backup@influx-lp.service
+
+[Install]
+WantedBy=timers.target

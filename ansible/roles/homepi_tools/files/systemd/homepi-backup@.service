@@ -1,0 +1,10 @@
+[Unit]
+Description=HomePi backup (%i)
+RequiresMountsFor=/mnt/data
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-backup-run %i
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=2h

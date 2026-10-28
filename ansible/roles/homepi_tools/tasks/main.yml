@@ -10,6 +10,7 @@
   loop:
     - homepi-audit
     - homepi-backup-influx-lp
+    - homepi-backup-run
     - homepi-backup-state
     - homepi-triage
 
@@ -25,6 +26,22 @@
     - homepi-cert-expiry.sh
     - homepi-netbird-status.sh
     - zram-metrics.sh
+
+- name: Create the backup configuration directory
+  ansible.builtin.file:
+    path: /etc/homepi-backup
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the backup recipients (public keys only)
+  ansible.builtin.copy:
+    dest: /etc/homepi-backup/recipients
+    content: "{{ homepi_backup_recipients | join('\n') }}\n"
+    owner: root
+    group: root
+    mode: "0644"
 
 - name: Install the collector units and timers
   ansible.builtin.copy:
@@ -47,3 +64,5 @@
     enabled: true
     state: started
   loop: "{{ homepi_tools_timers }}"
+  # In check mode a timer installed by this same run does not exist yet: skip only that one
+  when: not ansible_check_mode or item not in (homepi_tools_unit_files.results | selectattr('changed') | map(attribute='item') | list)

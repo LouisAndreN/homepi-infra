@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly HomePi state backup
+
+[Timer]
+OnCalendar=*-*-* 03:30
+RandomizedDelaySec=900
+Persistent=true
+Unit=homepi-backup@state.service
+
+[Install]
+WantedBy=timers.target

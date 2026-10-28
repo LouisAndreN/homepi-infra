@@ -1,0 +1,85 @@
+#!/bin/bash
+# homepi-backup-run: run one kind of backup, verify it, export metrics, prune old archives.
+#
+#   homepi-backup-run state       state backup (configuration, secrets, databases, Terraform state)
+#   homepi-backup-run influx-lp   portable InfluxDB export (stops influxdb for a few seconds)
+#
+# Old archives are pruned only after the new one exists and its checksum verifies.
+# The Pi cannot decrypt its own backups: restore tests are done on the laptop.
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+KIND="${1:-}"
+DEST=/mnt/data/backups/homepi
+RECIPIENTS_FILE=/etc/homepi-backup/recipients
+METRICS_DIR=/var/lib/node_exporter/textfile_collector
+
+case "$KIND" in
+  state) SCRIPT=homepi-backup-state; PREFIX=homepi-state; KEEP=7 ;;
+  influx-lp) SCRIPT=homepi-backup-influx-lp; PREFIX=influx-lp; KEEP=4 ;;
+  *) echo "usage: $0 state|influx-lp" >&2; exit 2 ;;
+esac
+METRICS="$METRICS_DIR/homepi_backup_${KIND//-/_}.prom"
+NAME_REGEX=".*/$PREFIX-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}\.tar\.age"
+
+log() { echo "homepi-backup: $KIND: $*"; }
+
+# Keep the time of the last success when a run fails, so the age alert measures the real gap
+last_success() {
+  sed -n 's/^homepi_backup_last_success_timestamp_seconds{[^}]*} //p' "$METRICS" 2>/dev/null || true
+}
+
+write_metrics() {
+  local tmp
+  tmp=$(mktemp "$METRICS_DIR/.tmp.XXXXXX")
+  printf '%s\n' "$@" > "$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$METRICS"
+}
+
+fail() {
+  local last
+  last=$(last_success)
+  log "FAILED: $1"
+  write_metrics \
+    "homepi_backup_success{kind=\"$KIND\"} 0" \
+    "homepi_backup_last_success_timestamp_seconds{kind=\"$KIND\"} ${last:-0}" \
+    "homepi_backup_last_run_timestamp_seconds{kind=\"$KIND\"} $(date +%s)"
+  exit 1
+}
+
+list_archives() {
+  find "$DEST" -maxdepth 1 -regextype posix-extended -regex "$NAME_REGEX" -printf '%T@ %f\n' | sort -rn | cut -d' ' -f2
+}
+
+[ -s "$RECIPIENTS_FILE" ] || fail "no recipients in $RECIPIENTS_FILE"
+mapfile -t RECIPIENTS < <(grep -E '^age1[a-z0-9]{58}$' "$RECIPIENTS_FILE")
+[ "${#RECIPIENTS[@]}" -ge 2 ] || fail "fewer than two valid recipients in $RECIPIENTS_FILE"
+
+START=$(date +%s)
+"/usr/local/sbin/$SCRIPT" "${RECIPIENTS[@]}" || fail "$SCRIPT exited with an error"
+
+# The archive written by this run, not merely the newest one
+NEW=$(find "$DEST" -maxdepth 1 -regextype posix-extended -regex "$NAME_REGEX" -newermt "@$START" -printf '%T@ %f\n' | sort -rn | sed -n '1p' | cut -d' ' -f2)
+[ -n "$NEW" ] || fail "no archive created by this run in $DEST"
+( cd "$DEST" && sha256sum -c --status "$NEW.sha256" ) || fail "checksum mismatch for $NEW"
+SIZE=$(stat -c %s "$DEST/$NEW")
+
+# Keep the newest $KEEP archives of this kind; never remove the one just created
+mapfile -t OLD < <(list_archives | tail -n +$((KEEP + 1)))
+for f in "${OLD[@]}"; do
+  [ "$f" = "$NEW" ] && continue
+  rm -f -- "$DEST/$f" "$DEST/$f.sha256"
+  log "pruned $f"
+done
+KEPT=$(list_archives | wc -l)
+
+NOW=$(date +%s)
+write_metrics \
+  "homepi_backup_success{kind=\"$KIND\"} 1" \
+  "homepi_backup_last_success_timestamp_seconds{kind=\"$KIND\"} $NOW" \
+  "homepi_backup_last_run_timestamp_seconds{kind=\"$KIND\"} $NOW" \
+  "homepi_backup_size_bytes{kind=\"$KIND\"} $SIZE" \
+  "homepi_backup_kept_archives{kind=\"$KIND\"} $KEPT"
+log "done: $NEW ($SIZE bytes, $KEPT kept)"

@@ -1,0 +1,38 @@
+groups:
+  - name: homepi-backups
+    rules:
+      - alert: BackupFailing
+        expr: homepi_backup_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The last {{ $labels.kind }} backup failed"
+          description: "Read: journalctl -u homepi-backup@{{ $labels.kind }}.service"
+
+      - alert: BackupStateTooOld
+        expr: time() - homepi_backup_last_success_timestamp_seconds{kind="state"} > 36 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful state backup for more than 36 hours"
+          description: "The nightly timer is stopped or every run fails."
+
+      - alert: BackupInfluxTooOld
+        expr: time() - homepi_backup_last_success_timestamp_seconds{kind="influx-lp"} > 8 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful InfluxDB export for more than 8 days"
+          description: "The weekly timer is stopped or every run fails."
+
+      - alert: BackupMetricsMissing
+        expr: absent(homepi_backup_last_success_timestamp_seconds{kind="state"})
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The backup wrapper exports no metrics"
+          description: "homepi-backup-run has never succeeded or node_exporter does not read its textfile."

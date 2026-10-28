@@ -16,7 +16,7 @@
     group: root
     mode: "0644"
     validate: /usr/local/bin/promtool check rules %s
-  loop: [alerts.yml, gitops.yml]
+  loop: [alerts.yml, gitops.yml, backups.yml]
   notify: Restart prometheus
 
 - name: Validate the Prometheus configuration and rules
