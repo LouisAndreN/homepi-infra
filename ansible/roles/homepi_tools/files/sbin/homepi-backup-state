@@ -15,7 +15,7 @@ done
 
 DEST=/mnt/data/backups/homepi
 mountpoint -q /mnt/data/backups || { echo "ERROR: /mnt/data/backups is not mounted" >&2; exit 1; }
-STAMP=$(date +%F-%H%M)
+STAMP=$(date +%F-%H%M%S)
 WORK=$DEST/state-work-$STAMP
 install -d -m 0711 "$DEST"
 install -d -m 0700 "$WORK"
@@ -66,6 +66,7 @@ tar -C / -cf "$WORK/opt.tar" \
 # 4) Encrypt everything
 du -sh "$WORK"/*.tar
 OUT=$DEST/homepi-state-$STAMP.tar.age
+[ ! -e "$OUT" ] || { echo "ERROR: $OUT already exists, refusing to overwrite it" >&2; exit 1; }
 tar -C "$WORK" -cf - . | age "${RECIPIENTS[@]}" > "$OUT"
 [ -s "$OUT" ] || { echo "ERROR: empty backup file" >&2; exit 1; }
 chmod 0600 "$OUT"

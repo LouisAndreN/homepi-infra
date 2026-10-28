@@ -30,7 +30,7 @@ if [ -n "${SUDO_USER:-}" ]; then
 fi
 influx ping >/dev/null || { echo "ERROR: influx not reachable" >&2; exit 1; }
 
-STAMP=$(date +%F-%H%M)
+STAMP=$(date +%F-%H%M%S)
 WORK=$DEST/lp-work-$STAMP
 SNAP=$WORK/snap
 install -d -m 0711 "$DEST"
@@ -116,6 +116,7 @@ rm -rf "$SNAP"
 
 # 5) Encrypt everything
 OUT=$DEST/influx-lp-$STAMP.tar.age
+[ ! -e "$OUT" ] || { echo "ERROR: $OUT already exists, refusing to overwrite it" >&2; exit 1; }
 tar -C "$WORK" -cf - . | age "${RECIPIENTS[@]}" > "$OUT"
 [ -s "$OUT" ] || { echo "ERROR: empty backup file" >&2; exit 1; }
 chmod 0600 "$OUT"

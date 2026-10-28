@@ -21,7 +21,8 @@ case "$KIND" in
   *) echo "usage: $0 state|influx-lp" >&2; exit 2 ;;
 esac
 METRICS="$METRICS_DIR/homepi_backup_${KIND//-/_}.prom"
-NAME_REGEX=".*/$PREFIX-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}\.tar\.age"
+# Archives are named to the second; older ones were named to the minute
+NAME_REGEX=".*/$PREFIX-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}([0-9]{2})?\.tar\.age"
 
 log() { echo "homepi-backup: $KIND: $*"; }
 
