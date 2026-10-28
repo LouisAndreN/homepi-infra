@@ -42,3 +42,9 @@
   loop: "{{ monitoring_symlinks }}"
   loop_control:
     label: "{{ item.dest }}"
+
+- name: Remove binaries left over by earlier manual installs
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ monitoring_obsolete_files }}"

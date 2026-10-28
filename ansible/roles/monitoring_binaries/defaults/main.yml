@@ -15,3 +15,7 @@ monitoring_users:
 monitoring_symlinks:
   - { src: /opt/prometheus/prometheus, dest: /usr/local/bin/prometheus }
   - { src: /opt/prometheus/promtool, dest: /usr/local/bin/promtool }
+
+# Binaries left over by manual installs. Nothing refers to them; the running ones are pinned above.
+monitoring_obsolete_files:
+  - /usr/local/bin/node_exporter-old
