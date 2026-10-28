@@ -158,7 +158,7 @@
     },
     {
       "datasource": {
-        "type": "influxdb",
+        "type": "prometheus",
         "uid": "efhfdmbjuoiyob"
       },
       "fieldConfig": {
@@ -267,7 +267,7 @@
       "targets": [
         {
           "datasource": {
-            "type": "influxdb",
+            "type": "prometheus",
             "uid": "efhfdmbjuoiyob"
           },
           "editorMode": "code",
