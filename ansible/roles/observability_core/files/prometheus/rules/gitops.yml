@@ -54,3 +54,21 @@ groups:
         annotations:
           summary: "The reconciler exports no metrics"
           description: "The textfile of homepi-gitops-sync is missing or node_exporter does not read it."
+
+      - alert: GitopsTerraformFailing
+        expr: homepi_gitops_terraform_success == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The Terraform step of the reconciler is failing"
+          description: "Init, plan, apply or the destroy guard failed. Read: journalctl -u homepi-gitops@apply.service"
+
+      - alert: GitopsTerraformDrift
+        expr: homepi_gitops_terraform_planned_changes > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Grafana differs from its Terraform code"
+          description: "{{ $value }} Grafana object(s) would change if Terraform were applied again."

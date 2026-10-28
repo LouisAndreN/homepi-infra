@@ -150,6 +150,8 @@ run_terraform() {
     fi
     terraform apply -input=false -no-color -lock-timeout=60s "$plan" > /dev/null \
       || { TF_REASON="terraform apply failed"; rm -f "$plan"; tf_metrics 0; return 1; }
+    log "terraform: applied $PLANNED change(s)"
+    PLANNED=0 DESTROYS=0
   fi
   rm -f "$plan"
   tf_metrics 1
