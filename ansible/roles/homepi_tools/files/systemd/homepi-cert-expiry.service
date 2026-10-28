@@ -1,0 +1,6 @@
+[Unit]
+Description=Export PKI certificate expiry for Prometheus
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/homepi-cert-expiry.sh

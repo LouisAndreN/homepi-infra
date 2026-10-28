@@ -25,3 +25,25 @@
     - homepi-cert-expiry.sh
     - homepi-netbird-status.sh
     - zram-metrics.sh
+
+- name: Install the collector units and timers
+  ansible.builtin.copy:
+    src: "systemd/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ homepi_tools_units }}"
+  register: homepi_tools_unit_files
+
+- name: Reload systemd when a collector unit changed
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: homepi_tools_unit_files is changed
+
+- name: Enable and start the collector timers
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ homepi_tools_timers }}"

@@ -1,0 +1,13 @@
+---
+homepi_tools_units:
+  - homepi-cert-expiry.service
+  - homepi-cert-expiry.timer
+  - homepi-netbird-status.service
+  - homepi-netbird-status.timer
+  - zram-metrics.service
+  - zram-metrics.timer
+
+homepi_tools_timers:
+  - homepi-cert-expiry.timer
+  - homepi-netbird-status.timer
+  - zram-metrics.timer
