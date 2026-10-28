@@ -6,9 +6,9 @@ resource "grafana_data_source" "influxdb" {
   access_mode = "proxy"
   is_default  = true
 
-  # Observed in production: basic auth is on with an empty user name. Kept as is by the import;
-  # it is changed in a separate commit once a query has been tested without it.
-  basic_auth_enabled = true
+  # Basic auth was on with an empty user name, a leftover: Flux queries authenticate with the
+  # InfluxDB token. Turned off after a test query through the Grafana API, before and after.
+  basic_auth_enabled = false
 
   json_data_encoded = jsonencode({
     defaultBucket = "iot-hot"
