@@ -55,3 +55,8 @@ resource "grafana_data_source" "loki" {
     pdcInjected = false
   })
 }
+
+resource "grafana_folder" "homepi" {
+  uid   = "homepi"
+  title = "HomePi"
+}
