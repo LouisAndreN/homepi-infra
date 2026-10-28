@@ -8,3 +8,4 @@
     - observability_core
     - gitops_runtime
     - terraform_cli
+    - homepi_tools

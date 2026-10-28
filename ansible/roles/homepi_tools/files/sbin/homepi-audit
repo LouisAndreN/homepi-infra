@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+# homepi-audit: inventory everything that must be classified (IaC / backup / regenerate).
+set -uo pipefail
+OUT=${1:-/tmp/homepi-audit}
+rm -rf "$OUT"; mkdir -p "$OUT"
+
+apt-mark showmanual | sort                                        > "$OUT/01-packages-manual.txt"
+ls -1 /etc/apt/sources.list.d/ 2>/dev/null                        > "$OUT/02-apt-sources.txt"
+systemctl list-unit-files --state=enabled --no-legend | awk '{print $1}' | sort > "$OUT/03-units-enabled.txt"
+systemctl list-timers --all --no-legend                           > "$OUT/04-timers.txt"
+find /etc/systemd/system -maxdepth 2 -type f                      > "$OUT/05-units-custom.txt"
+dpkg -V 2>/dev/null | awk '$2=="c"{print $3}'                     > "$OUT/06-conffiles-modified.txt"
+find /etc -type f -print0 | xargs -0 -n50 dpkg -S 2>&1 >/dev/null \
+  | sed -n 's/.*no path found matching pattern //p'               > "$OUT/07-etc-unowned.txt"
+find /usr/local /opt /srv -maxdepth 3 2>/dev/null                 > "$OUT/08-local-trees.txt"
+awk -F: '$3>=100 && $3<1000{print $1":"$3":"$7}' /etc/passwd      > "$OUT/09-system-users.txt"
+ss -tulpnH                                                        > "$OUT/10-listening.txt"
+nft list ruleset                                                  > "$OUT/11-nftables.txt" 2>&1
+{ for u in root srvpi; do echo "== $u"; crontab -u "$u" -l 2>&1; done
+  ls -1 /etc/cron.d /etc/cron.daily 2>/dev/null; }                > "$OUT/12-crontabs.txt"
+for v in $(find /opt /home /srv -maxdepth 4 -name pyvenv.cfg -printf '%h\n' 2>/dev/null); do
+  echo "== $v"; "$v/bin/pip" freeze 2>/dev/null
+done                                                              > "$OUT/13-venvs.txt"
+find /etc /var/lib -type f \( -perm 0600 -o -perm 0640 -o -perm 0400 \) 2>/dev/null \
+  | sort                                                          > "$OUT/14-secret-paths.txt"
+if command -v docker >/dev/null; then docker ps -a > "$OUT/15-docker.txt" 2>&1; else echo "no docker" > "$OUT/15-docker.txt"; fi
+# State candidates: databases, CA configs, data directories (paths only)
+{ find / -xdev \( -name ca.json -o -name '*.db' -o -name '*.sqlite*' -o -name '*.bolt' -o -name 'users*.yml' \) \
+    -not -path '/proc/*' -not -path '/usr/share/*' -not -path '/usr/lib/*' 2>/dev/null
+  ls -d /var/lib/influxdb* /root/.influxdbv2 /var/lib/loki* /var/lib/prometheus* /var/lib/grafana \
+        /var/lib/authelia* /var/lib/netbird* /var/lib/homepi /etc/homepi 2>/dev/null; } \
+                                                                  > "$OUT/16-state-candidates.txt"
+echo "Audit written to $OUT  (contains network rules and paths: do NOT commit it)"

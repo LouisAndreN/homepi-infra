@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+# homepi-triage v2: classify audit paths (first matching rule wins), print a grouped summary.
+set -uo pipefail
+AUDIT=${1:-/tmp/homepi-audit}
+OUT=${2:-/tmp/homepi-triage.tsv}
+
+classify() {
+  case "$1" in
+    # agent-managed files: never template these
+    *netbird*)                                              echo REGENERATE ;;
+    # storage layer: documented, never automated
+    /etc/crypttab|/etc/fstab|/etc/initramfs-tools/*|/etc/mdadm/*|/etc/systemd/*.mount*|/etc/homepi/age.key|/etc/homepi/allowed_signers) echo MANUAL ;;
+    /etc/lvm/backup/*)                                      echo BACKUP_OPTIONAL ;;
+    # stale copies: delete or archive
+    *.bak|*.bak.*|*.old|*.save|*.dpkg-old|*.ucf-old|*.ucf-dist) echo REVIEW ;;
+    # noise: generated or package defaults
+    /etc/lvm/archive/*|/etc/console-setup/*|/etc/default/console-setup|/etc/default/keyboard|/etc/default/flash-kernel|/etc/apparmor.d/*|/etc/xml/*|/etc/cloud/*|/etc/tmpfiles.d/*) echo IGNORE ;;
+    /etc/resolv.conf|/etc/.*|/etc/machine-id|/etc/ld.so.cache|/etc/passwd*|/etc/group*|/etc/shadow*|/etc/gshadow*|/etc/subuid*|/etc/subgid*|/etc/security/opasswd|/etc/mailcap|/etc/networks|/etc/shells|/etc/inputrc|/etc/profile|/etc/python3/*|/etc/iscsi/*|/etc/ca-certificates.conf|/etc/nsswitch.conf|/etc/hosts.allow|/etc/hosts.deny|/etc/default/mdadm|/etc/rsyslog.d/*) echo IGNORE ;;
+    /var/lib/cloud/*|/var/lib/apt/*|/var/lib/dpkg/*|/var/lib/ucf/*|/var/lib/systemd/*|/var/lib/logrotate/*|/var/lib/btrfs/*|/var/lib/fwupd/*|/var/lib/raspberrypi/*|/var/lib/dhcpcd/*|/var/lib/GeoIP/*|/var/lib/ubuntu-advantage/*|/var/lib/influxdb/.cache/*) echo IGNORE ;;
+    /usr/local/lib/python3*)                                echo REVIEW ;;
+    /usr/local/*|/opt|/srv)                                 echo IGNORE ;;
+    /etc/fwupd/*|/usr/local)                                echo IGNORE ;;
+    /opt/containerd|/opt/containerd/*)                      echo IGNORE ;;
+    /opt/homepi-dashboard)                                  echo SOURCE ;;
+    # --- refinements from the systemd inventory ---
+    /etc/nginx/ssl/*|/etc/mosquitto/certs/*|/var/lib/homepi/floorplans.json|/var/lib/homepi/led_presets.json|/var/lib/homepi/devices.db*) echo BACKUP ;;
+    /var/lib/homepi/crl.pem)                                 echo REGENERATE ;;
+    /var/lib/homepi/*.bak|/var/lib/homepi/audit-exec-correlator.state) echo IGNORE ;;
+    /etc/systemd/system/*.service.d/secrets.conf|/etc/systemd/system/telegraf.service.d/*) echo SOPS ;;
+    /etc/systemd/system/iot-*|/opt/iot-platform|/opt/iot-platform/*) echo REVIEW ;;
+    /opt/alertmanager|/opt/alertmanager/*|/usr/local/bin/prometheus|/usr/local/bin/loki|/usr/local/bin/node_exporter) echo REGENERATE ;;
+    /usr/local/bin/*.sh|/etc/prometheus/*|/etc/alertmanager/*|/etc/loki/*) echo ANSIBLE_V1 ;;
+    /etc/systemd/system/mnt-data-*.mount) echo MANUAL ;;
+    # --- /opt layout discovered by the audit ---
+    /opt/homepi-dashboard/node_modules*|/opt/homepi-dashboard/dist*|*/__pycache__*|/opt/*/venv*|/opt/homepi/api-venv*) echo REGENERATE ;;
+    /opt/iot-platform/data*|/opt/homepi/data*)              echo BACKUP ;;
+    /opt/homepi/ota*|/opt/homepi/firmware*)                 echo BACKUP_OPTIONAL ;;
+    /opt/prometheus|/opt/prometheus/*)                      echo REGENERATE ;;
+    /opt/homepi-dashboard/*|/opt/homepi/api|/opt/homepi/api/*|/opt/iot-platform/*.py) echo SOURCE ;;
+    /opt/pironman5|/opt/pironman5/*|/opt/verify-boot.sh|/opt/homepi/crl_sync.sh|/opt/homepi/audit_exec_correlator.py|/opt/homepi/scripts*) echo ANSIBLE_V11 ;;
+    /opt|/opt/homepi|/opt/homepi/|/opt/iot-platform|/opt/iot-platform/|/srv|/var/lib/homepi|/var/lib/grafana|/var/lib/authelia) echo IGNORE ;;
+    # secrets that Ansible renders from SOPS variables
+    /var/lib/secrets/*.env|/etc/homepi/api.env|/etc/GeoIP.conf|/etc/wpa_supplicant/*) echo SOPS ;;
+    # irreplaceable state
+    /etc/step-ca/*|/etc/homepi/step-ca/*|/etc/homepi/master.key|/etc/homepi/nilm_calibration.json) echo BACKUP ;;
+    /etc/authelia/users_database.yml|/var/lib/authelia/db.sqlite3|/var/lib/grafana/grafana.db|/var/lib/influxdb/influxdb2/*|/var/lib/influxdb|/var/lib/homepi/*|/etc/mosquitto/passwd|/etc/mosquitto/acl/*) echo BACKUP ;;
+    /var/lib/loki*|/var/lib/prometheus*)                    echo BACKUP_OPTIONAL ;;
+    # re-creatable state
+    /var/lib/grafana/plugins/*|/var/lib/crowdsec/*|/var/lib/mosquitto/*|/var/lib/alloy/*|/root/.influxdbv2*|/var/lib/authelia/notification.txt|/etc/ssh/ssh_host_*|/etc/crowdsec/*credentials*|/etc/mosquitto/certs/*|/etc/nginx/certs/*|/etc/ssl/homepi*|*.crt|*.pem|*/pyvenv.cfg|/var/www/*) echo REGENERATE ;;
+    # decisions to take
+    /etc/ufw/*|/etc/iptables/*|/etc/nftables.conf*|/etc/fail2ban/*|/var/lib/docker*|/root/.step/*|/etc/pam.d/*|/etc/default/telegraf|/etc/authelia/*|/etc/homepi|/etc/homepi/*) echo REVIEW ;;
+    # Terraform replaces Grafana provisioning files
+    /etc/grafana/provisioning/*)                            echo TERRAFORM ;;
+    # roles for v1.1
+    /etc/systemd/system/step-ca*|/etc/systemd/system/mosquitto*|/etc/systemd/system/hostapd*|/etc/systemd/system/crowdsec*) echo ANSIBLE_V11 ;;
+    /etc/netplan/*|/etc/systemd/network/*|/etc/hostapd/*|/etc/default/hostapd|/etc/default/isc-dhcp-server|/etc/dnsmasq*|/etc/unbound/*|/etc/modprobe.d/*|/etc/modules*|/etc/iproute2/*|/etc/chrony/*|/etc/crowdsec/*|/etc/audit/*|/etc/mosquitto/*) echo ANSIBLE_V11 ;;
+    # roles for v1
+    /etc/systemd/*|/etc/apt/*|/etc/nginx/*|/etc/telegraf/*|/etc/alloy/*|/etc/loki/*|/etc/prometheus/*|/etc/alertmanager/*|/etc/grafana/*|/etc/influxdb/*|/etc/default/*|/etc/logrotate.d/*|/etc/cron*|/etc/sysctl.d/*|/etc/sudoers.d/*|/etc/ssh/*|/etc/hostname|/etc/hosts|/etc/timezone|/etc/locale*|/etc/environment|/etc/watchdog.conf|/usr/local/*) echo ANSIBLE_V1 ;;
+    *)                                                      echo UNCLASSIFIED ;;
+  esac
+}
+
+{ cat "$AUDIT"/05-units-custom.txt "$AUDIT"/06-conffiles-modified.txt \
+      "$AUDIT"/07-etc-unowned.txt  "$AUDIT"/08-local-trees.txt \
+      "$AUDIT"/14-secret-paths.txt "$AUDIT"/16-state-candidates.txt; } \
+  | grep -E '^/' | sort -u | while IFS= read -r p; do printf '%s\t%s\n' "$(classify "$p")" "$p"; done > "$OUT"
+
+echo "== Classes =="
+cut -f1 "$OUT" | sort | uniq -c | sort -rn
+for c in BACKUP SOPS MANUAL REVIEW UNCLASSIFIED; do
+  echo; echo "== $c (grouped) =="
+  grep -P "^$c\t" "$OUT" | cut -f2 | awk -F/ '{print "/"$2"/"$3"/"$4}' | sort | uniq -c | sort -rn | head -40
+done

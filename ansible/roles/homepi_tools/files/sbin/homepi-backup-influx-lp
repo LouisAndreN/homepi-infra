@@ -1,0 +1,124 @@
+#!/usr/bin/env bash
+# homepi-backup-influx-lp v2: portable InfluxDB backup (line protocol + definitions), age-encrypted.
+# Restorable on ANY InfluxDB 2.x. Production is stopped only while the data dir is copied.
+# Usage: sudo homepi-backup-influx-lp AGE_RECIPIENT [AGE_RECIPIENT...]
+# Env:   KEEP_WORK=1 keeps the plaintext work dir (needed for the scratch restore test)
+set -euo pipefail
+[ "$EUID" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
+[ $# -ge 1 ] || { echo "usage: $0 AGE_RECIPIENT..." >&2; exit 1; }
+RECIPIENTS=()
+for r in "$@"; do
+  [[ "$r" == age1* ]] || { echo "ERROR: invalid age recipient '$r' (set LAPTOP_PUB and USB_PUB first)" >&2; exit 1; }
+  RECIPIENTS+=(-r "$r")
+done
+for c in age influx influxd python3 curl; do
+  command -v "$c" >/dev/null || { echo "missing command: $c" >&2; exit 1; }
+done
+
+SRC=/var/lib/influxdb/influxdb2
+ORG=iot-org
+BUCKETS=(iot-hot iot-archives)
+DEST=/mnt/data/backups/homepi
+PORT=18087
+[ -d "$SRC/engine" ] || { echo "engine dir not found: $SRC/engine" >&2; exit 1; }
+mountpoint -q /mnt/data/backups || { echo "ERROR: /mnt/data/backups is not mounted" >&2; exit 1; }
+
+# Use the invoking user's influx CLI config (root has none)
+if [ -n "${SUDO_USER:-}" ]; then
+  cfg="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.influxdbv2/configs"
+  if [ -r "$cfg" ]; then export INFLUX_CONFIGS_PATH="$cfg"; fi
+fi
+influx ping >/dev/null || { echo "ERROR: influx not reachable" >&2; exit 1; }
+
+STAMP=$(date +%F-%H%M)
+WORK=$DEST/lp-work-$STAMP
+SNAP=$WORK/snap
+install -d -m 0711 "$DEST"
+install -d -m 0700 -o influxdb -g influxdb "$WORK"
+sudo -u influxdb test -w "$WORK" || { echo "ERROR: user influxdb cannot write $WORK (check directory permissions)"; exit 1; }
+
+cleanup() {
+  if [ -f "$WORK/scratch.pid" ]; then kill "$(cat "$WORK/scratch.pid")" 2>/dev/null || true; fi
+  systemctl is-active --quiet influxdb || systemctl start influxdb || echo "WARNING: influxdb failed to restart" >&2
+  rm -rf "$SNAP"
+  if [ "${KEEP_WORK:-0}" != 1 ]; then rm -rf "$WORK"; else echo "KEPT plaintext work dir: $WORK"; fi
+}
+trap cleanup EXIT
+
+# 1) Definitions (documentation + restore reference). No token values (hashed).
+influx bucket list --org "$ORG" --json > "$WORK/buckets.json"
+influx task   list --org "$ORG" --json > "$WORK/tasks.json"
+influx auth   list --json              > "$WORK/auth-metadata.json"
+if [ -f /tmp/downsample.flux ]; then cp /tmp/downsample.flux "$WORK/downsample.flux"; else echo "note: /tmp/downsample.flux missing" >&2; fi
+
+declare -A IDS
+for b in "${BUCKETS[@]}"; do
+  IDS[$b]=$(influx bucket list --org "$ORG" --name "$b" --json | python3 -c 'import sys,json; print(json.load(sys.stdin)[0]["id"])')
+  echo "bucket $b -> ${IDS[$b]}"
+done
+
+# 2) Short outage: copy engine + metadata only
+install -d -m 0700 -o influxdb -g influxdb "$SNAP"
+systemctl stop influxdb
+date -u +%Y-%m-%dT%H:%M:%SZ > "$WORK/stop_time_utc.txt"
+cp -a "$SRC/engine" "$SNAP/engine"
+cp -a "$SRC/influxd.bolt" "$SNAP/influxd.bolt"
+if [ -f "$SRC/influxd.sqlite" ]; then cp -a "$SRC/influxd.sqlite" "$SNAP/influxd.sqlite"; fi
+systemctl start influxdb
+echo "InfluxDB restarted; snapshot taken at $(cat "$WORK/stop_time_utc.txt")"
+
+# 3) Throw-away influxd on the snapshot: replays the WAL, then snapshots it to TSM when cold (5s)
+sudo -u influxdb sh -c "nohup influxd --bolt-path '$SNAP/influxd.bolt' --engine-path '$SNAP/engine' \
+  --sqlite-path '$SNAP/influxd.sqlite' --http-bind-address 127.0.0.1:$PORT --no-tasks --reporting-disabled \
+  --storage-wal-flush-on-shutdown --storage-cache-snapshot-write-cold-duration 5s \
+  > '$WORK/scratch.log' 2>&1 & echo \$! > '$WORK/scratch.pid'"
+for i in $(seq 1 60); do
+  if curl -fs "http://127.0.0.1:$PORT/health" >/dev/null; then break; fi
+  sleep 1
+done
+curl -fs "http://127.0.0.1:$PORT/health" >/dev/null || { echo "ERROR: scratch influxd did not start, see $WORK/scratch.log" >&2; KEEP_WORK=1; exit 1; }
+
+wal_left() {
+  for b in "${BUCKETS[@]}"; do find "$SNAP/engine/wal/${IDS[$b]}" -name '*.wal' -size +0 2>/dev/null; done | wc -l
+}
+for i in $(seq 1 90); do
+  if [ "$(wal_left)" -eq 0 ]; then break; fi
+  sleep 2
+done
+if [ "$(wal_left)" -ne 0 ]; then
+  echo "ERROR: WAL not consolidated into TSM; backup would be incomplete. Remaining:" >&2
+  for b in "${BUCKETS[@]}"; do find "$SNAP/engine/wal/${IDS[$b]}" -name '*.wal' -size +0 -printf '%s %p\n' 2>/dev/null; done >&2
+  KEEP_WORK=1; exit 1
+fi
+echo "WAL consolidated into TSM"
+
+kill "$(cat "$WORK/scratch.pid")"
+for i in $(seq 1 60); do
+  if ! kill -0 "$(cat "$WORK/scratch.pid")" 2>/dev/null; then break; fi
+  sleep 1
+done
+if kill -0 "$(cat "$WORK/scratch.pid")" 2>/dev/null; then echo "ERROR: scratch influxd did not stop" >&2; KEEP_WORK=1; exit 1; fi
+rm -f "$WORK/scratch.pid"
+
+# 4) Export each bucket from the consolidated snapshot as gzip'd line protocol
+for b in "${BUCKETS[@]}"; do
+  if [ -d "$SNAP/engine/data/${IDS[$b]}" ]; then
+    sudo -u influxdb influxd inspect export-lp \
+      --bucket-id "${IDS[$b]}" --engine-path "$SNAP/engine" \
+      --output-path "$WORK/$b.lp.gz" --compress
+    [ -s "$WORK/$b.lp.gz" ] || { echo "ERROR: empty export for $b" >&2; KEEP_WORK=1; exit 1; }
+    echo "$b: sample of the export:"; zcat "$WORK/$b.lp.gz" | head -2 || true
+  else
+    echo "note: no engine data for $b, nothing to export" >&2
+  fi
+done
+rm -rf "$SNAP"
+
+# 5) Encrypt everything
+OUT=$DEST/influx-lp-$STAMP.tar.age
+tar -C "$WORK" -cf - . | age "${RECIPIENTS[@]}" > "$OUT"
+[ -s "$OUT" ] || { echo "ERROR: empty backup file" >&2; exit 1; }
+chmod 0600 "$OUT"
+( cd "$DEST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
+ls -l "$OUT"
+echo "DONE"

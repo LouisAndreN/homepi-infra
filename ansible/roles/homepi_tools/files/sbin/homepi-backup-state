@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# homepi-backup-state v3: safety net for everything that is not InfluxDB data (age-encrypted).
+# Usage: sudo homepi-backup-state AGE_RECIPIENT [AGE_RECIPIENT...]
+set -euo pipefail
+[ "$EUID" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
+[ $# -ge 1 ] || { echo "usage: $0 AGE_RECIPIENT..." >&2; exit 1; }
+RECIPIENTS=()
+for r in "$@"; do
+  [[ "$r" == age1* ]] || { echo "ERROR: invalid age recipient '$r'" >&2; exit 1; }
+  RECIPIENTS+=(-r "$r")
+done
+for c in age sqlite3 tar; do
+  command -v "$c" >/dev/null || { echo "missing command: $c (apt install age sqlite3)" >&2; exit 1; }
+done
+
+DEST=/mnt/data/backups/homepi
+mountpoint -q /mnt/data/backups || { echo "ERROR: /mnt/data/backups is not mounted" >&2; exit 1; }
+STAMP=$(date +%F-%H%M)
+WORK=$DEST/state-work-$STAMP
+install -d -m 0711 "$DEST"
+install -d -m 0700 "$WORK"
+
+CA_STOPPED=0
+cleanup() {
+  if [ "$CA_STOPPED" = 1 ]; then systemctl start step-ca || echo "WARNING: step-ca failed to restart" >&2; fi
+  rm -rf "$WORK"
+}
+trap cleanup EXIT
+
+# 1) SQLite databases: online-consistent copies (WAL-safe)
+for db in /var/lib/grafana/grafana.db /var/lib/authelia/db.sqlite3 /var/lib/homepi/devices.db; do
+  if [ -f "$db" ]; then
+    install -d "$WORK/sqlite$(dirname "$db")"
+    sqlite3 "$db" ".backup '$WORK/sqlite$db'"
+    echo "sqlite ok: $db"
+  else
+    echo "skip (missing): $db" >&2
+  fi
+done
+
+# 2) Configuration and state files. step-ca (BadgerDB) is stopped briefly: unsafe to copy live.
+#    tar exit code 1 only means "a file changed while reading": acceptable here.
+if systemctl is-active --quiet step-ca; then systemctl stop step-ca; CA_STOPPED=1; fi
+rc=0
+tar -C / -cf "$WORK/etc-and-state.tar" \
+  --exclude='etc/homepi/age.key' --exclude='etc/shadow*' --exclude='etc/gshadow*' \
+  --exclude='var/lib/homepi/*.db*' \
+  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets || rc=$?
+[ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
+if [ "$CA_STOPPED" = 1 ]; then systemctl start step-ca; CA_STOPPED=0; fi
+
+# 3) Application code under /opt (no venvs, node_modules, build output or reinstallable binaries)
+rc=0
+tar -C / -cf "$WORK/opt.tar" \
+  --exclude='*/node_modules' --exclude='*/venv' --exclude='*/api-venv' --exclude='*/dist' \
+  --exclude='*/__pycache__' --exclude='opt/prometheus' --exclude='opt/alertmanager' --exclude='opt/containerd' \
+  opt || rc=$?
+[ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
+
+# 4) Encrypt everything
+du -sh "$WORK"/*.tar
+OUT=$DEST/homepi-state-$STAMP.tar.age
+tar -C "$WORK" -cf - . | age "${RECIPIENTS[@]}" > "$OUT"
+[ -s "$OUT" ] || { echo "ERROR: empty backup file" >&2; exit 1; }
+chmod 0600 "$OUT"
+( cd "$DEST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
+ls -l "$OUT"
+echo "DONE"

@@ -1,0 +1,27 @@
+---
+# Admin scripts: audit, triage and backups. Root only, as they read secrets and state.
+- name: Install the HomePi admin scripts
+  ansible.builtin.copy:
+    src: "sbin/{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0750"
+  loop:
+    - homepi-audit
+    - homepi-backup-influx-lp
+    - homepi-backup-state
+    - homepi-triage
+
+# Metric collectors that write node_exporter textfiles (certificate expiry, NetBird, zram)
+- name: Install the metric collector scripts
+  ansible.builtin.copy:
+    src: "bin/{{ item }}"
+    dest: "/usr/local/bin/{{ item }}"
+    owner: root
+    group: root
+    mode: "0755"
+  loop:
+    - homepi-cert-expiry.sh
+    - homepi-netbird-status.sh
+    - zram-metrics.sh
