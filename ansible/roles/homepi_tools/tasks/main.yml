@@ -43,6 +43,17 @@
     group: root
     mode: "0644"
 
+- name: Install the Influx CLI config of the backups (token decrypted on the controller)
+  vars:
+    influx_secrets: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml') | from_yaml }}"
+  no_log: true
+  ansible.builtin.template:
+    src: influx-configs.j2
+    dest: /etc/homepi-backup/influx-configs
+    owner: root
+    group: root
+    mode: "0600"
+
 - name: Install the collector units and timers
   ansible.builtin.copy:
     src: "systemd/{{ item }}"

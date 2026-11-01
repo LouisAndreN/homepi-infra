@@ -1,0 +1,6 @@
+# Managed by Ansible (homepi_tools). Influx CLI config used by the backup scripts, whoever runs them.
+[homepi-backup]
+  url = "{{ influx_secrets.influx_backup_url }}"
+  token = "{{ influx_secrets.influx_backup_token }}"
+  org = "{{ influx_secrets.influx_backup_org }}"
+  active = true

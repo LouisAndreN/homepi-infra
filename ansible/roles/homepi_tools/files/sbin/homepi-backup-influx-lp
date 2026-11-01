@@ -23,11 +23,10 @@ PORT=18087
 [ -d "$SRC/engine" ] || { echo "engine dir not found: $SRC/engine" >&2; exit 1; }
 mountpoint -q /mnt/data/backups || { echo "ERROR: /mnt/data/backups is not mounted" >&2; exit 1; }
 
-# Use the invoking user's influx CLI config (root has none)
-if [ -n "${SUDO_USER:-}" ]; then
-  cfg="$(getent passwd "$SUDO_USER" | cut -d: -f6)/.influxdbv2/configs"
-  if [ -r "$cfg" ]; then export INFLUX_CONFIGS_PATH="$cfg"; fi
-fi
+# Influx CLI config installed by Ansible from SOPS: the backup must not depend on who runs it
+# (it used the sudo user's config, which does not exist when systemd starts the script)
+export INFLUX_CONFIGS_PATH=/etc/homepi-backup/influx-configs
+[ -r "$INFLUX_CONFIGS_PATH" ] || { echo "ERROR: $INFLUX_CONFIGS_PATH is missing" >&2; exit 1; }
 influx ping >/dev/null || { echo "ERROR: influx not reachable" >&2; exit 1; }
 
 STAMP=$(date +%F-%H%M%S)
