@@ -1,0 +1,91 @@
+---
+- name: Create the AWS edge directory (certificate, key, config; root only)
+  ansible.builtin.file:
+    path: "{{ aws_edge_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Create the versioned directory of the credential helper
+  ansible.builtin.file:
+    path: "{{ aws_edge_helper_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the pinned IAM Roles Anywhere credential helper (checksum verified)
+  ansible.builtin.get_url:
+    url: "{{ gitops_tools.aws_signing_helper.url }}"
+    dest: "{{ aws_edge_helper_dir }}/aws_signing_helper"
+    checksum: "sha256:{{ gitops_tools.aws_signing_helper.sha256 }}"
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Point /usr/local/bin/aws_signing_helper at the pinned version
+  ansible.builtin.file:
+    src: "{{ aws_edge_helper_dir }}/aws_signing_helper"
+    dest: /usr/local/bin/aws_signing_helper
+    state: link
+    # In check mode the binary is not downloaded yet, so the link target may not exist
+    force: "{{ ansible_check_mode }}"
+
+- name: Install the aws-edge provisioner password and the AWS config
+  vars:
+    aws_edge_secrets: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/aws.sops.yaml') | from_yaml }}"
+  no_log: true
+  block:
+    - name: Install the step-ca provisioner password (decrypted on the controller)
+      ansible.builtin.copy:
+        content: "{{ aws_edge_secrets.aws_edge_provisioner_password }}"
+        dest: "{{ aws_edge_dir }}/provisioner_password"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Install the AWS config with the Roles Anywhere credential process
+      ansible.builtin.template:
+        src: aws-config.j2
+        dest: "{{ aws_edge_dir }}/config"
+        owner: root
+        group: root
+        mode: "0600"
+
+- name: Install the certificate renewal script
+  ansible.builtin.copy:
+    src: homepi-aws-edge-renew
+    dest: /usr/local/sbin/homepi-aws-edge-renew
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the renewal unit and timer
+  ansible.builtin.copy:
+    src: "systemd/{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [homepi-aws-edge-renew.service, homepi-aws-edge-renew.timer]
+  register: aws_edge_units
+
+- name: Reload systemd when a unit changed
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: aws_edge_units is changed
+
+- name: Enable and start the renewal timer
+  ansible.builtin.systemd_service:
+    name: homepi-aws-edge-renew.timer
+    enabled: true
+    state: started
+  when: not (ansible_check_mode and aws_edge_units is changed)
+
+# On a new Pi this issues the first certificate; on this one it only writes the first metric
+- name: Run the renewal once when its metric does not exist yet
+  ansible.builtin.command:
+    cmd: /usr/local/sbin/homepi-aws-edge-renew
+    creates: "{{ aws_edge_metrics }}"
+  when: not ansible_check_mode

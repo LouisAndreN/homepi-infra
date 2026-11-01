@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the IAM Roles Anywhere certificate of the Pi
+After=step-ca.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-aws-edge-renew

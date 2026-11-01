@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily check of the IAM Roles Anywhere certificate
+
+[Timer]
+OnBootSec=10min
+OnCalendar=*-*-* 05:10
+RandomizedDelaySec=1800
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,44 @@
+#!/bin/bash
+# homepi-aws-edge-renew: keep the IAM Roles Anywhere certificate of the Pi valid, export its expiry.
+#   valid for more than 72 hours  -> nothing to do
+#   expires within 72 hours       -> step ca renew (mTLS with the certificate itself, no password)
+#   missing or expired            -> issued again with the dedicated aws-edge provisioner
+set -euo pipefail
+umask 077
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+D=/etc/homepi-aws
+CA=(--ca-url https://127.0.0.1:8443 --root /etc/step-ca/certs/root_ca.crt)
+METRICS=/var/lib/node_exporter/textfile_collector/homepi_aws_edge.prom
+
+log() { echo "homepi-aws-edge: $*"; }
+
+write_metric() {
+  local tmp end
+  end=$(date -d "$(openssl x509 -in "$D/edge.crt" -noout -enddate | cut -d= -f2)" +%s)
+  tmp=$(mktemp "$(dirname "$METRICS")/.tmp.XXXXXX")
+  printf '%s\n' \
+    "homepi_aws_edge_renew_success $1" \
+    "homepi_aws_edge_renew_timestamp_seconds $(date +%s)" \
+    "homepi_aws_edge_cert_expiry_timestamp_seconds $end" > "$tmp"
+  chmod 0644 "$tmp"
+  mv "$tmp" "$METRICS"
+}
+
+# Record a failure, as long as there is a certificate to read the expiry from
+trap '[ -s "$D/edge.crt" ] && write_metric 0 || true' ERR
+
+if [ ! -s "$D/edge.crt" ] || ! openssl x509 -in "$D/edge.crt" -noout -checkend 0 > /dev/null; then
+  log "no valid certificate: issuing a new one with the aws-edge provisioner"
+  step ca certificate homepi-backup "$D/edge.crt" "$D/edge.key" --provisioner aws-edge \
+    --provisioner-password-file "$D/provisioner_password" "${CA[@]}" --kty EC --curve P-256 --force
+elif ! openssl x509 -in "$D/edge.crt" -noout -checkend 259200 > /dev/null; then
+  log "the certificate expires within 72 hours: renewing it"
+  step ca renew --force "${CA[@]}" "$D/edge.crt" "$D/edge.key"
+else
+  log "the certificate is valid for more than 72 hours: nothing to do"
+fi
+chmod 0600 "$D/edge.key"
+chmod 0644 "$D/edge.crt"
+write_metric 1
+log "expires $(openssl x509 -in "$D/edge.crt" -noout -enddate | cut -d= -f2)"

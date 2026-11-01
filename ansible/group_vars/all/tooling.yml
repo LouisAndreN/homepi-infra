@@ -14,3 +14,8 @@ gitops_tools:
     sha256: f32478134ffc6d710eec474bbd316652cdddc0f4e336973a3745e8d3a3309cdf
   # Pinned by terraform/grafana/.terraform.lock.hcl once the first init has run
   grafana_provider_version: "4.52.0"
+  # IAM Roles Anywhere credential helper (AWS build for Amazon Linux 2023, runs on Ubuntu 24.04)
+  aws_signing_helper:
+    version: "1.8.5"
+    url: https://rolesanywhere.amazonaws.com/releases/1.8.5/Aarch64/Linux/Amzn2023/aws_signing_helper
+    sha256: 3d131aa888cd56da446f9c6bb460b1f0569f6c7edc74eae6193a2fe3928883ba

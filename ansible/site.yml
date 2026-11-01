@@ -9,3 +9,4 @@
     - gitops_runtime
     - terraform_cli
     - homepi_tools
+    - aws_edge

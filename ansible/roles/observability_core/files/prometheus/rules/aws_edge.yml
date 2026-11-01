@@ -1,0 +1,29 @@
+groups:
+  - name: homepi-aws-edge
+    rules:
+      - alert: AwsEdgeRenewFailing
+        expr: homepi_aws_edge_renew_success == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Pi cannot renew its AWS certificate"
+          description: "Read: journalctl -u homepi-aws-edge-renew.service"
+
+      - alert: AwsEdgeCertExpiringSoon
+        expr: homepi_aws_edge_cert_expiry_timestamp_seconds - time() < 2 * 86400
+        for: 1h
+        labels:
+          severity: critical
+        annotations:
+          summary: "The AWS certificate of the Pi expires in less than two days"
+          description: "Off-site backups will stop when it expires. Renewal should have happened a day ago."
+
+      - alert: AwsEdgeMetricsMissing
+        expr: absent(homepi_aws_edge_cert_expiry_timestamp_seconds)
+        for: 26h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The AWS certificate renewal exports no metrics"
+          description: "The renewal timer is stopped or node_exporter does not read its textfile."
