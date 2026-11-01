@@ -19,3 +19,5 @@ gitops_tools:
     version: "1.8.5"
     url: https://rolesanywhere.amazonaws.com/releases/1.8.5/Aarch64/Linux/Amzn2023/aws_signing_helper
     sha256: 3d131aa888cd56da446f9c6bb460b1f0569f6c7edc74eae6193a2fe3928883ba
+  # boto3 for the off-site uploads of the Pi (top-level pin; dependencies resolved by pip)
+  boto3_version: "1.43.123"

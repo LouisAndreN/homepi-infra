@@ -1,0 +1,97 @@
+#!/opt/homepi-aws/venv/bin/python3
+"""Upload one verified backup archive off-site with the write-only edge-writer role.
+
+Usage: homepi-offsite-upload ARCHIVE state|influx-lp
+
+The archive is checked against its .sha256 file, then sent with the same SHA-256 so that S3
+rejects any corruption in transit. The bucket default Object Lock retention applies.
+Metrics go to node_exporter; on failure the time of the last success is kept.
+"""
+import base64
+import hashlib
+import os
+import re
+import sys
+import time
+from pathlib import Path
+
+os.environ["AWS_CONFIG_FILE"] = "/etc/homepi-aws/config"
+import boto3  # noqa: E402  (imported after AWS_CONFIG_FILE is set)
+
+BUCKET_FILE = Path("/etc/homepi-aws/bucket")
+METRICS_DIR = Path("/var/lib/node_exporter/textfile_collector")
+KINDS = ("state", "influx-lp")
+
+
+def metrics_file(kind):
+    return METRICS_DIR / ("homepi_offsite_%s.prom" % kind.replace("-", "_"))
+
+
+def write_metrics(kind, lines):
+    tmp = METRICS_DIR / (".tmp.offsite.%d" % os.getpid())
+    tmp.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    tmp.chmod(0o644)
+    tmp.replace(metrics_file(kind))
+
+
+def last_success(kind):
+    try:
+        text = metrics_file(kind).read_text(encoding="utf-8")
+    except OSError:
+        return "0"
+    match = re.search(r"^homepi_offsite_last_success_timestamp_seconds\{[^}]*\} (\S+)$", text, re.M)
+    return match.group(1) if match else "0"
+
+
+def fail(kind, message):
+    label = 'kind="%s"' % kind
+    write_metrics(kind, [
+        "homepi_offsite_upload_success{%s} 0" % label,
+        "homepi_offsite_last_success_timestamp_seconds{%s} %s" % (label, last_success(kind)),
+        "homepi_offsite_last_run_timestamp_seconds{%s} %d" % (label, time.time()),
+    ])
+    sys.exit("homepi-offsite: %s: FAILED: %s" % (kind, message))
+
+
+def main():
+    if len(sys.argv) != 3 or sys.argv[2] not in KINDS:
+        sys.exit("usage: homepi-offsite-upload ARCHIVE state|influx-lp")
+    archive, kind = Path(sys.argv[1]), sys.argv[2]
+
+    try:
+        expected = archive.with_name(archive.name + ".sha256").read_text(encoding="utf-8").split()[0]
+    except (OSError, IndexError):
+        fail(kind, "no checksum file next to %s" % archive.name)
+    digest = hashlib.sha256()
+    with archive.open("rb") as handle:
+        for block in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(block)
+    if digest.hexdigest() != expected:
+        fail(kind, "local checksum mismatch for %s" % archive.name)
+
+    try:
+        bucket = BUCKET_FILE.read_text(encoding="utf-8").strip()
+        s3 = boto3.Session(profile_name="edge-writer").client("s3")
+        with archive.open("rb") as handle:
+            reply = s3.put_object(
+                Bucket=bucket,
+                Key="%s/%s" % (kind, archive.name),
+                Body=handle,
+                ChecksumAlgorithm="SHA256",
+                ChecksumSHA256=base64.b64encode(digest.digest()).decode(),
+            )
+    except Exception as error:  # credentials, network and AWS errors are all reported the same way
+        fail(kind, "%s: %s" % (type(error).__name__, error))
+
+    size, now, label = archive.stat().st_size, int(time.time()), 'kind="%s"' % kind
+    write_metrics(kind, [
+        "homepi_offsite_upload_success{%s} 1" % label,
+        "homepi_offsite_last_success_timestamp_seconds{%s} %d" % (label, now),
+        "homepi_offsite_last_run_timestamp_seconds{%s} %d" % (label, now),
+        "homepi_offsite_upload_bytes{%s} %d" % (label, size),
+    ])
+    print("homepi-offsite: %s: uploaded %s (%d bytes, version %s…)" % (kind, archive.name, size, reply.get("VersionId", "?")[:8]))
+
+
+if __name__ == "__main__":
+    main()
