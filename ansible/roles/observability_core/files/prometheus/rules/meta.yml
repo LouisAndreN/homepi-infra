@@ -1,0 +1,27 @@
+groups:
+  - name: homepi-meta
+    rules:
+      # Always firing on purpose: if it ever disappears from Alertmanager, alerting is broken
+      - alert: Watchdog
+        expr: vector(1)
+        labels:
+          severity: none
+        annotations:
+          summary: "Always firing: proves that alerts flow from Prometheus to Alertmanager"
+
+      - alert: AlertmanagerNotConnected
+        expr: prometheus_notifications_alertmanagers_discovered < 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Prometheus knows no Alertmanager: alerts are evaluated but never sent"
+
+      - alert: AlertNotificationsFailing
+        expr: increase(alertmanager_notifications_failed_total[15m]) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Alertmanager fails to deliver notifications ({{ $labels.integration }})"
+          description: "Check the webhook in /var/lib/secrets/alertmanager.env and the Alertmanager log."

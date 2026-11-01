@@ -8,6 +8,10 @@ route:
   repeat_interval: 4h
   receiver: 'slack-warning'
   routes:
+    # Watchdog always fires: it proves the alert path works and is never notified
+    - matchers:
+        - alertname = Watchdog
+      receiver: 'null'
 #    - matchers:
 #        - severity = critical
 #      receiver: 'pagerduty-critical'
@@ -23,6 +27,8 @@ route:
       repeat_interval: 4h
 
 receivers:
+  - name: 'null'
+
 #  - name: 'pagerduty-critical'
 #    pagerduty_configs:
 #      - routing_key: '${PAGERDUTY_INTEGRATION_KEY}'

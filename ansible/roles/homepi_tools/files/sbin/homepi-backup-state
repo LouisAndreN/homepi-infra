@@ -31,7 +31,13 @@ trap cleanup EXIT
 for db in /var/lib/grafana/grafana.db /var/lib/authelia/db.sqlite3 /var/lib/homepi/devices.db; do
   if [ -f "$db" ]; then
     install -d "$WORK/sqlite$(dirname "$db")"
-    sqlite3 "$db" ".backup '$WORK/sqlite$db'"
+    # Wait up to 30 s for a writer (Grafana cleans up at night), then retry twice
+    for attempt in 1 2 3; do
+      sqlite3 -cmd ".timeout 30000" "$db" ".backup '$WORK/sqlite$db'" && break
+      [ "$attempt" -lt 3 ] || { echo "ERROR: $db stayed locked after 3 attempts" >&2; exit 1; }
+      echo "sqlite locked, retrying in 10 s: $db" >&2
+      sleep 10
+    done
     echo "sqlite ok: $db"
   else
     echo "skip (missing): $db" >&2
@@ -60,6 +66,7 @@ tar -C / -cf "$WORK/opt.tar" \
   --exclude='*/node_modules' --exclude='*/venv' --exclude='*/api-venv' --exclude='*/dist' \
   --exclude='*/__pycache__' --exclude='opt/prometheus' --exclude='opt/alertmanager' --exclude='opt/containerd' \
   --exclude='opt/terraform' --exclude='opt/homepi-gitops' \
+  --exclude='opt/aws-signing-helper' --exclude='opt/homepi-aws' \
   opt || rc=$?
 [ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
 
