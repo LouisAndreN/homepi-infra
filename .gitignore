@@ -30,3 +30,7 @@ __pycache__/
 
 # SOPS-encrypted files are meant to be committed
 !ansible/secrets/
+
+# Terraform state never goes into git
+*.tfstate*
+.terraform/
