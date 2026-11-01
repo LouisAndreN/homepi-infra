@@ -1,0 +1,24 @@
+---
+# Alloy: log collection to Loki. The label rules are documented at the top of files/config.alloy.
+- name: Install the Alloy configuration (rejected by alloy validate if it is broken)
+  ansible.builtin.copy:
+    src: config.alloy
+    dest: /etc/alloy/config.alloy
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
+    validate: /usr/bin/alloy validate %s
+  register: alloy_config
+
+- name: Restart Alloy when its configuration changed
+  ansible.builtin.systemd:
+    name: alloy
+    state: restarted
+  when: alloy_config is changed
+
+- name: Keep Alloy enabled and running
+  ansible.builtin.systemd:
+    name: alloy
+    enabled: true
+    state: started

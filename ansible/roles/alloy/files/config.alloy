@@ -1,0 +1,186 @@
+// Managed by Ansible (role alloy). Do not edit on the Pi: change ansible/roles/alloy/files/config.alloy.
+//
+// Label rule: only bounded values become Loki labels (job, host, unit, level, key, user, filename).
+// Anything with one value per event (addresses, process names, IPs) stays in the log line and is
+// extracted at query time, e.g. {job="auditd"} | regexp `addr=(?P<addr>\S+)`.
+// Incident 2026-11-01: auditd "addr" and "comm" labels created ~1M streams, exhausted the inodes of /var.
+
+logging {
+  level = "warn"
+}
+
+// ===========================
+// LOGS - systemd journal
+// ===========================
+// The __journal_* labels only exist inside the source, so the rules must be applied through
+// relabel_rules (a separate loki.relabel downstream never saw them).
+loki.relabel "journal" {
+  forward_to = []
+
+  rule {
+    source_labels = ["__journal__systemd_unit"]
+    target_label  = "unit"
+  }
+  // Transient units (sessions, systemd-run, per-user managers) would create one stream each
+  rule {
+    source_labels = ["unit"]
+    regex         = "session-[0-9]+\\.scope|run-.+|.+@[0-9]+\\.service"
+    target_label  = "unit"
+    replacement   = "transient"
+  }
+  rule {
+    source_labels = ["__journal_priority_keyword"]
+    target_label  = "level"
+  }
+}
+
+loki.source.journal "systemd" {
+  forward_to    = [loki.write.loki_local.receiver]
+  relabel_rules = loki.relabel.journal.rules
+  labels        = {
+    job  = "systemd-journal",
+    host = "homepi",
+  }
+  max_age = "12h"
+}
+
+// ==============================
+// LOGS - files /var/log
+// ==============================
+local.file_match "varlog" {
+  path_targets = [
+    {__address__ = "localhost", __path__ = "/var/log/syslog", job = "syslog", host = "homepi"},
+    {__address__ = "localhost", __path__ = "/var/log/auth.log", job = "auth", host = "homepi"},
+    {__address__ = "localhost", __path__ = "/var/log/kern.log", job = "kernel", host = "homepi"},
+  ]
+}
+
+loki.source.file "varlog" {
+  targets    = local.file_match.varlog.targets
+  forward_to = [loki.write.loki_local.receiver]
+}
+
+// =============================
+// LOGS - Auditd
+// =============================
+local.file_match "auditd" {
+  path_targets = [
+    {__address__ = "localhost", __path__ = "/var/log/audit/audit.log", job = "auditd", host = "homepi"},
+  ]
+}
+
+// The full audit record is kept as the log line (it was replaced by the exe path before).
+loki.process "auditd_parser" {
+  forward_to = [loki.write.loki_local.receiver]
+
+  stage.regex {
+    expression = `key="(?P<key>[^"]+)"`
+  }
+
+  stage.regex {
+    expression = `UID="(?P<user>[^"]+)"`
+  }
+
+  stage.labels {
+    values = {
+      key  = "key",
+      user = "user",
+    }
+  }
+}
+
+loki.source.file "auditd" {
+  targets    = local.file_match.auditd.targets
+  forward_to = [loki.process.auditd_parser.receiver]
+}
+
+// =============================
+// LOGS - Auditd exec (correlated)
+// =============================
+local.file_match "auditd_exec" {
+  path_targets = [
+    {__address__ = "localhost", __path__ = "/var/log/homepi/exec-events.jsonl", job = "auditd_exec", host = "homepi"},
+  ]
+}
+
+loki.source.file "auditd_exec" {
+  targets    = local.file_match.auditd_exec.targets
+  forward_to = [loki.process.auditd_exec.receiver]
+}
+
+loki.process "auditd_exec" {
+  forward_to = [loki.write.loki_local.receiver]
+
+  stage.json {
+    expressions = {
+      ts_ms = "ts_ms",
+      user  = "user",
+      key   = "key",
+    }
+  }
+
+  stage.timestamp {
+    source = "ts_ms"
+    format = "UnixMs"
+  }
+
+  stage.labels {
+    values = {
+      user = "user",
+      key  = "key",
+    }
+  }
+}
+
+// =============================
+// LOGS - nftables drops
+// =============================
+// Reads syslog a second time under job="nftables": everything that is not a drop is discarded,
+// otherwise the whole syslog would be stored twice (it was, until 2026-11-02).
+loki.source.file "nftables" {
+  targets = [{
+    __address__ = "localhost",
+    __path__    = "/var/log/syslog",
+    job         = "nftables",
+    host        = "homepi",
+  }]
+  forward_to = [loki.process.nftables_geoip.receiver]
+}
+
+loki.process "nftables_geoip" {
+  forward_to = [loki.write.loki_local.receiver]
+
+  stage.match {
+    selector            = "{job=\"nftables\"} !~ \"NFT-DROP\""
+    action              = "drop"
+    drop_counter_reason = "not_an_nft_drop"
+  }
+
+  // GeoIP fields are extracted but not stored (structured metadata is disabled in Loki):
+  // known limit, see docs/known-limits.md
+  stage.match {
+    selector = "{job=\"nftables\"} |= \"NFT-DROP-INPUT\""
+
+    stage.regex {
+      expression = "SRC=(?P<src_ip>(?:\\d{1,3}\\.){3}\\d{1,3})"
+    }
+
+    stage.geoip {
+      source  = "src_ip"
+      db      = "/var/lib/GeoIP/GeoLite2-City.mmdb"
+      db_type = "city"
+    }
+  }
+}
+
+// ============================
+// DESTINATION - Loki
+// ============================
+loki.write "loki_local" {
+  endpoint {
+    url = "http://127.0.0.1:3100/loki/api/v1/push"
+  }
+  external_labels = {
+    host = "homepi",
+  }
+}

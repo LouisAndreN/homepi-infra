@@ -1,0 +1,105 @@
+# Managed by Ansible (observability_core). Capacity and self-health alerts added after the
+# 2026-11-01 incident: /var ran out of inodes (Loki), Unbound restarted 3323 times, Loki dropped
+# logs and units failed, and none of it raised an alert.
+groups:
+  - name: capacity
+    rules:
+      - alert: FilesystemInodesLow
+        expr: |
+          node_filesystem_files_free{fstype=~"ext4|xfs|btrfs|vfat"}
+            / node_filesystem_files{fstype=~"ext4|xfs|btrfs|vfat"} < 0.10
+          and node_filesystem_files{fstype=~"ext4|xfs|btrfs|vfat"} > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }}: less than 10% of inodes left"
+          description: "{{ $labels.mountpoint }} has {{ $value | humanizePercentage }} of its inodes free. Find the directory holding the most files: find {{ $labels.mountpoint }} -xdev -printf '%h\\n' | sort | uniq -c | sort -rn | head"
+
+      - alert: FilesystemInodesCritical
+        expr: |
+          node_filesystem_files_free{fstype=~"ext4|xfs|btrfs|vfat"}
+            / node_filesystem_files{fstype=~"ext4|xfs|btrfs|vfat"} < 0.03
+          and node_filesystem_files{fstype=~"ext4|xfs|btrfs|vfat"} > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.mountpoint }}: inodes almost exhausted"
+          description: "{{ $labels.mountpoint }} has {{ $value | humanizePercentage }} of its inodes free. At 0, no file can be created (Authelia, Git, apt and the collectors stop working)."
+
+      - alert: FilesystemSpaceLow
+        expr: |
+          node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|vfat"}
+            / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs|vfat"} < 0.10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }}: less than 10% of space left"
+          description: "{{ $labels.mountpoint }} has {{ $value | humanizePercentage }} of its space free."
+
+      - alert: FilesystemFullIn7Days
+        expr: |
+          predict_linear(node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|vfat"}[6h], 7 * 86400) < 0
+          and node_filesystem_avail_bytes{fstype=~"ext4|xfs|btrfs|vfat"}
+            / node_filesystem_size_bytes{fstype=~"ext4|xfs|btrfs|vfat"} < 0.25
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.mountpoint }}: full within 7 days at the current rate"
+          description: "The free space of {{ $labels.mountpoint }} trends to zero within 7 days (6h linear trend)."
+
+      - alert: LokiDiscardingLogs
+        expr: sum by (reason) (increase(loki_discarded_samples_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki is dropping log lines ({{ $labels.reason }})"
+          description: "{{ $value | humanize }} lines dropped in 15 min for reason {{ $labels.reason }}. stream_limit means a label with too many values (check Alloy), rate_limited means too much volume."
+
+      - alert: LokiStreamsNearLimit
+        expr: sum(loki_ingester_memory_streams) > 4000
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Loki holds {{ $value }} streams (limit 5000)"
+          description: "Close to max_global_streams_per_user: a label probably has unbounded values."
+
+      - alert: LokiStreamDirectoriesHigh
+        expr: homepi_loki_stream_dirs > 50000
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} Loki stream directories on /var"
+          description: "Each one costs an inode. Check homepi-loki-housekeeping and the label cardinality."
+
+      - alert: LokiHousekeepingSilent
+        expr: time() - homepi_loki_housekeeping_last_run_timestamp_seconds > 2 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "homepi-loki-housekeeping has not run for 2 days"
+          description: "Empty Loki stream directories are no longer removed."
+
+      - alert: SystemdServiceRestartLoop
+        expr: increase(node_systemd_service_restart_total[1h]) > 5
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.name }} restarted {{ $value | humanize }} times in 1h"
+          description: "A crash loop hidden by Restart=on-failure (Unbound restarted 3323 times on 2026-11-01). Check: journalctl -u {{ $labels.name }}"
+
+      - alert: SystemdUnitFailed
+        expr: node_systemd_unit_state{state="failed"} == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.name }} is in the failed state"
+          description: "Check: systemctl status {{ $labels.name }}; journalctl -u {{ $labels.name }}"

@@ -1,0 +1,30 @@
+---
+# Removes the empty per-stream directories that Loki's filesystem store leaves behind.
+- name: Install the Loki housekeeping script
+  ansible.builtin.copy:
+    src: homepi-loki-housekeeping
+    dest: /usr/local/sbin/homepi-loki-housekeeping
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Install the Loki housekeeping units
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - homepi-loki-housekeeping.service
+    - homepi-loki-housekeeping.timer
+  register: loki_housekeeping_units
+
+# In check mode the units do not exist yet when they are new, so systemd cannot enable them
+- name: Enable the Loki housekeeping timer
+  ansible.builtin.systemd:
+    name: homepi-loki-housekeeping.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ loki_housekeeping_units is changed }}"
+  when: not (ansible_check_mode and loki_housekeeping_units is changed)

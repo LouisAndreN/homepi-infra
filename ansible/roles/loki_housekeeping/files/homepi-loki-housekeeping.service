@@ -1,0 +1,10 @@
+# Managed by Ansible (role loki_housekeeping)
+[Unit]
+Description=HomePi: remove empty Loki stream directories (inode housekeeping)
+After=loki.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-loki-housekeeping
+Nice=10
+IOSchedulingClass=idle

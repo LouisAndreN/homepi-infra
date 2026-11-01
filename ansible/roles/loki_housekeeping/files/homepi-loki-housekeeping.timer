@@ -1,0 +1,11 @@
+# Managed by Ansible (role loki_housekeeping)
+[Unit]
+Description=HomePi: daily Loki inode housekeeping
+
+[Timer]
+OnCalendar=*-*-* 04:45:00
+RandomizedDelaySec=10m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

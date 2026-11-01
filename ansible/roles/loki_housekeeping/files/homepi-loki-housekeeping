@@ -1,0 +1,37 @@
+#!/bin/bash
+# Managed by Ansible (role loki_housekeeping).
+# Loki's filesystem object store creates one directory per stream and never removes it once its
+# chunks expire. Every empty directory still costs an inode: about 1M of them exhausted /var on
+# 2026-11-01. This removes stream directories empty for more than a day and exports metrics.
+set -euo pipefail
+
+CHUNKS=/var/lib/loki/chunks/fake
+PROM_DIR=/var/lib/node_exporter/textfile_collector
+PROM=$PROM_DIR/homepi_loki_housekeeping.prom
+
+if [ ! -d "$CHUNKS" ]; then
+  echo "homepi-loki-housekeeping: $CHUNKS missing, nothing to do"
+  exit 0
+fi
+
+before=$(find "$CHUNKS" -mindepth 1 -maxdepth 1 -type d | wc -l)
+# -empty then -delete is an rmdir: a directory that receives a chunk in between is not removed
+find "$CHUNKS" -mindepth 1 -maxdepth 1 -type d -empty -mmin +1440 -delete 2>/dev/null || true
+after=$(find "$CHUNKS" -mindepth 1 -maxdepth 1 -type d | wc -l)
+removed=$(( before > after ? before - after : 0 ))
+
+tmp=$(mktemp "$PROM_DIR/.homepi_loki_housekeeping.XXXXXX")
+cat > "$tmp" << EOM
+# HELP homepi_loki_stream_dirs Loki stream directories left after housekeeping
+# TYPE homepi_loki_stream_dirs gauge
+homepi_loki_stream_dirs $after
+# HELP homepi_loki_stream_dirs_removed Empty Loki stream directories removed by the last run
+# TYPE homepi_loki_stream_dirs_removed gauge
+homepi_loki_stream_dirs_removed $removed
+# HELP homepi_loki_housekeeping_last_run_timestamp_seconds Time of the last successful run
+# TYPE homepi_loki_housekeeping_last_run_timestamp_seconds gauge
+homepi_loki_housekeeping_last_run_timestamp_seconds $(date +%s)
+EOM
+chmod 0644 "$tmp"
+mv "$tmp" "$PROM"
+echo "homepi-loki-housekeeping: removed $removed empty stream directories, $after left"
