@@ -38,3 +38,27 @@ Last updated: 2026-10-28.
 - **A Terraform update resets the version counter of a Grafana data source to 1.** The `updated` column, not `version`, shows when a data source was written.
 - **Rebuild reproduces configuration, not state.** Restoring state is an explicit step.
 - **Terraform state is local** on the Pi (S3 backend planned for v1.2).
+
+## Added after the 2026-11-01 incident
+
+See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
+
+- **Single alerting path on the Pi.** Alertmanager, its DNS (NetBird then Unbound) and its only
+  channel (Slack) all depend on the Pi being healthy. A degraded Pi cannot report itself. Fix
+  planned: CloudWatch heartbeat with SNS e-mail.
+- **Loki uses the filesystem store on `/var` (ext4).** Empty stream directories are removed daily by
+  `homepi-loki-housekeeping`, a workaround, not a fix. Fix planned: dedicated XFS volume.
+- **Not managed by the repo yet:** Nginx, Authelia, CrowdSec (its whitelist parser is locally
+  modified, "tainted"), Loki, Unbound, NetBird DNS settings. The Pi cannot be fully rebuilt from Git.
+- **InfluxDB downsampling task** is exported from `/tmp/downsample.flux`, which does not survive a
+  reboot, so it is missing from every InfluxDB export. Fix planned with the InfluxDB role.
+- **GeoIP on nftables drops** is extracted by Alloy but never stored (structured metadata is disabled
+  in Loki and the fields are not labels). It currently does nothing.
+- **Prometheus restarts on a rule change** (handler in `monitoring_binaries`) instead of reloading:
+  pending alerts restart their `for:` delay.
+- **Dashboard web manifest** was fixed by hand on the Pi (icon paths). The next dashboard deployment
+  overwrites it unless `public/site.webmanifest` is fixed in the dashboard source.
+- **The `homepi` short name** is accepted by Nginx over HTTPS but covered neither by the certificate
+  nor by Authelia's cookie domain. Only `homepi.internal` works; the short name must be redirected
+  or removed in the Nginx role.
+- **auditd volume** is about 39 lines per second, mostly socket records to `/dev/log`.
