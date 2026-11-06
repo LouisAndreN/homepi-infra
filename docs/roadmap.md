@@ -16,6 +16,7 @@ Rules:
 |---|---|---|
 | A1 | 2026-11-06, commit 360d1d2 | Full history audited (gitleaks clean, 0 private key, 4 SOPS files encrypted, `.sops.yaml` holds the 3 public recipients only); 26 tags on GitHub; `git push pi` pushes to the Pi and GitHub. Rulesets created but not enforced on a free private repository: protection comes from tag signatures checked by the Pi |
 | A2 | 2026-11-06, v0.1.26 | Both kinds in S3 with the local size, a stored SHA-256, GOVERNANCE retention 30 days, one version each; forced failure kept the last success time and raised `OffsiteUploadFailing` (pending); recovery cleared it |
+| A3 | 2026-11-07, v0.1.29 | Alarm to e-mail without the Pi; full chain Pi to CloudWatch to OK; edge-heartbeat denied outside its namespace, on S3 and on reads; game day 1 FAIL (25 min 52 s, analysed and fixed), cadence measured in CloudWatch (10 of 10 minutes), game day 2 PASS: detection 14 min, recovery 4 min, preconditions checked in code (docs/game-days/) |
 
 ## Phase A: close the 2026-11-01 incident actions (now)
 
