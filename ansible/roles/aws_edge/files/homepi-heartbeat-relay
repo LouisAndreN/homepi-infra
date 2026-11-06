@@ -1,0 +1,130 @@
+#!/opt/homepi-aws/venv/bin/python3
+"""Dead man's switch relay: Alertmanager webhook to a CloudWatch heartbeat.
+
+Listens on 127.0.0.1:9095. Alertmanager repeats its always-firing Watchdog alert here every
+5 minutes; each notification publishes HomePi/WatchdogHeartbeat = 1 (dimension host=homepi) with
+the edge-heartbeat role (IAM Roles Anywhere). Anything else is ignored. When the heartbeat stops,
+the CloudWatch alarm homepi-heartbeat-missing e-mails from outside the Pi.
+
+A failed publish answers 500 so that Alertmanager retries. Metrics go to the node_exporter
+textfile collector; the time of the last heartbeat survives a restart of the relay.
+"""
+import json
+import os
+import re
+import sys
+import threading
+import time
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+
+os.environ["AWS_CONFIG_FILE"] = "/etc/homepi-aws/config"
+import boto3  # noqa: E402  (imported after AWS_CONFIG_FILE is set)
+from botocore.config import Config  # noqa: E402
+
+LISTEN = ("127.0.0.1", 9095)
+NAMESPACE, METRIC, HOST = "HomePi", "WatchdogHeartbeat", "homepi"
+METRICS = Path("/var/lib/node_exporter/textfile_collector/homepi_heartbeat.prom")
+MAX_BODY = 1 << 20
+
+lock = threading.Lock()
+state = {"sent": 0, "failures": 0, "last_sent": 0.0, "last_failure": 0.0}
+cloudwatch = boto3.Session(profile_name="edge-heartbeat").client(
+    "cloudwatch", config=Config(connect_timeout=10, read_timeout=10, retries={"max_attempts": 3}))
+
+
+def previous_last_sent():
+    try:
+        text = METRICS.read_text(encoding="utf-8")
+    except OSError:
+        return 0.0
+    match = re.search(r"^homepi_heartbeat_last_sent_timestamp_seconds (\S+)$", text, re.M)
+    return float(match.group(1)) if match else 0.0
+
+
+def write_metrics():
+    lines = [
+        "# HELP homepi_heartbeat_sent_total Heartbeats published to CloudWatch since the relay started",
+        "# TYPE homepi_heartbeat_sent_total counter",
+        "homepi_heartbeat_sent_total %d" % state["sent"],
+        "# HELP homepi_heartbeat_failures_total Failed publishes since the relay started",
+        "# TYPE homepi_heartbeat_failures_total counter",
+        "homepi_heartbeat_failures_total %d" % state["failures"],
+        "# HELP homepi_heartbeat_last_sent_timestamp_seconds Time of the last heartbeat accepted by CloudWatch",
+        "# TYPE homepi_heartbeat_last_sent_timestamp_seconds gauge",
+        "homepi_heartbeat_last_sent_timestamp_seconds %d" % state["last_sent"],
+        "# HELP homepi_heartbeat_last_failure_timestamp_seconds Time of the last failed publish",
+        "# TYPE homepi_heartbeat_last_failure_timestamp_seconds gauge",
+        "homepi_heartbeat_last_failure_timestamp_seconds %d" % state["last_failure"],
+    ]
+    tmp = METRICS.with_name(".homepi_heartbeat.prom.tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.chmod(0o644)
+    tmp.replace(METRICS)
+
+
+def publish():
+    cloudwatch.put_metric_data(
+        Namespace=NAMESPACE,
+        MetricData=[{
+            "MetricName": METRIC,
+            "Dimensions": [{"Name": "host", "Value": HOST}],
+            "Value": 1.0,
+            "Unit": "Count",
+        }],
+    )
+
+
+class Handler(BaseHTTPRequestHandler):
+    server_version = "homepi-heartbeat-relay"
+
+    def do_POST(self):
+        if self.path != "/watchdog":
+            self.send_error(404)
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > MAX_BODY:
+                raise ValueError("invalid Content-Length")
+            alerts = json.loads(self.rfile.read(length)).get("alerts", [])
+        except ValueError as error:  # also covers json.JSONDecodeError
+            self.send_error(400, str(error))
+            return
+        watchdog = any(a.get("status") == "firing" and a.get("labels", {}).get("alertname") == "Watchdog"
+                       for a in alerts)
+        if not watchdog:
+            self.send_response(204)
+            self.end_headers()
+            return
+        with lock:
+            try:
+                publish()
+                state["sent"] += 1
+                state["last_sent"] = time.time()
+                code = 200
+            except Exception as error:  # credentials, DNS, network and AWS errors alike
+                state["failures"] += 1
+                state["last_failure"] = time.time()
+                code = 500
+                print("homepi-heartbeat-relay: publish failed: %s: %s" % (type(error).__name__, error),
+                      file=sys.stderr, flush=True)
+            write_metrics()
+        self.send_response(code)
+        self.end_headers()
+
+    def log_message(self, fmt, *args):
+        # One journal line per request every 5 minutes would only be noise
+        pass
+
+
+def main():
+    with lock:
+        state["last_sent"] = previous_last_sent()
+        write_metrics()
+    server = ThreadingHTTPServer(LISTEN, Handler)
+    print("homepi-heartbeat-relay: listening on %s:%d" % LISTEN, flush=True)
+    server.serve_forever()
+
+
+if __name__ == "__main__":
+    main()

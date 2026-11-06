@@ -146,3 +146,30 @@
     state: started
     daemon_reload: "{{ aws_edge_offsite_units is changed }}"
   when: not (ansible_check_mode and aws_edge_offsite_units is changed)
+
+- name: Install the dead man's switch relay
+  ansible.builtin.copy:
+    src: homepi-heartbeat-relay
+    dest: /usr/local/sbin/homepi-heartbeat-relay
+    owner: root
+    group: root
+    mode: "0750"
+  register: aws_edge_relay_script
+
+- name: Install the relay unit
+  ansible.builtin.copy:
+    src: homepi-heartbeat-relay.service
+    dest: /etc/systemd/system/homepi-heartbeat-relay.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: aws_edge_relay_unit
+
+# In check mode a new unit does not exist yet, so systemd cannot start it
+- name: Run the relay (restarted when its code or unit changed)
+  ansible.builtin.systemd:
+    name: homepi-heartbeat-relay.service
+    enabled: true
+    state: "{{ 'restarted' if (aws_edge_relay_script is changed or aws_edge_relay_unit is changed) else 'started' }}"
+    daemon_reload: "{{ aws_edge_relay_unit is changed }}"
+  when: not (ansible_check_mode and aws_edge_relay_unit is changed)

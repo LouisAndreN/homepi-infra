@@ -1,0 +1,19 @@
+# Managed by Ansible (role aws_edge)
+[Unit]
+Description=HomePi: dead man's switch relay (Alertmanager Watchdog to CloudWatch)
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+ExecStart=/usr/local/sbin/homepi-heartbeat-relay
+Restart=always
+RestartSec=10
+Environment=PYTHONUNBUFFERED=1
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=tmpfs
+PrivateTmp=true
+ReadWritePaths=/var/lib/node_exporter/textfile_collector
+
+[Install]
+WantedBy=multi-user.target

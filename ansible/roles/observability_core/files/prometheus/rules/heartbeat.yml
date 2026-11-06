@@ -1,0 +1,23 @@
+# Managed by Ansible (observability_core). Local side of the dead man's switch: if this alert reaches
+# Slack, Alertmanager works, so the failure is between the relay and CloudWatch. CloudWatch e-mails
+# ALARM at the same time through the independent path.
+groups:
+  - name: homepi-heartbeat
+    rules:
+      - alert: HeartbeatNotPublished
+        expr: time() - homepi_heartbeat_last_sent_timestamp_seconds > 15 * 60
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The dead man's switch heartbeat has not reached CloudWatch for 15 minutes"
+          description: "Alertmanager works (this alert arrived), so the AWS side fails. Read: journalctl -u homepi-heartbeat-relay; check the aws-edge certificate (homepi_aws_edge_* metrics) and DNS."
+
+      - alert: HeartbeatRelayMissing
+        expr: absent(homepi_heartbeat_last_sent_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The heartbeat relay exports no metrics"
+          description: "homepi-heartbeat-relay.service is not running: systemctl status homepi-heartbeat-relay"

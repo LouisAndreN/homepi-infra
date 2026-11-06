@@ -8,10 +8,14 @@ route:
   repeat_interval: 4h
   receiver: 'slack-warning'
   routes:
-    # Watchdog always fires: it proves the alert path works and is never notified
+    # Watchdog always fires. Repeated every 5 min to the heartbeat relay on the Pi, which publishes it
+    # to CloudWatch: when it stops, an alarm e-mails from outside the Pi (dead man's switch)
     - matchers:
         - alertname = Watchdog
-      receiver: 'null'
+      receiver: 'heartbeat'
+      group_wait: 0s
+      group_interval: 1m
+      repeat_interval: 5m
 #    - matchers:
 #        - severity = critical
 #      receiver: 'pagerduty-critical'
@@ -28,6 +32,11 @@ route:
 
 receivers:
   - name: 'null'
+
+  - name: 'heartbeat'
+    webhook_configs:
+      - url: 'http://127.0.0.1:9095/watchdog'
+        send_resolved: false
 
 #  - name: 'pagerduty-critical'
 #    pagerduty_configs:
