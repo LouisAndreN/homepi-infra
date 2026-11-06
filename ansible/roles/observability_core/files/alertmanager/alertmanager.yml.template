@@ -14,8 +14,10 @@ route:
         - alertname = Watchdog
       receiver: 'heartbeat'
       group_wait: 0s
-      group_interval: 1m
-      repeat_interval: 1m
+      # repeat_interval is only checked at each group_interval tick, so the real cadence is about
+      # two ticks: 30s and 30s give about one heartbeat per minute (1m and 1m measured 2 min)
+      group_interval: 30s
+      repeat_interval: 30s
 #    - matchers:
 #        - severity = critical
 #      receiver: 'pagerduty-critical'
