@@ -2,7 +2,7 @@
 """Dead man's switch relay: Alertmanager webhook to a CloudWatch heartbeat.
 
 Listens on 127.0.0.1:9095. Alertmanager repeats its always-firing Watchdog alert here every
-5 minutes; each notification publishes HomePi/WatchdogHeartbeat = 1 (dimension host=homepi) with
+minute; each notification publishes HomePi/WatchdogHeartbeat = 1 (dimension host=homepi) with
 the edge-heartbeat role (IAM Roles Anywhere). Anything else is ignored. When the heartbeat stops,
 the CloudWatch alarm homepi-heartbeat-missing e-mails from outside the Pi.
 
@@ -113,7 +113,7 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
 
     def log_message(self, fmt, *args):
-        # One journal line per request every 5 minutes would only be noise
+        # One journal line per request every minute would only be noise
         pass
 
 
