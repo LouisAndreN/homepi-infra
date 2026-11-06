@@ -69,14 +69,16 @@ groups:
           summary: "Loki holds {{ $value }} streams (limit 5000)"
           description: "Close to max_global_streams_per_user: a label probably has unbounded values."
 
-      - alert: LokiStreamDirectoriesHigh
-        expr: homepi_loki_stream_dirs > 50000
-        for: 1h
+      # Alerts on growth, not on a level: a count that falls (housekeeping working) must stay quiet.
+      # The inode alerts above cover the absolute risk.
+      - alert: LokiStreamDirectoriesGrowing
+        expr: homepi_loki_stream_dirs - homepi_loki_stream_dirs offset 1d > 5000
+        for: 2h
         labels:
           severity: warning
         annotations:
-          summary: "{{ $value }} Loki stream directories on /var"
-          description: "Each one costs an inode. Check homepi-loki-housekeeping and the label cardinality."
+          summary: "Loki stream directories grew by {{ $value }} in 24 hours"
+          description: "New streams are being created faster than retention removes them: a label probably has unbounded values (check Alloy). Each directory costs an inode on /var."
 
       - alert: LokiHousekeepingSilent
         expr: time() - homepi_loki_housekeeping_last_run_timestamp_seconds > 2 * 86400

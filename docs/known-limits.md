@@ -63,3 +63,4 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
   or removed in the Nginx role.
 - **auditd volume** is about 39 lines per second, mostly socket records to `/dev/log`.
 - **Off-site failure metric after a manual failed run**: `homepi_offsite_upload_success` stays at 0 until the next real upload, because a run that finds the newest archive already uploaded does not rewrite it. Never happens in normal operation (a failure leaves the archive unmarked, so the next hour retries). Clear it by removing the newest `.offsite` marker and starting `homepi-offsite.service`.
+- **Alert links point to http://homepi:9093**: a short name without DNS, a closed port and plain HTTP, so the link in a Slack message opens neither from a phone nor outside NetBird. Fix with the Nginx role (B6): Alertmanager behind https://homepi.internal with its external URL set accordingly.

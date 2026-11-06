@@ -55,7 +55,8 @@ receivers:
       - api_url: '${SLACK_WEBHOOK_CRITICAL}'
         channel: '#alerts-critical'
         icon_emoji: ':red_circle:'
-        title: 'CRITICAL - {{ .GroupLabels.alertname }}'
+        title: '[{{ .Status | toUpper }}] CRITICAL - {{ .GroupLabels.alertname }}'
+        color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
         text: |
           *Summary:* {{ .CommonAnnotations.summary }}
           *Description:* {{ .CommonAnnotations.description }}
@@ -67,7 +68,8 @@ receivers:
       - api_url: '${SLACK_WEBHOOK_WARNING}'
         channel: '#alerts-warning'
         icon_emoji: ':warning:'
-        title: 'WARNING - {{ .GroupLabels.alertname }}'
+        title: '[{{ .Status | toUpper }}] WARNING - {{ .GroupLabels.alertname }}'
+        color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
         text: |
           *Summary:* {{ .CommonAnnotations.summary }}
           *Description:* {{ .CommonAnnotations.description }}

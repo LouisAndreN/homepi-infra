@@ -1,0 +1,11 @@
+---
+# DNS of the Pi. Step 1 of A4: Unbound learns to forward netbird.cloud to NetBird, so that it can
+# become the system resolver without losing NetBird peer names. resolv.conf is not managed yet.
+- name: Forward netbird.cloud to the NetBird resolver (Unbound drop-in)
+  ansible.builtin.copy:
+    src: netbird-forward.conf
+    dest: /etc/unbound/unbound.conf.d/netbird-forward.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart unbound
