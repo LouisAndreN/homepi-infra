@@ -1,0 +1,13 @@
+# Managed by Ansible (role aws_edge)
+[Unit]
+Description=HomePi: upload the newest verified backups off-site
+RequiresMountsFor=/mnt/data
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-offsite-run
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=1h

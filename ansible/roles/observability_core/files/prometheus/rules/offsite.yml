@@ -1,0 +1,40 @@
+# Managed by Ansible (observability_core). Off-site copies in S3 (Object Lock), uploaded hourly by
+# homepi-offsite.timer. A backup that only exists on the Pi is lost with the Pi.
+groups:
+  - name: homepi-offsite
+    rules:
+      - alert: OffsiteStateTooOld
+        expr: time() - homepi_offsite_last_success_timestamp_seconds{kind="state"} > 36 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No state backup copied off-site for more than 36 hours"
+          description: "Read: journalctl -u homepi-offsite.service. Check the timer, DNS, the edge certificate and the network."
+
+      - alert: OffsiteInfluxTooOld
+        expr: time() - homepi_offsite_last_success_timestamp_seconds{kind="influx-lp"} > 8 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "No InfluxDB export copied off-site for more than 8 days"
+          description: "Read: journalctl -u homepi-offsite.service"
+
+      - alert: OffsiteUploadFailing
+        expr: homepi_offsite_upload_success == 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Off-site upload of {{ $labels.kind }} keeps failing"
+          description: "At least two hourly attempts failed. Read: journalctl -u homepi-offsite.service"
+
+      - alert: OffsiteMetricsMissing
+        expr: absent(homepi_offsite_last_success_timestamp_seconds{kind="state"})
+        for: 3h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The off-site upload exports no metrics"
+          description: "homepi-offsite.timer is not running or has never uploaded anything."

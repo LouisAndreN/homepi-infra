@@ -1,0 +1,12 @@
+# Managed by Ansible (role aws_edge)
+[Unit]
+Description=HomePi: hourly off-site upload of new backups
+
+[Timer]
+OnBootSec=15min
+OnCalendar=hourly
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

@@ -71,7 +71,7 @@ SIZE=$(stat -c %s "$DEST/$NEW")
 mapfile -t OLD < <(list_archives | tail -n +$((KEEP + 1)))
 for f in "${OLD[@]}"; do
   [ "$f" = "$NEW" ] && continue
-  rm -f -- "$DEST/$f" "$DEST/$f.sha256"
+  rm -f -- "$DEST/$f" "$DEST/$f.sha256" "$DEST/$f.offsite"
   log "pruned $f"
 done
 KEPT=$(list_archives | wc -l)
