@@ -41,3 +41,24 @@ Result: FAIL
   for step E5), and the Slack path itself (step A4).
 
 Human confirmation: ALARM e-mail received: y, OK e-mail received: y
+
+## Analysis and follow-up (added 2026-11-07)
+
+- The mechanism worked: ALARM and OK e-mails received, recovery in 2 minutes. The detection target
+  was missed, and the result stays FAIL. CloudWatch history: ALARM at 00:02:44 JST, 25 min 52 s
+  after the last heartbeat; OK at 00:04:44.
+- Cause: 3 periods of 5 minutes with a heartbeat every 5 to 6 minutes. The theoretical ALARM was
+  around 23:55; CloudWatch adds an evaluation delay on missing data (about 8 minutes here) and the
+  design had no margin for it.
+- First fix: alarm on 1 minute periods, 8 empty out of 10 (commit 2e1c10d), and Alertmanager
+  repeat_interval 1m (v0.1.28).
+- Sequencing incident during the fix: the alarm change was applied before the Pi cadence change.
+  CloudWatch history: false ALARM at 00:12:29, OK at 00:16:29 once v0.1.28 was deployed. Lesson: a
+  change that depends on another must check it in code, not in the instructions.
+- Second finding, by measurement: v0.1.28 produced one heartbeat every 2 minutes, not every
+  minute, because Alertmanager only checks repeat_interval at each group_interval tick. That left
+  about 5 empty minutes out of 10 against a threshold of 8. v0.1.29 uses 30s and 30s: measured
+  10 heartbeats in 10 minutes.
+- The game day 2 precondition check (cadence) blocked a first attempt before anything was
+  stopped, which is how the 2-minute cadence was found.
+- Retest: 2026-11-07-dead-mans-switch-2.md.
