@@ -1,5 +1,5 @@
 # Dead man's switch. Alertmanager sends its always-firing Watchdog alert to a relay on the Pi every
-# 5 minutes; the relay publishes one heartbeat with the edge-heartbeat role. No heartbeat for 15 minutes
+# minute; the relay publishes one heartbeat with the edge-heartbeat role. No heartbeat in 8 of the last 10 minutes
 # means the alerting chain is broken somewhere (Pi off, disk or inodes full, DNS, Prometheus,
 # Alertmanager, network, aws-edge certificate), and the alarm e-mails from outside the Pi.
 
@@ -85,15 +85,17 @@ resource "aws_sns_topic_subscription" "alert_email" {
 }
 
 resource "aws_cloudwatch_metric_alarm" "heartbeat_missing" {
-  alarm_name          = "homepi-heartbeat-missing"
-  alarm_description   = "No Watchdog heartbeat from the HomePi alerting chain for 15 minutes. Check that the Pi is on, then disk and inodes, DNS, Prometheus, Alertmanager, the network and the aws-edge certificate."
-  namespace           = local.heartbeat_namespace
-  metric_name         = local.heartbeat_metric
-  dimensions          = { host = "homepi" }
-  statistic           = "Sum"
-  period              = 300
-  evaluation_periods  = 3
-  datapoints_to_alarm = 3
+  alarm_name        = "homepi-heartbeat-missing"
+  alarm_description = "No Watchdog heartbeat from the HomePi alerting chain in 8 of the last 10 minutes. Check that the Pi is on, then disk and inodes, DNS, Prometheus, Alertmanager, the network and the aws-edge certificate."
+  namespace         = local.heartbeat_namespace
+  metric_name       = local.heartbeat_metric
+  dimensions        = { host = "homepi" }
+  statistic         = "Sum"
+  # 1 min periods, 8 empty out of 10: fast enough with margin for CloudWatch's delay on missing data
+  # (game day 1: 26 min with 3 x 5 min), and tolerant of a late heartbeat
+  period              = 60
+  evaluation_periods  = 10
+  datapoints_to_alarm = 8
   threshold           = 1
   comparison_operator = "LessThanThreshold"
   treat_missing_data  = "breaching"
