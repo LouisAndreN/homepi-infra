@@ -1,0 +1,5 @@
+---
+# IoT access point interface and the address of mosquitto's mTLS listener (listener 8883 192.168.200.1)
+service_ordering_iot_interface: wlx0013eff27090
+service_ordering_iot_address: 192.168.200.1
+service_ordering_wait_seconds: 60

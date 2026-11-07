@@ -1,0 +1,51 @@
+---
+# Boot ordering found by the 2026-11-07 reboot game day: services must wait for the condition
+# they really need (an address, a serving CA, a broker), not for another unit being "started".
+
+- name: Drop-in directories for boot ordering
+  ansible.builtin.file:
+    path: "/etc/systemd/system/{{ item }}.service.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: [mosquitto, telegraf, step-renew, step-renew-mosquitto]
+
+- name: Mosquitto waits for the IoT access point address
+  ansible.builtin.template:
+    src: mosquitto-wait-iot-address.conf.j2
+    dest: /etc/systemd/system/mosquitto.service.d/20-wait-iot-address.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: service_ordering_mosquitto
+
+- name: Telegraf starts after the broker and keeps retrying
+  ansible.builtin.copy:
+    src: telegraf-after-mosquitto.conf
+    dest: /etc/systemd/system/telegraf.service.d/20-after-mosquitto.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: service_ordering_telegraf
+
+- name: Certificate renewals wait for step-ca to serve
+  ansible.builtin.copy:
+    src: wait-step-ca.conf
+    dest: "/etc/systemd/system/{{ item }}.service.d/20-wait-step-ca.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [step-renew, step-renew-mosquitto]
+  register: service_ordering_step
+
+- name: Reload systemd after a boot-ordering drop-in change
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: service_ordering_mosquitto is changed or service_ordering_telegraf is changed or service_ordering_step is changed
+
+- name: Broker and collector running
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: started
+  loop: [mosquitto, telegraf]
