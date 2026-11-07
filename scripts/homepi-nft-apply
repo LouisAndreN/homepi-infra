@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# Guarded nftables change on the HomePi, run from the laptop (B2b).
+# Applies ansible/roles/network/files/nftables.conf atomically, arms an automatic rollback on the Pi
+# (independent of the SSH session), checks the access paths with new connections, and keeps the change
+# only after a typed confirmation. Exit code: 0 when the new ruleset is kept, 1 otherwise.
+set -u
+HOST="${HOMEPI_HOST:-homepi}"; LAN_IP=192.168.0.151; NB_IP=100.116.35.149; WINDOW=180
+REPO="$(cd "$(dirname "$0")/.." && pwd)"; NEW="$REPO/ansible/roles/network/files/nftables.conf"
+tcp() { timeout 5 bash -c "</dev/tcp/$1/$2" 2>/dev/null; }
+state() { ssh "$HOST" 'sudo -H bash -s' << 'REMOTE'
+echo "tables=$(nft list tables | awk '{print $2"/"$3}' | sort | tr '\n' ' ')"
+echo "iot=$(ss -tnH state established '( sport = :8883 )' | wc -l)"
+echo "nat=$(iptables -t nat -S POSTROUTING 2>/dev/null | grep -c '192.168.200.0/24 -o eth0 -j MASQUERADE')"
+echo "nb_injected=$(nft list table inet filter | grep -c 'iifname "wt0" counter')"
+REMOTE
+}
+val() { echo "$1" | sed -n "s/^$2=//p"; }
+echo "=== preflight"
+grep -qE '^\s*flush ruleset' "$NEW" && { echo "STOPPED: the new file still flushes the whole ruleset"; exit 1; }
+ssh "$HOST" 'sudo install -d -m 0700 /run/homepi-nft' </dev/null || exit 1
+ssh "$HOST" 'sudo tee /run/homepi-nft/new.nft > /dev/null' < "$NEW" || exit 1
+if ssh "$HOST" 'sudo nft -c -f /run/homepi-nft/new.nft' </dev/null; then echo "new ruleset valid on the Pi (nft -c)"; else echo "STOPPED: nft -c rejects the new file"; exit 1; fi
+B=$(state); echo "$B"
+L22=$(tcp "$LAN_IP" 22 && echo up || echo down); L443=$(tcp "$LAN_IP" 443 && echo up || echo down); N22=$(tcp "$NB_IP" 22 && echo up || echo down)
+echo "from the laptop before: LAN ssh $L22, LAN https $L443, NetBird ssh $N22"
+[ "$L22" = up ] || { echo "STOPPED: LAN SSH is not reachable even before the change"; exit 1; }
+read -r -p "Physical access to the Pi confirmed? Type NFT-APPLY to apply with a ${WINDOW} s automatic rollback: " A
+[ "$A" = "NFT-APPLY" ] || { echo "STOPPED: not confirmed, nothing applied"; exit 1; }
+ssh "$HOST" "sudo -H bash -s -- $WINDOW" << 'REMOTE' || { echo "STOPPED: could not arm the rollback, nothing applied"; exit 1; }
+set -e
+{ echo "destroy table inet filter"; nft list table inet filter; } > /run/homepi-nft/rollback.nft
+nft -c -f /run/homepi-nft/rollback.nft
+systemctl stop homepi-nft-rollback.timer 2>/dev/null || true; systemctl reset-failed homepi-nft-rollback.service 2>/dev/null || true
+systemd-run --quiet --unit=homepi-nft-rollback --on-active="$1" /usr/sbin/nft -f /run/homepi-nft/rollback.nft
+nft -f /run/homepi-nft/new.nft
+echo "applied at $(date +%T), rollback armed for $1 s"
+REMOTE
+T0=$(date +%s); sleep 3
+echo "=== checks with new connections"
+FAIL=0
+if ssh -o ControlPath=none -o ConnectTimeout=5 -o BatchMode=yes "$HOST" true </dev/null; then echo "ok   new SSH over LAN"; else echo "FAIL new SSH over LAN"; FAIL=1; fi
+tcp "$LAN_IP" 443 && echo "ok   LAN https" || { [ "$L443" = up ] && { echo "FAIL LAN https"; FAIL=1; } || echo "info LAN https down before and after"; }
+if [ "$N22" = up ]; then tcp "$NB_IP" 22 && echo "ok   NetBird ssh" || { echo "FAIL NetBird ssh"; FAIL=1; }; else echo "info NetBird ssh not reachable from this laptop before, not tested"; fi
+AFT=$(state); echo "$AFT"
+[ "$(val "$AFT" tables)" = "$(val "$B" tables)" ] && echo "ok   same tables (CrowdSec, NetBird, iptables untouched)" || { echo "FAIL tables changed"; FAIL=1; }
+[ "$(val "$AFT" iot)" -ge "$(val "$B" iot)" ] && echo "ok   IoT clients $(val "$AFT" iot)" || { echo "FAIL IoT clients $(val "$AFT" iot) (before $(val "$B" iot))"; FAIL=1; }
+[ "$(val "$AFT" nat)" = "$(val "$B" nat)" ] && echo "ok   IoT NAT present" || { echo "FAIL IoT NAT"; FAIL=1; }
+echo "info NetBird wt0 rules in inet filter: before $(val "$B" nb_injected), after $(val "$AFT" nb_injected)"
+rollback_now() { ssh "$HOST" 'sudo nft -f /run/homepi-nft/rollback.nft && sudo systemctl stop homepi-nft-rollback.timer' </dev/null && echo "ROLLED BACK" || echo "rollback over SSH failed: the timer restores within ${WINDOW} s"; }
+if [ "$FAIL" = 1 ]; then echo "=== a check failed: rolling back now"; rollback_now; exit 1; fi
+LEFT=$(( WINDOW - ( $(date +%s) - T0 ) - 20 ))
+if read -r -t "$LEFT" -p "Every check passed. Type CONFIRM-NFT within ${LEFT} s to keep the new ruleset: " C && [ "$C" = "CONFIRM-NFT" ]; then
+  if ssh "$HOST" 'sudo systemctl stop homepi-nft-rollback.timer && sudo install -m 0755 -o root -g root /run/homepi-nft/new.nft /etc/nftables.conf && sudo cmp -s /run/homepi-nft/new.nft /etc/nftables.conf' </dev/null; then echo "KEPT: rollback cancelled, /etc/nftables.conf installed"; exit 0; fi
+  echo "keeping failed: rolling back"; rollback_now; exit 1
+fi
+echo; echo "=== not confirmed: rolling back"; rollback_now; exit 1

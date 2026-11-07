@@ -1,10 +1,12 @@
 # Runbook: network and firewall
 
-## Do not reload nftables (until B2b)
+## Reloading nftables
 
-`/etc/nftables.conf` starts with `flush ruleset`, and `systemctl reload nftables` runs that file. A
-reload or restart wipes every table, not only the static policy: the CrowdSec bans, the NetBird ACL and
-NAT, the Docker chains and the IoT masquerade loaded by netfilter-persistent. If it happened:
+Until v0.1.49 `/etc/nftables.conf` started with `flush ruleset`: a reload or restart wiped every table
+(CrowdSec bans, NetBird ACL and NAT, Docker chains, the IoT masquerade). It now starts with
+`destroy table inet filter` and replaces only the static policy, atomically. Change it only with
+`scripts/homepi-nft-apply` (automatic rollback after 3 minutes unless confirmed). If the other tables
+were ever wiped:
 
     sudo systemctl restart netfilter-persistent crowdsec-firewall-bouncer netbird docker
 
