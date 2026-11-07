@@ -1,0 +1,65 @@
+#!/bin/bash
+# homepi-crl-sync: fetch the CRL from step-ca, verify it, install it for the MQTT broker, publish metrics.
+# It never installs a CRL that fails verification, is not issued by the intermediate, expires within an
+# hour or is older than the installed one: once the broker enforces the CRL, an expired CRL rejects every device.
+set -uo pipefail
+CA_URL="https://127.0.0.1:8443"
+ROOT="/etc/step-ca/certs/root_ca.crt"
+CHAIN="/etc/mosquitto/certs/ca_chain.crt"
+ISSUER_CERT="/etc/step-ca/certs/intermediate_ca.crt"
+DEST="/etc/mosquitto/crl/crl.pem"
+PROM="/var/lib/node_exporter/textfile_collector/homepi_crl.prom"
+MIN_VALID=3600
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+
+crl_time() { date -d "$(openssl crl -in "$1" -noout "-$2" | cut -d= -f2-)" +%s; }
+
+publish() {
+  local next=0 last=0 revoked=0
+  if [ -s "$DEST" ]; then
+    next=$(crl_time "$DEST" nextupdate) || next=0
+    last=$(crl_time "$DEST" lastupdate) || last=0
+    revoked=$(openssl crl -in "$DEST" -noout -text | grep -c 'Serial Number:')
+  fi
+  {
+    echo "# HELP homepi_crl_sync_success 1 if the last run fetched, verified and installed a valid CRL."
+    echo "# TYPE homepi_crl_sync_success gauge"
+    echo "homepi_crl_sync_success $1"
+    echo "# HELP homepi_crl_sync_last_run_timestamp_seconds Time of the last run."
+    echo "# TYPE homepi_crl_sync_last_run_timestamp_seconds gauge"
+    echo "homepi_crl_sync_last_run_timestamp_seconds $(date +%s)"
+    echo "# HELP homepi_crl_installed_next_update_timestamp_seconds nextUpdate of the CRL the broker reads (0: none)."
+    echo "# TYPE homepi_crl_installed_next_update_timestamp_seconds gauge"
+    echo "homepi_crl_installed_next_update_timestamp_seconds $next"
+    echo "# HELP homepi_crl_installed_last_update_timestamp_seconds lastUpdate of the installed CRL."
+    echo "# TYPE homepi_crl_installed_last_update_timestamp_seconds gauge"
+    echo "homepi_crl_installed_last_update_timestamp_seconds $last"
+    echo "# HELP homepi_crl_installed_revoked_entries Revoked certificates listed in the installed CRL."
+    echo "# TYPE homepi_crl_installed_revoked_entries gauge"
+    echo "homepi_crl_installed_revoked_entries $revoked"
+  } > "$PROM.tmp" && chmod 0644 "$PROM.tmp" && mv -f "$PROM.tmp" "$PROM"
+}
+
+fail() { echo "homepi-crl-sync: $*" >&2; publish 0; exit 1; }
+
+got=0
+for i in $(seq 1 30); do
+  if curl -sf --max-time 10 --cacert "$ROOT" "$CA_URL/1.0/crl" -o "$T/crl.der"; then got=1; break; fi
+  sleep 2
+done
+[ "$got" = 1 ] || fail "download from $CA_URL/1.0/crl failed"
+openssl crl -inform DER -in "$T/crl.der" -out "$T/crl.pem" 2>/dev/null || fail "the download is not a DER CRL"
+openssl crl -in "$T/crl.pem" -CAfile "$CHAIN" -noout 2>&1 | grep -qx 'verify OK' || fail "signature does not verify against $CHAIN"
+[ "$(openssl crl -in "$T/crl.pem" -noout -issuer | cut -d= -f2-)" = "$(openssl x509 -in "$ISSUER_CERT" -noout -subject | cut -d= -f2-)" ] || fail "not issued by the intermediate"
+now=$(date +%s); next=$(crl_time "$T/crl.pem" nextupdate) || fail "no nextUpdate"
+[ $((next - now)) -ge "$MIN_VALID" ] || fail "the new CRL expires within $MIN_VALID s"
+if [ -s "$DEST" ] && old_last=$(crl_time "$DEST" lastupdate) && [ "$(crl_time "$T/crl.pem" lastupdate)" -lt "$old_last" ]; then
+  fail "the new CRL is older than the installed one"
+fi
+if ! cmp -s "$T/crl.pem" "$DEST"; then
+  { install -o mosquitto -g mosquitto -m 0644 "$T/crl.pem" "$DEST.new" && mv -f "$DEST.new" "$DEST"; } || fail "install failed"
+  if grep -qs '^crlfile' /etc/mosquitto/conf.d/*.conf && systemctl is-active --quiet mosquitto; then
+    systemctl reload mosquitto || fail "mosquitto reload failed"
+  fi
+fi
+publish 1

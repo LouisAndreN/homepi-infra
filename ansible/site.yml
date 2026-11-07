@@ -19,5 +19,7 @@
     - network
     # Verify only: PKI and broker files, secrets by owner and mode (docs/runbooks/pki.md)
     - pki
+    # Applies: keeps the broker CRL fresh (B3.2a, docs/runbooks/pki.md)
+    - pki_crl
     # Verify only: the storage role fails on drift and never changes boot-critical files
     - storage

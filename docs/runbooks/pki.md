@@ -13,9 +13,10 @@
 
 ## Known flaws (open)
 
-1. Revocation is not enforced. The broker has no `crlfile`. The hourly cron `crl_sync.sh` has failed
-   since 2026-05-23: it verifies a CRL signed by the intermediate against the root alone. Nothing alerts
-   on it. `revoked.acl` is not referenced and its syntax is invalid.
+1. Revocation is not enforced: the broker has no `crlfile` (B3.2b). Since v0.1.53 the CRL itself is
+   kept fresh and monitored (see "CRL sync"); the cron `crl_sync.sh` it replaces had failed since
+   2026-05-23 (it verified a CRL signed by the intermediate against the root alone) and nothing alerted.
+   `revoked.acl` is not referenced and its syntax is invalid.
 2. One password opens the root key, the intermediate key and probably the `admin` provisioner. Until
    2026-11-08 it was readable by the group `iot-platform` (member: `srvpi`).
 3. The root CA key is online, and is in the age-encrypted backups (Object Lock keeps those copies until
@@ -49,3 +50,17 @@ owner and mode (content never read), `ca.json` by sha256, and the services. It n
 - v1.1: short certificate lifetimes instead of twice-daily `--force` renewals of 1-year certificates;
   the stale `broker.crt`; `homepi-api` write access to `iot/#`; `enableSSHCA` on `aws-edge`; the three
   `ca.json.bak` files; step-ca as a dedicated user.
+
+## CRL sync (B3.2a, v0.1.53)
+
+`homepi-crl-sync` (timer: 1 minute after boot, then every 15 minutes) fetches the CRL from step-ca and
+installs it in `/etc/mosquitto/crl/crl.pem` only if it verifies against the full chain, is issued by the
+intermediate, stays valid for at least another hour and is not older than the installed one; otherwise
+the last valid CRL stays and the run fails. Metrics `homepi_crl_*` (textfile collector). Alerts:
+`CrlSyncFailing`, `CrlSyncStale`, `CrlExpiresSoon` (critical below 6 hours). The CRL is valid for 24 hours,
+so a step-ca outage of about 23 hours is tolerated once the broker enforces it. Manual run:
+
+    sudo systemctl start homepi-crl-sync; journalctl -u homepi-crl-sync -n 20
+
+`/opt/homepi/crl_sync.sh` is no longer scheduled; it is removed with the B7 cleanup (`homepi-triage`
+still refers to it).

@@ -1,0 +1,8 @@
+[Unit]
+Description=HomePi CRL sync for the MQTT broker (step-ca to /etc/mosquitto/crl)
+After=step-ca.service
+Wants=step-ca.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-crl-sync

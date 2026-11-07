@@ -1,0 +1,28 @@
+groups:
+  - name: pki
+    rules:
+      # B3.2a: the CRL the broker will enforce must stay fresh (docs/runbooks/pki.md).
+      - alert: CrlSyncFailing
+        expr: homepi_crl_sync_success == 0
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "CRL sync failing on {{ $labels.instance }}"
+          description: "homepi-crl-sync has failed for an hour; the last valid CRL stays installed. Check: journalctl -u homepi-crl-sync -n 20, and step-ca health."
+      - alert: CrlSyncStale
+        expr: time() - homepi_crl_sync_last_run_timestamp_seconds > 3600 or absent(homepi_crl_sync_last_run_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "CRL sync has not run for an hour"
+          description: "homepi-crl-sync.timer runs every 15 minutes. Check: systemctl status homepi-crl-sync.timer."
+      - alert: CrlExpiresSoon
+        expr: homepi_crl_installed_next_update_timestamp_seconds - time() < 6 * 3600
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "The broker CRL on {{ $labels.instance }} expires in less than 6 hours"
+          description: "Once the broker enforces the CRL, an expired CRL rejects every device. Run: sudo systemctl start homepi-crl-sync, then check step-ca (docs/runbooks/pki.md)."
