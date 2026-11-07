@@ -11,10 +11,11 @@ storage_mounts:
     fstab: "/dev/vg-main/lv-data btrfs defaults,noatime,compress=zstd:3,space_cache=v2,subvol=@iot-hot 0 2"
     mounted: "/dev/mapper/vg--main-lv--data[/@iot-hot] btrfs"
     line: "/dev/vg-main/lv-data       /mnt/data              btrfs   defaults,noatime,compress=zstd:3,space_cache=v2,subvol=@iot-hot  0 2"
+  # nofail: a missing Loki volume must not block a headless boot; RequiresMountsFor keeps Loki stopped
   - target: /var/lib/loki
-    fstab: "/dev/vg-main/lv-loki xfs defaults,noatime,inode64 0 2"
+    fstab: "/dev/vg-main/lv-loki xfs defaults,noatime,inode64,nofail 0 2"
     mounted: "/dev/mapper/vg--main-lv--loki xfs"
-    line: "/dev/vg-main/lv-loki       /var/lib/loki          xfs     defaults,noatime,inode64          0 2"
+    line: "/dev/vg-main/lv-loki       /var/lib/loki          xfs     defaults,noatime,inode64,nofail   0 2"
 storage_subvolume_units:
   - mnt-data-backups.mount
   - mnt-data-personal.mount

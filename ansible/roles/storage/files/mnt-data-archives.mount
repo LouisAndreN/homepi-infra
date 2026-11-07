@@ -1,5 +1,5 @@
 [Unit]
-Descrition=BTRFS IoT Archives Subvolume (High Compression)
+Description=BTRFS IoT Archives Subvolume
 After=mnt-data.mount
 Requires=mnt-data.mount
 
@@ -7,8 +7,8 @@ Requires=mnt-data.mount
 What=/dev/vg-main/lv-data
 Where=/mnt/data/archives
 Type=btrfs
-Options=defaults,noatime,compress=zstd:9,space_cache=v2,subvol=@iot-archives
+# Btrfs applies compress per filesystem: the first mount (@iot-hot, zstd:3) sets it for every subvolume
+Options=defaults,noatime,compress=zstd:3,space_cache=v2,subvol=@iot-archives
 
 [Install]
 WantedBy=multi-user.target
-

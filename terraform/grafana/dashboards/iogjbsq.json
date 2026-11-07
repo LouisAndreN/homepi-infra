@@ -1514,12 +1514,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "/mnt/scratch"
+              "options": "/var/lib/loki"
             },
             "properties": [
               {
                 "id": "displayName",
-                "value": "scratch"
+                "value": "loki"
               }
             ]
           },
@@ -1786,12 +1786,12 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "/mnt/scratch"
+              "options": "/var/lib/loki"
             },
             "properties": [
               {
                 "id": "displayName",
-                "value": "scratch"
+                "value": "loki"
               }
             ]
           },
