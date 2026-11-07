@@ -1,0 +1,30 @@
+---
+# B3.1: verify only. Public PKI and broker files adopted byte for byte on 2026-11-08; owner and mode
+# recorded from the Pi. Known flaws and the plan: docs/runbooks/pki.md.
+pki_files:
+  - {src: mosquitto.conf, dest: /etc/mosquitto/mosquitto.conf, owner: root, group: root, mode: "0644"}
+  - {src: mosquitto-homepi_iot.conf, dest: /etc/mosquitto/conf.d/homepi_iot.conf, owner: root, group: root, mode: "0644"}
+  - {src: mosquitto-devices.acl, dest: /etc/mosquitto/acl/devices.acl, owner: mosquitto, group: mosquitto, mode: "0640"}
+  - {src: mosquitto-ca_chain.crt, dest: /etc/mosquitto/certs/ca_chain.crt, owner: mosquitto, group: mosquitto, mode: "0644"}
+  - {src: step-root_ca.crt, dest: /etc/step-ca/certs/root_ca.crt, owner: root, group: iot-platform, mode: "0640"}
+  - {src: step-intermediate_ca.crt, dest: /etc/step-ca/certs/intermediate_ca.crt, owner: root, group: root, mode: "0600"}
+  - {src: step-defaults.json, dest: /etc/step-ca/config/defaults.json, owner: root, group: root, mode: "0644"}
+  - {src: step-aws-edge.tpl, dest: /etc/step-ca/templates/aws-edge.tpl, owner: root, group: root, mode: "0644"}
+  - {src: step-ca.service, dest: /etc/systemd/system/step-ca.service, owner: root, group: root, mode: "0644"}
+  - {src: step-renew.service, dest: /etc/systemd/system/step-renew.service, owner: root, group: root, mode: "0644"}
+  - {src: step-renew-root.conf, dest: /etc/systemd/system/step-renew.service.d/root.conf, owner: root, group: root, mode: "0644"}
+  - {src: step-renew.timer, dest: /etc/systemd/system/step-renew.timer, owner: root, group: root, mode: "0644"}
+  - {src: step-renew-mosquitto.service, dest: /etc/systemd/system/step-renew-mosquitto.service, owner: root, group: root, mode: "0644"}
+  - {src: step-renew-mosquitto.timer, dest: /etc/systemd/system/step-renew-mosquitto.timer, owner: root, group: root, mode: "0644"}
+# Secret or renewed files: presence, owner and mode only, content never read. ca.json holds the
+# encrypted provisioner keys: it stays out of the repository and is pinned by sha256.
+# root_ca_key leaves the Pi in B3.4.
+pki_stat_files:
+  - {path: /etc/step-ca/password.txt, owner: root, group: root, mode: "0600"}
+  - {path: /etc/step-ca/secrets/intermediate_ca_key, owner: root, group: root, mode: "0600"}
+  - {path: /etc/step-ca/secrets/root_ca_key, owner: root, group: root, mode: "0600"}
+  - {path: /etc/mosquitto/certs/broker.key, owner: mosquitto, group: mosquitto, mode: "0640"}
+  - {path: /etc/mosquitto/certs/broker_chain.crt, owner: mosquitto, group: mosquitto, mode: "0640"}
+  - {path: /etc/mosquitto/passwd/telegraf.passwd, owner: root, group: mosquitto, mode: "0640"}
+  - {path: /etc/step-ca/config/ca.json, owner: root, group: root, mode: "0644", sha256: 23e1ad44ecb515a47d20d8e90cd0763c4712de14dcc6ead1a2d784cc811875de}
+pki_services: [step-ca, mosquitto, step-renew.timer, step-renew-mosquitto.timer]

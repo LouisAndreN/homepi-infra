@@ -1,0 +1,12 @@
+[Unit]
+Description=Renew Smallstep certificates for Nginx
+#OnFailure=notify-cert-failure.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/step ca renew --ca-url https://127.0.0.1:8443 --force /etc/nginx/ssl/wildcard.homepi.fullchain.pem /etc/nginx/ssl/wildcard.homepi.key
+ExecStartPost=/bin/sh -c 'cat /etc/nginx/ssl/wildcard.homepi.fullchain.pem /etc/step-ca/certs/intermediate_ca.crt > /etc/nginx/ssl/wildcard.homepi.bundle.pem'
+ExecStartPost=/bin/systemctl reload nginx
+
+[Install]
+WantedBy=multi-user.target

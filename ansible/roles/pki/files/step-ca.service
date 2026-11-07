@@ -1,0 +1,13 @@
+[Unit]
+Description=Smallstep Certificate Authority
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/etc/step-ca
+ExecStart=/usr/bin/step-ca /etc/step-ca/config/ca.json --password-file /etc/step-ca/password.txt
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

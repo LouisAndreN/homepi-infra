@@ -1,0 +1,6 @@
+{
+	"ca-url": "https://homepi:8443",
+	"ca-config": "/root/.step/config/ca.json",
+	"fingerprint": "adda902df666064077d3a1317f31ca8e4a3855bc4a35797629cb8061613199df",
+	"root": "/root/.step/certs/root_ca.crt"
+}

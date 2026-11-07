@@ -1,0 +1,7 @@
+[Unit]
+Description=Renew Smallstep certificate for Mosquitto
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/step ca renew --ca-url https://127.0.0.1:8443 --force --root /etc/step-ca/certs/root_ca.crt /etc/mosquitto/certs/broker_chain.crt /etc/mosquitto/certs/broker.key
+ExecStartPost=/bin/systemctl reload mosquitto

@@ -1,0 +1,59 @@
+---
+# B3.1: verify-only. Every task runs in check mode, whatever the playbook mode, and the run fails on drift.
+# Secret files are checked for presence, owner and mode; their content is never read.
+
+- name: PKI and broker files match the repository (check mode only)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ pki_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  check_mode: true
+  register: pki_files_state
+
+- name: PKI secret and renewed files present with the expected owner and mode
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    get_checksum: "{{ item.sha256 is defined }}"
+    checksum_algorithm: sha256
+    get_mime: false
+  loop: "{{ pki_stat_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: pki_stat_state
+
+- name: PKI services enabled and running (check mode only)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ pki_services }}"
+  check_mode: true
+  register: pki_services_state
+
+- name: Collect PKI drift
+  ansible.builtin.set_fact:
+    pki_drift: >-
+      {%- set d = [] -%}
+      {%- for r in pki_files_state.results if r is changed -%}{%- set _ = d.append(r.item.dest) -%}{%- endfor -%}
+      {%- for r in pki_stat_state.results -%}
+      {%- if not r.stat.exists -%}{%- set _ = d.append(r.item.path ~ ' missing') -%}
+      {%- elif r.stat.pw_name != r.item.owner or r.stat.gr_name != r.item.group or r.stat.mode != r.item.mode -%}{%- set _ = d.append(r.item.path ~ ' is ' ~ r.stat.pw_name ~ ':' ~ r.stat.gr_name ~ ' ' ~ r.stat.mode) -%}
+      {%- elif r.item.sha256 is defined and r.stat.checksum != r.item.sha256 -%}{%- set _ = d.append(r.item.path ~ ' content changed') -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for r in pki_services_state.results if r is changed -%}{%- set _ = d.append('service ' ~ r.item) -%}{%- endfor -%}
+      {{ d }}
+
+- name: Show PKI drift
+  ansible.builtin.debug:
+    msg: "pki drift: {{ pki_drift | join(' | ') if pki_drift else 'none' }}"
+
+- name: Fail on PKI drift
+  ansible.builtin.fail:
+    msg: "PKI drift detected: {{ pki_drift | join(' | ') }}. See docs/runbooks/pki.md."
+  when: pki_drift | length > 0

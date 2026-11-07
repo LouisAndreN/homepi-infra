@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Mosquitto certificate renewal
+
+[Timer]
+OnCalendar=*-*-* 01,13:00:00
+RandomizeDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+
