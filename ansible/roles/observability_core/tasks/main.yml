@@ -65,3 +65,17 @@
     state: restarted
     daemon_reload: true
   loop: "{{ observability_stale_services.stdout_lines }}"
+
+# A rejected reload keeps the previous configuration running silently: apply the pending
+# restarts and reloads now, then fail the run unless Prometheus accepted its configuration.
+- name: Apply pending restarts and reloads before checking Prometheus
+  ansible.builtin.meta: flush_handlers
+
+- name: Prometheus accepted its configuration (last reload successful)
+  ansible.builtin.command: "curl -sf http://127.0.0.1:9090/api/v1/query?query=prometheus_config_last_reload_successful"
+  register: observability_reload_state
+  changed_when: false
+  check_mode: false
+  retries: 20
+  delay: 3
+  until: observability_reload_state.rc == 0 and observability_reload_state.stdout is search('"value":\[[0-9.]+,"1"\]')

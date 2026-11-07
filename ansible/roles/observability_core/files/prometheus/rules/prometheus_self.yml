@@ -1,0 +1,12 @@
+groups:
+  - name: prometheus_self
+    rules:
+      # Rule and config changes reload Prometheus (SIGHUP); a rejected reload keeps the old config running silently.
+      - alert: PrometheusConfigReloadFailed
+        expr: prometheus_config_last_reload_successful == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Prometheus rejected its last configuration reload"
+          description: "Prometheus kept the previous configuration: new rules or scrape settings are not active. Check: journalctl -u prometheus."

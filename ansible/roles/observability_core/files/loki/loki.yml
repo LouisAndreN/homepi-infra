@@ -20,10 +20,8 @@ common:
   replication_factor: 1
   ring:
     kvstore:
-      store: memberlist
-
-memberlist:
-  join_members: []
+      # Single node: no gossip cluster and no listener on 7946 (memberlist listened on *:7946, every interface)
+      store: inmemory
 
 schema_config:
    configs:

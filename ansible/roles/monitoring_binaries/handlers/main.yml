@@ -19,3 +19,12 @@
   ansible.builtin.systemd_service:
     name: loki
     state: restarted
+
+# Rules, prometheus.yml and the scrape secret only need a reload (SIGHUP through ExecReload)
+- name: Reload prometheus
+  ansible.builtin.systemd_service:
+    name: prometheus
+    state: reloaded
+
+# Alertmanager keeps a restart on purpose: its config is rendered from the template by envsubst at start,
+# a reload would serve a file that was not rendered again.

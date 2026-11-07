@@ -6,7 +6,7 @@
     owner: root
     group: root
     mode: "0644"
-  notify: Restart prometheus
+  notify: Reload prometheus
 
 - name: Install the Prometheus alert rules (each file is validated before it replaces the live one)
   ansible.builtin.copy:
@@ -16,8 +16,8 @@
     group: root
     mode: "0644"
     validate: /usr/local/bin/promtool check rules %s
-  loop: [alerts.yml, gitops.yml, backups.yml, aws_edge.yml, meta.yml, capacity.yml, offsite.yml, heartbeat.yml, gitops_github.yml, clock.yml]
-  notify: Restart prometheus
+  loop: [alerts.yml, gitops.yml, backups.yml, aws_edge.yml, meta.yml, capacity.yml, offsite.yml, heartbeat.yml, gitops_github.yml, clock.yml, prometheus_self.yml]
+  notify: Reload prometheus
 
 - name: Validate the Prometheus configuration and rules
   ansible.builtin.command: /usr/local/bin/promtool check config /etc/prometheus/prometheus.yml
