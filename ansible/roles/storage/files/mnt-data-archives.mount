@@ -1,0 +1,14 @@
+[Unit]
+Descrition=BTRFS IoT Archives Subvolume (High Compression)
+After=mnt-data.mount
+Requires=mnt-data.mount
+
+[Mount]
+What=/dev/vg-main/lv-data
+Where=/mnt/data/archives
+Type=btrfs
+Options=defaults,noatime,compress=zstd:9,space_cache=v2,subvol=@iot-archives
+
+[Install]
+WantedBy=multi-user.target
+

@@ -1,0 +1,10 @@
+---
+# false in site.yml (GitOps): verify only, the play fails on drift.
+# true only in storage.yml, run by a human (fstab and *.mount are MANUAL, see homepi-triage).
+storage_apply: false
+# A --check run must never execute for real, whatever storage_apply says
+storage_verify_only: "{{ ansible_check_mode or not (storage_apply | bool) }}"
+storage_subvolume_units:
+  - mnt-data-backups.mount
+  - mnt-data-personal.mount
+  - mnt-data-archives.mount

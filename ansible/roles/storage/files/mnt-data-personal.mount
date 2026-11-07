@@ -1,0 +1,13 @@
+[Unit]
+Description=BTRFS Personal Data Subvolume
+After=mnt-data.mount
+Requires=mnt-data.mount
+
+[Mount]
+What=/dev/vg-main/lv-data
+Where=/mnt/data/personal
+Type=btrfs
+Options=defaults,noatime,compress=zstd:3,space_cache=v2,subvol=@personal
+
+[Install]
+WantedBy=multi-user.target

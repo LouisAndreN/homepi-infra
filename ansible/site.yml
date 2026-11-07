@@ -13,3 +13,5 @@
     - alloy
     - loki_housekeeping
     - dns
+    # Verify only: the storage role fails on drift and never changes boot-critical files
+    - storage

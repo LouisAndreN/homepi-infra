@@ -1,0 +1,11 @@
+# Applies the boot-critical storage layout. Run by hand only:
+#   ansible-playbook storage.yml --check --diff, then without --check.
+# GitOps never runs this playbook; site.yml only verifies the same state.
+---
+- name: HomePi base configuration
+  hosts: pi_hosts
+  become: true
+  roles:
+    - role: storage
+      vars:
+        storage_apply: true
