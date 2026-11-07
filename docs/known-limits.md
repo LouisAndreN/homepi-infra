@@ -78,8 +78,9 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
 - Drift detection is hourly: the check timer runs the deployed tag in check mode. `GitopsDrift`
   fires on changed tasks; a failed check run (how the storage role reports drift) raised no alert
   until `GitopsCheckFailing` (v0.1.43). A drift stays unseen up to about an hour.
-- unattended-upgrades can rewrite the boot chain silently (2026-11-06: initramfs rebuilt by a
-  firmware package); nothing alerts that the next boot is untested; roadmap B10.
+- unattended-upgrades can rewrite the boot chain (2026-11-06: initramfs rebuilt by a firmware
+  package). Since v0.1.44 `BootChainUntested` reports it within about 1.5 hours; the reboot stays
+  manual (`scripts/homepi-controlled-reboot`, docs/runbooks/reboot.md).
 - Loki (fixed in v0.1.42): it ran the memberlist kvstore for a single node and listened on `*:7946`
   on every interface. With the `inmemory` kvstore nothing listens on 7946 and `/ready` answers 200
   18 s after a restart (it took 3 to 4 minutes after boot with memberlist).

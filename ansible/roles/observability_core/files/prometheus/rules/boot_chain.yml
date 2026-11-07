@@ -9,7 +9,7 @@ groups:
           severity: warning
         annotations:
           summary: "The next boot of {{ $labels.instance }} runs an untested boot chain"
-          description: "A boot-critical file changed after the current boot (kernel, initrd, cmdline, config, crypttab or fstab). Plan a controlled reboot with the reboot game day checks (docs/game-days/2026-11-07-reboot.md)."
+          description: "A boot-critical file changed after the current boot (kernel, initrd, cmdline, config, crypttab or fstab). Plan a controlled reboot from the laptop: scripts/homepi-controlled-reboot (docs/runbooks/reboot.md)."
       - alert: BootChainInconsistent
         expr: homepi_boot_chain_consistent == 0
         for: 15m

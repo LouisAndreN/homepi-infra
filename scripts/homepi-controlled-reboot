@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Controlled reboot of the HomePi, run from the laptop.
+# Same checks as docs/game-days/2026-11-07-reboot.md: refuses an untested or inconsistent boot chain,
+# reboots only after a typed confirmation, then checks every mount and service.
+# Exit code: 0 when every post-boot check passed, 1 otherwise.
+set -u
+HOST="${HOMEPI_HOST:-homepi}"
+REPO="$(cd "$(dirname "$0")/.." && pwd)"
+
+echo "=== preflight (read-only)"
+PRE=$(ssh "$HOST" 'sudo -H bash -s' << 'REMOTE'
+BOOT=$(date -d "$(uptime -s)" +%s); KR=$(uname -r); SAFE=1
+changed() { [ "$(stat -c %Y "$1")" -ge "$BOOT" ]; }
+echo "booted: $(uptime -s), running kernel $KR"
+for f in /boot/firmware/cmdline.txt /boot/firmware/config.txt /etc/crypttab; do
+  if changed "$f"; then echo "REFUSE: $f changed since boot, review it by hand first"; SAFE=0; else echo "unchanged since boot: $f"; fi
+done
+changed /etc/fstab && echo "note: /etc/fstab changed since boot (expected after a storage change)"
+KV=$( (zcat /boot/firmware/vmlinuz 2>/dev/null || cat /boot/firmware/vmlinuz) | strings | grep -m 1 -oE 'Linux version [^ ]+' | awk '{print $3}')
+IV=$(lsinitramfs /boot/firmware/initrd.img 2>/dev/null | grep -m 1 -oE 'lib/modules/[^/]+' | cut -d/ -f3)
+echo "next boot: kernel ${KV:-unknown}, initrd modules ${IV:-unknown}"
+if [ -z "$KV" ] || [ "$KV" != "$IV" ]; then echo "REFUSE: kernel and initrd modules differ"; SAFE=0; fi
+if [ -n "$KV" ]; then
+  cmp -s /boot/firmware/vmlinuz "/boot/vmlinuz-$KV" && echo "vmlinuz identical to /boot/vmlinuz-$KV" || { echo "REFUSE: /boot/firmware/vmlinuz differs from /boot/vmlinuz-$KV"; SAFE=0; }
+  cmp -s /boot/firmware/initrd.img "/boot/initrd.img-$KV" && echo "initrd identical to /boot/initrd.img-$KV" || { echo "REFUSE: /boot/firmware/initrd.img differs from /boot/initrd.img-$KV"; SAFE=0; }
+fi
+if changed /boot/firmware/vmlinuz || changed /boot/firmware/initrd.img; then
+  echo "note: new boot chain since boot (running $KR, next ${KV:-unknown})"
+  if [ -s /boot/firmware/vmlinuz.bak ] && [ -s /boot/firmware/initrd.img.bak ]; then echo "fallback: .bak copies present"; else echo "REFUSE: no .bak fallback copies"; SAFE=0; fi
+fi
+LINE=$(awk '$1=="cryptdata"' /etc/crypttab); KF=$(echo "$LINE" | awk '{print $3}')
+DEV=$(blkid -U "$(echo "$LINE" | awk '{print $2}' | sed 's/^UUID=//')" 2>/dev/null)
+if [ -n "$DEV" ] && [ -f "$KF" ] && cryptsetup open --test-passphrase --key-file "$KF" "$DEV" > /dev/null 2>&1; then echo "unlock path: the /etc/crypttab keyfile opens cryptdata"; else echo "REFUSE: the /etc/crypttab keyfile does not open cryptdata"; SAFE=0; fi
+if pgrep -f /usr/local/sbin/homepi-gitops-sync > /dev/null; then echo "REFUSE: a GitOps run is in progress, retry in a few minutes"; SAFE=0; fi
+echo "iot_clients=$(ss -tnH state established '( sport = :8883 )' | wc -l)"
+echo "boot_id=$(cat /proc/sys/kernel/random/boot_id)"
+echo "SAFE=$SAFE"
+REMOTE
+)
+echo "$PRE"
+echo "$PRE" | grep -qx 'SAFE=1' || { echo "STOPPED: preflight refused, no reboot"; exit 1; }
+OLD=$(echo "$PRE" | sed -n 's/^boot_id=//p'); IOT=$(echo "$PRE" | sed -n 's/^iot_clients=//p')
+read -r -p "Physical access within the hour? Type REBOOT-HOMEPI to reboot: " ANSWER
+[ "$ANSWER" = "REBOOT-HOMEPI" ] || { echo "STOPPED: not confirmed, no reboot"; exit 1; }
+ssh "$HOST" 'sudo systemd-run --on-active=5 --unit="homepi-controlled-reboot-$(date +%s)" systemctl reboot' </dev/null || { echo "STOPPED: reboot not scheduled"; exit 1; }
+T0=$(date +%s); echo "reboot scheduled at $(date '+%T')"
+NEW=""
+for i in $(seq 1 120); do
+  sleep 5
+  NEW=$(ssh -o ControlPath=none -o ConnectTimeout=5 -o BatchMode=yes "$HOST" 'cat /proc/sys/kernel/random/boot_id' </dev/null 2>/dev/null || true)
+  [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] && break; NEW=""
+done
+[ -n "$NEW" ] || { echo "FAIL: no SSH within 10 min. Do not retry; see docs/runbooks/reboot.md (no SSH after a reboot)"; exit 1; }
+echo "SSH back after $(( $(date +%s) - T0 )) s"
+echo "=== post-boot checks (waits 60 s for late services)"
+POST=$(ssh -o ControlPath=none "$HOST" "sudo -H bash -s -- $IOT" << 'REMOTE'
+IOT_BEFORE="$1"; sleep 60
+ok() { echo "ok   $*"; }; fail() { echo "FAIL $*"; }
+s=$(systemctl is-system-running); if [ "$s" = running ]; then ok "system $s"; else fail "system $s"; systemctl --failed --no-legend --plain | sed 's/^/     /'; fi
+echo "info $(systemd-analyze 2>&1 | head -n 1)"
+for m in /var /var/log /var/lib/loki /mnt/data /mnt/data/backups /mnt/data/personal /mnt/data/archives; do
+  src=$(findmnt -r -n -o SOURCE -M "$m"); [ -n "$src" ] && ok "mount $m $src" || fail "mount $m not mounted"
+done
+code=000; for i in $(seq 1 60); do code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/ready || true); [ "$code" = 200 ] && break; sleep 2; done
+[ "$code" = 200 ] && ok "loki ready" || fail "loki ready $code"
+for u in prometheus alertmanager node_exporter alloy loki grafana-server homepi-heartbeat-relay unbound mosquitto telegraf influxdb nginx authelia crowdsec step-ca hostapd netbird; do
+  a=$(systemctl is-active "$u" 2>/dev/null); [ "$a" = active ] && ok "service $u" || fail "service $u $a"
+done
+for u in mosquitto telegraf; do echo "info $u automatic restarts: $(systemctl show "$u" -p NRestarts --value)"; done
+down=$(curl -s http://127.0.0.1:9090/api/v1/targets | grep -o '"health":"down"' | wc -l); [ "$down" -eq 0 ] && ok "prometheus targets, none down" || fail "prometheus targets down: $down"
+[ -n "$(dig +short hooks.slack.com @127.0.0.1 | head -n 1)" ] && ok "dns" || fail "dns"
+n=0; for i in $(seq 1 36); do n=$(ss -tnH state established '( sport = :8883 )' | wc -l); [ "$n" -ge "$IOT_BEFORE" ] && break; sleep 5; done
+[ "$n" -ge "$IOT_BEFORE" ] && ok "iot clients $n (before $IOT_BEFORE)" || fail "iot clients $n (before $IOT_BEFORE)"
+F=/var/lib/node_exporter/textfile_collector/homepi_boot_chain.prom; BOOT=$(date -d "$(uptime -s)" +%s)
+for i in $(seq 1 48); do [ -f "$F" ] && [ "$(stat -c %Y "$F")" -ge "$BOOT" ] && break; sleep 5; done
+if [ -f "$F" ] && [ "$(stat -c %Y "$F")" -ge "$BOOT" ]; then
+  if grep -q '^homepi_boot_chain_changed_since_boot.* 1$' "$F"; then fail "boot chain still reported as changed"; else ok "boot chain tested (every file older than this boot)"; fi
+  if grep -q '^homepi_boot_chain_consistent.* 1$' "$F"; then ok "kernel and initrd consistent"; else fail "kernel and initrd inconsistent"; fi
+else fail "boot chain metrics not published since boot"; fi
+REMOTE
+)
+echo "$POST"
+echo "=== storage drift (from the laptop)"
+DRIFT=$(cd "$REPO/ansible" && ansible-playbook storage.yml --check 2>&1 | grep -oE 'storage drift: [^"]*' | head -n 1)
+echo "$DRIFT"
+[ "$DRIFT" = "storage drift: none" ] || POST="$POST
+FAIL storage ${DRIFT:-no drift report}"
+FAILS=$(echo "$POST" | grep -c '^FAIL')
+if [ "$FAILS" -eq 0 ]; then echo "RESULT: PASS"; exit 0; fi
+echo "RESULT: FAIL ($FAILS check(s))"; echo "$POST" | grep '^FAIL'; exit 1

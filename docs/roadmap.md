@@ -20,6 +20,9 @@ Rules:
 | A3 | 2026-11-07, v0.1.29 | Alarm to e-mail without the Pi; full chain Pi to CloudWatch to OK; edge-heartbeat denied outside its namespace, on S3 and on reads; game day 1 FAIL (25 min 52 s, analysed and fixed), cadence measured in CloudWatch (10 of 10 minutes), game day 2 PASS: detection 14 min, recovery 4 min, preconditions checked in code (docs/game-days/) |
 | A4 | 2026-11-07, v0.1.31 | Unbound is the system resolver and forwards only netbird.cloud to NetBird (zone not DNSSEC-signed, NetBird resolver measured still listening with --disable-dns); switch done detached with automatic rollback, then adopted by the dns role; public, internal and NetBird names resolve through the system; Slack [FIRING] and [RESOLVED] test seen by a human |
 | B1 | 2026-11-07, v0.1.35 to v0.1.40 | `lv-scratch` (60G, empty) removed instead of shrinking the Btrfs; `lv-loki` 20G XFS, copy verified (124,780 entries, 256,427,664 bytes), 40G left free in the VG; role `storage` verifies in GitOps and fails on drift, `storage.yml` applies by hand (fstab and mount units are MANUAL); `nofail` on `lv-loki`, `RequiresMountsFor` on Loki; first reboot found 3 boot races, fixed by `service_ordering` (v0.1.40), second reboot PASS with no manual action; old copy deleted, `/var` inodes 133,253 to 8,473 (docs/game-days/2026-11-07-reboot.md) |
+| B5 (part) | 2026-11-07, v0.1.42 and v0.1.43 | Loki on the `inmemory` kvstore: nothing listens on 7946 (memberlist listened on every interface), `/ready` 200 18 s after a restart (3 to 4 min before); Prometheus reloads with SIGHUP on rule, config and secret changes: same PID across the v0.1.43 rule change, live reload timestamp advanced; the role fails unless the live `/metrics` shows a successful reload; `PrometheusConfigReloadFailed`. Alertmanager keeps its restart (envsubst at start). Open: Grafana and Alertmanager config and secrets in SOPS |
+| B9 | 2026-11-07, v0.1.43 | Drift drill (docs/game-days/2026-11-07-drift-drill.md): a comment line in a managed mount unit made the check fail, `GitopsCheckFailing` fired 440 s after the drift and reached Slack; `storage.yml` repaired it, resolved 169 s later |
+| B10 | 2026-11-07, v0.1.44 and v0.1.45 | `homepi-boot-chain-metrics` publishes per boot-critical file whether it changed since boot and whether kernel and initrd modules match; `BootChainUntested`, `BootChainInconsistent` (critical), `BootChainMetricsStale`; a simulated `crypttab` change (mtime only) went 0 to 1 and back; reboots through `scripts/homepi-controlled-reboot` (docs/runbooks/reboot.md) |
 
 ## Phase A: close the 2026-11-01 incident actions (now)
 
@@ -42,7 +45,10 @@ the second one with changed=0. changed_when and failed_when compare exact values
 
 Effect rule (learned with v0.1.38 and v0.1.39): a release is proven by its effect on the Pi (process
 arguments, logs, metrics), not by a task reported as changed. Boot rule (2026-11-07): a change to
-fstab, mounts or service ordering is proven by a reboot with no manual action.
+fstab, mounts or service ordering is proven by a reboot with no manual action. Check-mode rule
+(v0.1.44): check mode does not install a new unit, so a systemd task on a unit created in the same
+run skips only in that case (`not (ansible_check_mode and <unit task> is changed)`), never with
+`ignore_errors`; the next check mode on the deployed code must show it `ok`.
 
 | Step | Scope | Proof |
 |---|---|---|
