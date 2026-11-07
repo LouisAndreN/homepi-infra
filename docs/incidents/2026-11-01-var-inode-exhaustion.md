@@ -49,6 +49,10 @@ of the alerts that fired was ever delivered.
   (syslog was also ingested twice). Part of those lines were **audit events**: security evidence was
   silently discarded. Loki's retention also stopped while the compactor could not run.
 
+Measured on 2026-11-07 from syslog: Loki logged "failed to flush" (no space left on device) from
+2026-11-01 16:05 JST until the 06:00 hour of 2026-11-02, about 3,200 times per hour, and gave up
+4,291 chunk flushes after 10 retries: those log chunks are lost. No flush failure since.
+
 ## Root cause
 
 Two defects that were harmless separately:
@@ -88,9 +92,9 @@ Two defects that were harmless separately:
 | 3 | Daily removal of empty Loki stream directories, with metrics and a "housekeeping silent" alert | Done, v0.1.25 |
 | 4 | Alerts: inodes below 10% and 3%, space below 10%, full within 7 days, Loki dropping lines, Loki near the stream limit, systemd restart loops, failed units | Done, v0.1.25 |
 | 5 | Scheduled InfluxDB export with its own Influx CLI config (found during the incident) | Done, v0.1.24 |
-| 6 | Alerting channel outside the Pi: CloudWatch heartbeat fed by the Watchdog, SNS e-mail when it stops | Open, next |
-| 7 | Loki on its own XFS logical volume (dynamic inodes), off `/var` | Open, phase 2 storage role |
-| 8 | DNS: Unbound as the system resolver, NetBird only for its own domain; no single DNS chain for alerting | Open, phase 2 network role |
+| 6 | Alerting channel outside the Pi: CloudWatch heartbeat fed by the Watchdog, SNS e-mail when it stops | Done, v0.1.29 (game days 2026-11-06 and 2026-11-07) |
+| 7 | Loki on its own XFS logical volume (dynamic inodes), off `/var` | Done, v0.1.35 to v0.1.40 (B1, reboot game day 2026-11-07) |
+| 8 | DNS: Unbound as the system resolver, NetBird only for its own domain; no single DNS chain for alerting | Done, v0.1.31 (A4) |
 | 9 | Reduce auditd volume (~39 lines/s, mostly socket records to `/dev/log`) so security events are not drowned | Open |
 | 10 | Nginx, Authelia, CrowdSec and Loki configurations in the repo (they are still hand-managed) | Open, phase 2 |
 | 11 | Prometheus reloads instead of restarting on a rule change | Open |

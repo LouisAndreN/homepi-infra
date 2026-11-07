@@ -65,3 +65,26 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
 - **Off-site failure metric after a manual failed run**: `homepi_offsite_upload_success` stays at 0 until the next real upload, because a run that finds the newest archive already uploaded does not rewrite it. Never happens in normal operation (a failure leaves the archive unmarked, so the next hour retries). Clear it by removing the newest `.offsite` marker and starting `homepi-offsite.service`.
 - **Alert links point to http://homepi:9093**: a short name without DNS, a closed port and plain HTTP, so the link in a Slack message opens neither from a phone nor outside NetBird. Fix with the Nginx role (B6): Alertmanager behind https://homepi.internal with its external URL set accordingly.
 - **Roles Anywhere notification thresholds are set outside Terraform**: provider aws 6.71.0 accepts notification_settings on aws_rolesanywhere_trust_anchor, but with a 1-day threshold in the code the plan showed no change while AWS kept 45 days (state recorded: CA_CERTIFICATE_EXPIRY=45, END_ENTITY_CERTIFICATE_EXPIRY=45). A configuration that silently differs from reality is worse than none, so the block was removed. Set once on 2026-11-07 with aws rolesanywhere put-notification-settings: end-entity expiry 1 day (the 7-day aws-edge certificate is renewed at 72 h, so it fires only when renewal failed), CA expiry 45 days. A recreated trust anchor gets the 45-day defaults back until this is reapplied.
+
+## Added after the 2026-11-07 storage and reboot work
+
+- LUKS keyfile: `cryptdata` is opened at boot with `/boot/luks-keyfile`, stored on the unencrypted
+  root of the same NVMe. Encryption protects a decommissioned disk, not a stolen Pi. Serious
+  alternative: network-bound disk encryption (Clevis with a Tang server on another host), or a
+  passphrase over SSH in the initramfs.
+- The release gate tests the controller, not the runtime: the laptop runs its own Ansible with
+  ansible.posix, the Pi runs ansible-core 2.20.1 with community.sops only (v0.1.35 passed the gate
+  and failed on the Pi). The `storage` role is enforced builtin-only; roadmap B11.
+- Drift is verified only when a new tag is deployed; roadmap B9.
+- unattended-upgrades can rewrite the boot chain silently (2026-11-06: initramfs rebuilt by a
+  firmware package); nothing alerts that the next boot is untested; roadmap B10.
+- Loki runs the memberlist kvstore for a single node and listens on `*:7946` on every interface,
+  IoT network included; only the nftables input policy blocks it. `/ready` answers 503 for 3 to 4
+  minutes after boot, cause not found. Fix with the `inmemory` kvstore in B5, then measure.
+- Mosquitto loads `conf.d/99-debug.conf` in production (client identifiers and noise in the logs).
+- Logs are written three times: journal (1.2G), rsyslog (rotated weekly, about 500M) and Loki.
+  Loki itself produces 56% of the syslog lines; `NFT-DROP-INPUT` is logged without a rate limit
+  (about 81,000 kernel lines in 6.5 days).
+- `homepi_devices` is scraped every hour: an outage of the API on 127.0.0.1:8090 can stay unseen up
+  to an hour, and after each Prometheus restart the target stays `unknown` up to an hour.
+- Btrfs applies `compress` per filesystem: the archives subvolume gets zstd:3 like the others.

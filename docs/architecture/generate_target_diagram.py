@@ -44,7 +44,7 @@ pi=v(BOX.format(a="left",v="top").replace("#F2F3F3","#E9F5E1").replace("#7D8998"
  "Off-site upload hourly, 36 h alert "+B+"<br>"
  "Heartbeat relay (Watchdog, 1/min) "+B+"<br>"
  "Every config managed by Ansible "+P("B")+"<br>"
- "Loki on its own XFS volume "+P("B"),40,260,290,330)
+ "Loki on its own XFS volume "+B,40,260,290,330)
 lap=v(BOX.format(a="center",v="middle"),"<b>Laptop</b><br>release signing key, SOPS age key<br>break-glass Terraform (SSO) "+B,40,720,290,80)
 mail=v(BOX.format(a="center",v="middle"),"<b>Louis: e-mail on phone</b><br>independent of the Pi, its DNS and Slack "+B,40,830,290,64)
 v(BOX.format(a="center",v="middle"),"<b>USB recovery key</b><br>age recovery key, runbooks "+B,40,930,140,80)
