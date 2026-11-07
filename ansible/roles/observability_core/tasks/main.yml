@@ -39,3 +39,29 @@
     enabled: true
     state: started
   loop: [prometheus, alertmanager, node_exporter, loki]
+
+# Reconcile, do not only notify: a service whose unit file or drop-in is newer than its running
+# process never picked up the change (v0.1.38: node_exporter kept --collector.ntp after its unit changed).
+- name: Find observability services running an older unit than the one on disk
+  ansible.builtin.shell: |
+    set -eu
+    now=$(date +%s)
+    for s in prometheus alertmanager node_exporter loki; do
+      pid=$(systemctl show -p MainPID --value "$s")
+      [ "$pid" -gt 0 ] || continue
+      started=$(( now - $(ps -o etimes= -p "$pid" | tr -d ' ') ))
+      newest=$(find "/etc/systemd/system/$s.service" "/etc/systemd/system/$s.service.d" -type f -printf '%T@\n' 2>/dev/null | sort -n | tail -n 1 | cut -d. -f1)
+      if [ -n "$newest" ] && [ "$newest" -gt "$started" ]; then echo "$s"; fi
+    done
+  args:
+    executable: /bin/bash
+  register: observability_stale_services
+  changed_when: false
+  check_mode: false
+
+- name: Restart observability services running an older unit
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ observability_stale_services.stdout_lines }}"
