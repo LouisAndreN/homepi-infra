@@ -1,0 +1,13 @@
+# Managed by Ansible (observability_core). GitHub is the main source of the GitOps reconciler;
+# the local push repository is only a fallback, so a long failure must be fixed, not ignored.
+groups:
+  - name: homepi-gitops-github
+    rules:
+      - alert: GitopsGithubFetchFailing
+        expr: time() - homepi_gitops_github_last_success_timestamp_seconds > 6 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The Pi has not fetched from GitHub for 6 hours"
+          description: "Releases still arrive through the local push repository. Read: journalctl -u homepi-gitops@apply; check the deploy key in the GitHub repository settings and DNS."

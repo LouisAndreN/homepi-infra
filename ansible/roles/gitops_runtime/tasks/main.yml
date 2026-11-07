@@ -69,3 +69,32 @@
 
 - name: Install the reconciler units
   ansible.builtin.include_tasks: units.yml
+
+- name: Generate the GitHub deploy key of this Pi (read-only on GitHub, never leaves the Pi)
+  ansible.builtin.command:
+    cmd: "ssh-keygen -q -t ed25519 -N '' -C homepi-gitops-deploy -f {{ gitops_trust_dir }}/github_deploy_key"
+    creates: "{{ gitops_trust_dir }}/github_deploy_key"
+
+- name: Pin the GitHub SSH host key (SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU)
+  ansible.builtin.copy:
+    src: github_known_hosts
+    dest: "{{ gitops_trust_dir }}/github_known_hosts"
+    owner: root
+    group: root
+    mode: "0644"
+
+# Run as the owner of the repository: git rewrites the config file, which would otherwise become root's
+- name: Refuse forced pushes and deletions in the local push repository
+  ansible.builtin.shell: |
+    if [ "$(git config --file {{ gitops_origin }}/config --get {{ item }})" = true ]; then
+      echo unchanged
+    else
+      git config --file {{ gitops_origin }}/config {{ item }} true && echo changed
+    fi
+  loop:
+    - receive.denyNonFastForwards
+    - receive.denyDeletes
+  register: gitops_receive
+  changed_when: "'changed' in gitops_receive.stdout"
+  become: true
+  become_user: "{{ gitops_push_user }}"

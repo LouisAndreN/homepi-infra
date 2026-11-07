@@ -15,6 +15,9 @@ STATE_DIR=/var/lib/homepi-gitops
 WORK="$STATE_DIR/work"
 DEPLOYED="$STATE_DIR/deployed"
 SIGNERS=/etc/homepi-gitops/allowed_signers
+GITHUB_URL="${HOMEPI_GITOPS_GITHUB:-git@github.com:LouisAndreN/homepi-infra.git}"
+DEPLOY_KEY=/etc/homepi-gitops/github_deploy_key
+GITHUB_KNOWN_HOSTS=/etc/homepi-gitops/github_known_hosts
 AGE_KEY=/etc/homepi-gitops/age.key
 RUNTIME=/opt/homepi-gitops
 METRICS_DIR=/var/lib/node_exporter/textfile_collector
@@ -157,6 +160,31 @@ run_terraform() {
   tf_metrics 1
 }
 
+# GitHub is the main source; the local bare repository (pushed from the laptop) is the fallback.
+# Tags are pruned only against GitHub, and only when GitHub answered: pruning against the local
+# repository too would delete a tag published on GitHub only. Every tag is still verified against
+# allowed_signers: GitHub is a source, not a trust anchor.
+fetch_sources() {
+  local gh_ok=0 last
+  git -C "$WORK" remote get-url github > /dev/null 2>&1 || git -C "$WORK" remote add github "$GITHUB_URL"
+  git -C "$WORK" remote set-url github "$GITHUB_URL"
+  if [ -r "$DEPLOY_KEY" ] && GIT_SSH_COMMAND="ssh -i $DEPLOY_KEY -o IdentitiesOnly=yes -o UserKnownHostsFile=$GITHUB_KNOWN_HOSTS -o StrictHostKeyChecking=yes -o BatchMode=yes -o ConnectTimeout=15" \
+       git -C "$WORK" fetch --quiet --force --prune --prune-tags github; then
+    gh_ok=1
+  else
+    log "WARNING: cannot fetch from GitHub ($GITHUB_URL), using the local push repository only"
+  fi
+  last=$(sed -n 's/^homepi_gitops_github_last_success_timestamp_seconds //p' "$METRICS_DIR/homepi_gitops_github.prom" 2>/dev/null || true)
+  [ "$gh_ok" = 1 ] && last=$(date +%s)
+  write_metrics homepi_gitops_github.prom \
+    "homepi_gitops_github_fetch_success $gh_ok" \
+    "homepi_gitops_github_last_success_timestamp_seconds ${last:-0}"
+  if ! git -C "$WORK" fetch --quiet --force --tags origin; then
+    [ "$gh_ok" = 1 ] || fail "$1" "cannot fetch from GitHub nor from $REMOTE"
+    log "WARNING: cannot fetch from $REMOTE, using GitHub only"
+  fi
+}
+
 main() {
   local mode="${1:-}"
   case "$mode" in apply | check) ;; *) echo "usage: $0 apply|check" >&2; exit 2 ;; esac
@@ -164,7 +192,7 @@ main() {
   flock -n 9 || { log "another run is in progress"; exit 0; }
 
   [ -d "$WORK/.git" ] || git clone --quiet "$REMOTE" "$WORK" || fail "$mode" "cannot clone $REMOTE"
-  git -C "$WORK" fetch --quiet --force --prune --prune-tags origin || fail "$mode" "cannot fetch from $REMOTE"
+  fetch_sources "$mode"
 
   CUR_TAG="" CUR_COMMIT=""
   [ ! -f "$DEPLOYED" ] || read -r CUR_TAG CUR_COMMIT < "$DEPLOYED"
