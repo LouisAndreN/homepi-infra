@@ -27,3 +27,12 @@ Access over `wt0` is decided by the NetBird ACL: the injected accept rules come 
 The `network` role (B2a) verifies the files and services in check mode and fails on drift; it never
 writes or reloads. Changes will go through the guarded tools of B2b (atomic table replacement, automatic
 rollback after 3 minutes unless confirmed), with physical access to the Pi.
+
+## IoT egress NAT: stays in netfilter-persistent
+
+The IoT masquerade stays in `/etc/iptables/rules.v4`. It worked; moving it to nftables would only
+consolidate (one file, one tool). A move needs a proof that IoT egress still works, and the only honest
+client is an IoT device: a phone on `Pi-IoT` would copy the shared WPA2 key to a general-purpose device
+and its cloud backup. v0.1.50 added a second NAT in nftables before that proof existed; v0.1.51 reverts
+it. The move will be done in one guarded step once the egress canary (an ESP32 that checks HTTPS egress
+and IoT-to-LAN isolation, and reports over MQTT) exists.

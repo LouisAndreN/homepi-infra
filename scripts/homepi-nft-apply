@@ -50,6 +50,11 @@ if [ "$N22" = up ]; then tcp "$NB_IP" 22 && echo "ok   NetBird ssh" || { echo "F
 AFT=$(state); echo "$AFT"
 MISSING=$(comm -23 <(val "$B" tables | tr ' ' '\n' | sed '/^$/d' | sort) <(val "$AFT" tables | tr ' ' '\n' | sed '/^$/d' | sort) | tr '\n' ' ')
 ADDED=$(comm -13 <(val "$B" tables | tr ' ' '\n' | sed '/^$/d' | sort) <(val "$AFT" tables | tr ' ' '\n' | sed '/^$/d' | sort) | tr '\n' ' ')
+# A table the new file destroys without defining it again is an intended removal, not a failure
+GONE_OK=$(comm -23 <(sed -nE 's/^destroy table ([a-z0-9]+) ([a-z0-9_]+)$/\1\/\2/p' "$NEW" | sort -u) <(sed -nE 's/^table ([a-z0-9]+) ([a-z0-9_]+) \{.*/\1\/\2/p' "$NEW" | sort -u) | tr '\n' ' ')
+REMOVED=""; for x in $MISSING; do case " $GONE_OK " in *" $x "*) REMOVED="$REMOVED$x ";; esac; done
+for x in $REMOVED; do MISSING=$(echo " $MISSING " | sed "s# $x # #" | xargs); done
+[ -n "$REMOVED" ] && echo "ok   removed as intended by the new file: $REMOVED"
 [ -z "$MISSING" ] && echo "ok   every table from before still exists (CrowdSec, NetBird, iptables untouched)${ADDED:+, added: $ADDED}" || { echo "FAIL tables gone: $MISSING"; FAIL=1; }
 [ "$(val "$AFT" iot)" -ge "$(val "$B" iot)" ] && echo "ok   IoT clients $(val "$AFT" iot)" || { echo "FAIL IoT clients $(val "$AFT" iot) (before $(val "$B" iot))"; FAIL=1; }
 [ "$(val "$AFT" nat)" = "$(val "$B" nat)" ] && echo "ok   IoT NAT present" || { echo "FAIL IoT NAT"; FAIL=1; }
