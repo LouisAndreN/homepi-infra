@@ -72,9 +72,10 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
   root of the same NVMe. Encryption protects a decommissioned disk, not a stolen Pi. Serious
   alternative: network-bound disk encryption (Clevis with a Tang server on another host), or a
   passphrase over SSH in the initramfs.
-- The release gate tests the controller, not the runtime: the laptop runs its own Ansible with
-  ansible.posix, the Pi runs ansible-core 2.20.1 with community.sops only (v0.1.35 passed the gate
-  and failed on the Pi). The `storage` role is enforced builtin-only; roadmap B11.
+- Release gate (fixed in v0.1.46): v0.1.35 passed the laptop gate and failed on the Pi. Both
+  runtimes now install `ansible/requirements.*`, and every release is checked by `homepi-precheck`
+  with the Pi's own runtime before signing. Python still differs (3.14 on the laptop, 3.12 on the
+  Pi): the precheck is the safeguard.
 - Drift detection is hourly: the check timer runs the deployed tag in check mode. `GitopsDrift`
   fires on changed tasks; a failed check run (how the storage role reports drift) raised no alert
   until `GitopsCheckFailing` (v0.1.43). A drift stays unseen up to about an hour.

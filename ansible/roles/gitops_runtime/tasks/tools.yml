@@ -18,11 +18,25 @@
     mode: "0644"
   loop: [requirements.txt, requirements.yml]
 
-- name: Virtualenv with the pinned ansible-core and its libraries
+# pip with a requirements file reports a change on every check-mode run (v0.1.46), which made the
+# hourly drift check count one changed task forever. Compare pip freeze with the pins instead.
+- name: Read the installed versions in the Ansible virtualenv
+  ansible.builtin.command: "{{ gitops_dir }}/venv/bin/pip freeze"
+  register: gitops_venv_freeze
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Pins wanted in the Ansible virtualenv (ansible/requirements.txt)
+  ansible.builtin.set_fact:
+    gitops_pins_wanted: "{{ lookup('ansible.builtin.file', playbook_dir ~ '/requirements.txt').splitlines() | map('trim') | reject('match', '^(#|$)') | map('lower') | list }}"
+
+- name: Virtualenv with the pinned ansible-core and its libraries (only when a pin is missing)
   ansible.builtin.pip:
     requirements: "{{ gitops_dir }}/requirements.txt"
     virtualenv: "{{ gitops_dir }}/venv"
     virtualenv_command: python3 -m venv
+  when: gitops_venv_freeze.rc != 0 or (gitops_pins_wanted | difference(gitops_venv_freeze.stdout_lines | map('lower') | list)) | length > 0
 
 - name: Pinned collections (same ansible/requirements.yml as the laptop)
   ansible.builtin.set_fact:

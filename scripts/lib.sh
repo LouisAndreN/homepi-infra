@@ -9,7 +9,8 @@ fi
 # nothing applied), and refuse a laptop whose ansible-core differs from the Pi's.
 homepi_precheck() {
   local out rc lv pv
-  if ! ssh homepi 'test -x /usr/local/sbin/homepi-precheck' < /dev/null; then
+  # The helper is root-only (0750): test it with sudo, like every root-owned file on the Pi
+  if ! ssh homepi 'sudo test -x /usr/local/sbin/homepi-precheck' < /dev/null; then
     if [ "${HOMEPI_PRECHECK_BOOTSTRAP:-}" = 1 ]; then echo "WARNING: homepi-precheck not installed yet (bootstrap release), Pi check skipped"; return 0; fi
     echo "STOPPED: /usr/local/sbin/homepi-precheck missing on the Pi"; return 1
   fi
