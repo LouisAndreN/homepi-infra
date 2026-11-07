@@ -1,40 +1,31 @@
 ---
 # Storage layout (B1). Boot-critical: fstab lines, subvolume mount units, Loki mount ordering.
+# ansible.builtin only: the GitOps runtime ships ansible-core without extra collections.
 # Volumes are never created or resized here: LVM changes are manual, documented operations.
 
-- name: Btrfs root subvolume mount (/mnt/data, @iot-hot)
-  ansible.posix.mount:
-    path: /mnt/data
-    src: /dev/vg-main/lv-data
-    fstype: btrfs
-    opts: defaults,noatime,compress=zstd:3,space_cache=v2,subvol=@iot-hot
-    dump: "0"
-    passno: "2"
-    state: mounted
-  check_mode: "{{ storage_verify_only | bool }}"
-  register: storage_mount_data
+- name: Read fstab entries
+  ansible.builtin.command: "findmnt --fstab -r -n -o SOURCE,FSTYPE,OPTIONS,FREQ,PASSNO -M {{ item.target }}"
+  loop: "{{ storage_mounts }}"
+  loop_control:
+    label: "{{ item.target }}"
+  register: storage_fstab_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
 
-- name: Loki volume mount (/var/lib/loki, XFS)
-  ansible.posix.mount:
-    path: /var/lib/loki
-    src: /dev/vg-main/lv-loki
-    fstype: xfs
-    opts: defaults,noatime,inode64
-    dump: "0"
-    passno: "2"
-    state: mounted
-  check_mode: "{{ storage_verify_only | bool }}"
-  register: storage_mount_loki
-
-- name: Loki volume root ownership
-  ansible.builtin.file:
-    path: /var/lib/loki
-    state: directory
-    owner: loki
-    group: loki
-    mode: "0755"
-  check_mode: "{{ storage_verify_only | bool }}"
-  register: storage_loki_dir
+- name: Write a missing or different fstab entry (storage.yml only)
+  ansible.builtin.lineinfile:
+    path: /etc/fstab
+    regexp: '^\S+\s+{{ item.item.target | regex_escape }}\s'
+    line: "{{ item.item.line }}"
+    backup: true
+  loop: "{{ storage_fstab_read.results }}"
+  loop_control:
+    label: "{{ item.item.target }}"
+  when:
+    - storage_apply | bool
+    - (item.stdout | trim) != item.item.fstab
+  register: storage_fstab_write
 
 - name: Btrfs subvolume mount units
   ansible.builtin.copy:
@@ -67,12 +58,42 @@
   check_mode: "{{ storage_verify_only | bool }}"
   register: storage_loki_dropin
 
-- name: Reload systemd after a unit change
+- name: Reload systemd after an fstab or unit change
   ansible.builtin.systemd:
     daemon_reload: true
   when:
     - not (storage_verify_only | bool)
-    - storage_units is changed or storage_loki_dropin is changed
+    - storage_fstab_write is changed or storage_units is changed or storage_loki_dropin is changed
+
+- name: Read active mounts
+  ansible.builtin.command: "findmnt -r -n -o SOURCE,FSTYPE -M {{ item.target }}"
+  loop: "{{ storage_mounts }}"
+  loop_control:
+    label: "{{ item.target }}"
+  register: storage_mount_read
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Mount a missing volume (storage.yml only)
+  ansible.builtin.command: "mount {{ item.item.target }}"
+  loop: "{{ storage_mount_read.results }}"
+  loop_control:
+    label: "{{ item.item.target }}"
+  when:
+    - storage_apply | bool
+    - (item.stdout | trim) != item.item.mounted
+  changed_when: true
+
+- name: Loki volume root ownership
+  ansible.builtin.file:
+    path: /var/lib/loki
+    state: directory
+    owner: loki
+    group: loki
+    mode: "0755"
+  check_mode: "{{ storage_verify_only | bool }}"
+  register: storage_loki_dir
 
 - name: Subvolume mount units enabled and mounted
   ansible.builtin.systemd:
@@ -83,14 +104,30 @@
   check_mode: "{{ storage_verify_only | bool }}"
   register: storage_units_state
 
+- name: Collect storage drift
+  ansible.builtin.set_fact:
+    storage_drift: >-
+      {%- set d = [] -%}
+      {%- for r in storage_fstab_read.results if (r.stdout | trim) != r.item.fstab -%}
+      {%- set _ = d.append('fstab ' ~ r.item.target ~ ': ' ~ ((r.stdout | trim) or 'missing')) -%}
+      {%- endfor -%}
+      {%- for r in storage_mount_read.results if (r.stdout | trim) != r.item.mounted -%}
+      {%- set _ = d.append('mount ' ~ r.item.target ~ ': ' ~ ((r.stdout | trim) or 'not mounted')) -%}
+      {%- endfor -%}
+      {%- for n, v in [('subvolume mount units', storage_units), ('Loki drop-in directory', storage_loki_dropin_dir), ('Loki drop-in', storage_loki_dropin), ('Loki volume ownership', storage_loki_dir), ('subvolume units state', storage_units_state)] if v is changed -%}
+      {%- set _ = d.append(n) -%}
+      {%- endfor -%}
+      {{ d }}
+
+- name: Show storage drift
+  ansible.builtin.debug:
+    msg: "storage drift: {{ storage_drift | join(' | ') if storage_drift else 'none' }}"
+
 - name: Fail on storage drift (GitOps verify mode)
   ansible.builtin.fail:
     msg: >-
-      Storage drift detected. Boot-critical files are applied by hand:
-      ansible-playbook storage.yml --check --diff, then the same without --check.
+      Storage drift detected: {{ storage_drift | join(' | ') }}. Boot-critical files are applied
+      by hand: ansible-playbook storage.yml --check --diff, then the same without --check.
   when:
     - not (storage_apply | bool)
-    - >-
-      storage_mount_data is changed or storage_mount_loki is changed or storage_loki_dir is changed
-      or storage_units is changed or storage_loki_dropin_dir is changed or storage_loki_dropin is changed
-      or storage_units_state is changed
+    - storage_drift | length > 0
