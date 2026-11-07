@@ -7,7 +7,7 @@ After=network-online.target
 User=node_exporter
 Group=node_exporter
 Type=simple
-ExecStart=/usr/local/bin/node_exporter --collector.hwmon --collector.systemd --collector.processes --collector.ntp --collector.diskstats --collector.netstat --collector.meminfo --collector.filesystem --collector.cpu --collector.textfile.directory=/var/lib/node_exporter/textfile_collector --web.listen-address=127.0.0.1:9100 --collector.netdev.device-include="eth0|wt0|wlx0013eff27090|lo"
+ExecStart=/usr/local/bin/node_exporter --collector.hwmon --collector.systemd --collector.processes --collector.diskstats --collector.netstat --collector.meminfo --collector.filesystem --collector.cpu --collector.textfile.directory=/var/lib/node_exporter/textfile_collector --web.listen-address=127.0.0.1:9100 --collector.netdev.device-include="eth0|wt0|wlx0013eff27090|lo"
 
 Restart=always
 RestartSec=5
