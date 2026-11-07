@@ -1,5 +1,26 @@
 # Shell helpers for the laptop. Load them with: . ~/homepi-infra/scripts/lib.sh
 
+# B11: the repository venv (built from ansible/requirements.txt) comes first, never the system Ansible
+if [ -x "$HOME/homepi-infra/.venv/bin/ansible-playbook" ]; then
+  case ":$PATH:" in *":$HOME/homepi-infra/.venv/bin:"*) ;; *) export PATH="$HOME/homepi-infra/.venv/bin:$PATH" ;; esac
+fi
+
+# B11: run the HEAD commit in check mode on the Pi with the Pi's own runtime (unsigned, check mode only,
+# nothing applied), and refuse a laptop whose ansible-core differs from the Pi's.
+homepi_precheck() {
+  local out rc lv pv
+  if ! ssh homepi 'test -x /usr/local/sbin/homepi-precheck' < /dev/null; then
+    if [ "${HOMEPI_PRECHECK_BOOTSTRAP:-}" = 1 ]; then echo "WARNING: homepi-precheck not installed yet (bootstrap release), Pi check skipped"; return 0; fi
+    echo "STOPPED: /usr/local/sbin/homepi-precheck missing on the Pi"; return 1
+  fi
+  out=$(git -C ~/homepi-infra archive --format=tar HEAD | ssh homepi 'sudo /usr/local/sbin/homepi-precheck' 2>&1); rc=$?
+  echo "$out"
+  lv=$(ansible --version 2>/dev/null | head -n 1); pv=$(echo "$out" | sed -n 's/^precheck runtime: \(ansible \[core [^]]*\]\).*/\1/p')
+  [ "$lv" = "$pv" ] || { echo "STOPPED: the laptop runs '$lv', the Pi runs '$pv'"; return 1; }
+  { [ "$rc" -eq 0 ] && echo "$out" | grep -qE '^homepi +:.* unreachable=0 +failed=0 '; } || { echo "STOPPED: the Pi's own runtime rejects this commit, no tag created"; return 1; }
+  echo "Pi precheck: OK ($pv)"
+}
+
 # Commit the given paths, then sign, verify and push a release tag to the Pi.
 # Every step can be resumed: an existing commit with the same subject is reused,
 # and an existing tag stops the function before anything is pushed.
@@ -14,6 +35,7 @@ release() {
     git commit -q -m "$subject" -m "$body" || { echo "STOPPED: the commit failed (run release again)"; cd ~; return 1; }
   fi
   if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then echo "STOPPED: tag $tag already exists"; cd ~; return 1; fi
+  homepi_precheck || { cd ~; return 1; }
   git tag -s "$tag" -m "$tagmsg" && git tag -v "$tag" > /dev/null 2>&1 && echo "tag verified" && git push pi main "refs/tags/$tag" 2>&1 | tail -2
   rc=$?
   cd ~

@@ -1,0 +1,6 @@
+# B11: one Ansible runtime. The laptop venv (.venv) and the Pi venv (/opt/homepi-gitops/venv,
+# role gitops_runtime) install exactly these pins. Values are those measured on the Pi on 2026-11-07.
+ansible-core==2.20.1
+Jinja2==3.1.6
+PyYAML==6.0.3
+resolvelib==1.2.1

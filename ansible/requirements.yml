@@ -1,0 +1,6 @@
+---
+# B11: the only collections the repository may use, on the laptop and on the Pi.
+# ansible.cfg disables collections_scan_sys_path, so collections bundled with a system Ansible are ignored.
+collections:
+  - name: community.sops
+    version: "2.2.7"

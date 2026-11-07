@@ -1,0 +1,18 @@
+#!/bin/bash
+# Managed by Ansible (gitops_runtime). B11: check mode of a candidate commit with the Pi's own runtime,
+# before the laptop signs a tag (v0.1.35 passed the laptop gate and failed here).
+# Reads a git archive (tar) on stdin. Check mode only, in a private directory removed on exit.
+set -uo pipefail
+RUNTIME=/opt/homepi-gitops
+AGE_KEY=/etc/homepi-gitops/age.key
+D=$(mktemp -d /run/homepi-precheck.XXXXXX); chmod 700 "$D"; trap 'rm -rf "$D"' EXIT
+tar -x -C "$D" || { echo "precheck: cannot read the archive"; exit 2; }
+for i in $(seq 1 60); do pgrep -f /usr/local/sbin/homepi-gitops-sync > /dev/null || break; sleep 5; done
+cd "$D/ansible" || { echo "precheck: no ansible directory in the archive"; exit 2; }
+echo "precheck runtime: $("$RUNTIME/venv/bin/ansible" --version | head -n 1), $(ANSIBLE_COLLECTIONS_PATH="$RUNTIME/collections" "$RUNTIME/venv/bin/ansible-galaxy" collection list 2>/dev/null | awk '/^[a-z0-9_]+\.[a-z0-9_]+ +[0-9]/{printf "%s %s ", $1, $2}')"
+OUT="$D/out"
+ANSIBLE_COLLECTIONS_PATH="$RUNTIME/collections" SOPS_AGE_KEY_FILE="$AGE_KEY" ANSIBLE_NOCOLOR=1 \
+  "$RUNTIME/venv/bin/ansible-playbook" -i inventory/pi-local.yml site.yml --check > "$OUT" 2>&1
+rc=$?
+awk '/^(TASK|RUNNING HANDLER)/{t=$0} /^(changed|fatal|failed)/{print t; print "   " $0} /\[ERROR\]|resolve module/{print} /^homepi /{print}' "$OUT"
+exit $rc

@@ -8,13 +8,47 @@
     group: root
     mode: "0755"
 
-- name: Create the virtualenv and install the pinned ansible-core
+# B11: the Pi installs the same requirement files as the laptop, so one change moves both runtimes.
+- name: Requirement files of the Ansible runtime
+  ansible.builtin.copy:
+    src: "{{ playbook_dir }}/{{ item }}"
+    dest: "{{ gitops_dir }}/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [requirements.txt, requirements.yml]
+
+- name: Virtualenv with the pinned ansible-core and its libraries
   ansible.builtin.pip:
-    name: "ansible-core=={{ gitops_tools.ansible_core_version }}"
+    requirements: "{{ gitops_dir }}/requirements.txt"
     virtualenv: "{{ gitops_dir }}/venv"
     virtualenv_command: python3 -m venv
 
-- name: Install the pinned community.sops collection
-  ansible.builtin.command:
-    cmd: "{{ gitops_dir }}/venv/bin/ansible-galaxy collection install community.sops:=={{ gitops_tools.community_sops_version }} -p {{ gitops_dir }}/collections"
-    creates: "{{ gitops_dir }}/collections/ansible_collections/community/sops/MANIFEST.json"
+- name: Pinned collections (same ansible/requirements.yml as the laptop)
+  ansible.builtin.set_fact:
+    gitops_collections_wanted: "{{ (lookup('ansible.builtin.file', playbook_dir ~ '/requirements.yml') | from_yaml).collections }}"
+
+- name: Read the installed collection versions
+  ansible.builtin.command: "{{ gitops_dir }}/venv/bin/ansible-galaxy collection list {{ item.name }} -p {{ gitops_dir }}/collections"
+  loop: "{{ gitops_collections_wanted }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: gitops_collections_installed
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Install a missing or different collection version
+  ansible.builtin.command: "{{ gitops_dir }}/venv/bin/ansible-galaxy collection install {{ item.item.name }}:=={{ item.item.version }} -p {{ gitops_dir }}/collections --force"
+  loop: "{{ gitops_collections_installed.results }}"
+  loop_control:
+    label: "{{ item.item.name }} {{ item.item.version }}"
+  when: item.stdout is not search('(?m)^' ~ (item.item.name | regex_escape) ~ '\s+' ~ (item.item.version | regex_escape) ~ '\s*$')
+
+- name: Pre-tag check of a candidate commit with this runtime (homepi-precheck)
+  ansible.builtin.copy:
+    src: homepi-precheck
+    dest: /usr/local/sbin/homepi-precheck
+    owner: root
+    group: root
+    mode: "0750"

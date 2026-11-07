@@ -34,3 +34,6 @@ __pycache__/
 # Terraform state never goes into git
 *.tfstate*
 .terraform/
+# B11: local Ansible runtime, rebuilt from ansible/requirements.*
+/.venv/
+/ansible/collections/
