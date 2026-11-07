@@ -1,0 +1,11 @@
+# Managed by Ansible (boot_chain).
+[Unit]
+Description=HomePi boot chain metrics (is the next boot already tested?)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-boot-chain-metrics
+ProtectSystem=full
+ProtectHome=true
+PrivateTmp=true
+NoNewPrivileges=true

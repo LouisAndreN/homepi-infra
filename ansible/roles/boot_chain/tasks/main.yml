@@ -1,0 +1,43 @@
+---
+# B10: tell a human when the next boot would run an untested boot chain. No automatic reboot:
+# a human reboots with the checks of docs/game-days/2026-11-07-reboot.md.
+
+- name: Boot chain metrics script
+  ansible.builtin.copy:
+    src: homepi-boot-chain-metrics
+    dest: /usr/local/sbin/homepi-boot-chain-metrics
+    owner: root
+    group: root
+    mode: "0755"
+  register: boot_chain_script
+
+- name: Boot chain metrics service and timer
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [homepi-boot-chain-metrics.service, homepi-boot-chain-metrics.timer]
+  register: boot_chain_units
+
+- name: Reload systemd after a boot chain unit change
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: boot_chain_units is changed
+
+# Check mode does not install a new unit: skip only when the unit is about to be created, never ignore errors
+- name: Boot chain metrics timer enabled and running
+  ansible.builtin.systemd_service:
+    name: homepi-boot-chain-metrics.timer
+    enabled: true
+    state: started
+  when: not (ansible_check_mode and boot_chain_units is changed)
+
+- name: Publish the boot chain metrics now when the script or units changed
+  ansible.builtin.systemd_service:
+    name: homepi-boot-chain-metrics.service
+    state: started
+  when:
+    - not (ansible_check_mode and boot_chain_units is changed)
+    - boot_chain_script is changed or boot_chain_units is changed

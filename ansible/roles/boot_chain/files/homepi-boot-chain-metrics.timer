@@ -1,0 +1,10 @@
+# Managed by Ansible (boot_chain).
+[Unit]
+Description=HomePi boot chain metrics, after boot and every 30 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=30min
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,28 @@
+groups:
+  - name: boot_chain
+    rules:
+      # B10: the next boot (a power cut included) would run a boot chain that never booted.
+      - alert: BootChainUntested
+        expr: max by (instance) (homepi_boot_chain_changed_since_boot) == 1
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "The next boot of {{ $labels.instance }} runs an untested boot chain"
+          description: "A boot-critical file changed after the current boot (kernel, initrd, cmdline, config, crypttab or fstab). Plan a controlled reboot with the reboot game day checks (docs/game-days/2026-11-07-reboot.md)."
+      - alert: BootChainInconsistent
+        expr: homepi_boot_chain_consistent == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kernel and initrd modules differ on {{ $labels.instance }}: do not reboot"
+          description: "vmlinuz {{ $labels.kernel }}, initrd modules {{ $labels.initrd_modules }}. The next boot would likely fail to load its modules. Rebuild the initramfs (update-initramfs -u, flash-kernel) before any reboot; fallback copies: /boot/firmware/*.bak."
+      - alert: BootChainMetricsStale
+        expr: time() - homepi_boot_chain_last_run_timestamp_seconds > 7200 or absent(homepi_boot_chain_last_run_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Boot chain metrics are not published"
+          description: "homepi-boot-chain-metrics has not run for 2 hours: check systemctl status homepi-boot-chain-metrics.timer."

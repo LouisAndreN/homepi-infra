@@ -1,0 +1,25 @@
+#!/bin/bash
+# Managed by Ansible (boot_chain). Is the next boot the one that was already tested?
+# A boot-critical file changed after the current boot means the next boot, power cut included,
+# runs an untested chain (2026-11-06: unattended-upgrades rebuilt the initramfs silently).
+set -u
+OUT=/var/lib/node_exporter/textfile_collector/homepi_boot_chain.prom
+BOOT=$(date -d "$(uptime -s)" +%s)
+TMP=$(mktemp "$OUT.XXXXXX")
+{
+  echo "# HELP homepi_boot_chain_changed_since_boot 1 if the file changed after the current boot (next boot untested)"
+  echo "# TYPE homepi_boot_chain_changed_since_boot gauge"
+  for f in /boot/firmware/vmlinuz /boot/firmware/initrd.img /boot/firmware/cmdline.txt /boot/firmware/config.txt /etc/crypttab /etc/fstab; do
+    if [ -e "$f" ]; then [ "$(stat -c %Y "$f")" -ge "$BOOT" ] && v=1 || v=0; else v=1; fi
+    echo "homepi_boot_chain_changed_since_boot{file=\"$f\"} $v"
+  done
+  KV=$( (zcat /boot/firmware/vmlinuz 2>/dev/null || cat /boot/firmware/vmlinuz) | strings | grep -m 1 -oE 'Linux version [^ ]+' | awk '{print $3}')
+  IV=$(lsinitramfs /boot/firmware/initrd.img 2>/dev/null | grep -m 1 -oE 'lib/modules/[^/]+' | cut -d/ -f3)
+  [ -n "$KV" ] && [ "$KV" = "$IV" ] && c=1 || c=0
+  echo "# HELP homepi_boot_chain_consistent 1 if the kernel in /boot/firmware/vmlinuz matches the modules in initrd.img"
+  echo "# TYPE homepi_boot_chain_consistent gauge"
+  echo "homepi_boot_chain_consistent{kernel=\"${KV:-unknown}\",initrd_modules=\"${IV:-unknown}\",running=\"$(uname -r)\"} $c"
+  echo "# HELP homepi_boot_chain_last_run_timestamp_seconds Last run of homepi-boot-chain-metrics"
+  echo "# TYPE homepi_boot_chain_last_run_timestamp_seconds gauge"
+  echo "homepi_boot_chain_last_run_timestamp_seconds $(date +%s)"
+} > "$TMP" && chmod 0644 "$TMP" && mv "$TMP" "$OUT"
