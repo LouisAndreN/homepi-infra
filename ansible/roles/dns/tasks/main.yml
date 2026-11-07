@@ -1,6 +1,7 @@
 ---
-# DNS of the Pi. Step 1 of A4: Unbound learns to forward netbird.cloud to NetBird, so that it can
-# become the system resolver without losing NetBird peer names. resolv.conf is not managed yet.
+# DNS of the Pi (A4). Unbound is the system resolver and forwards only netbird.cloud to the NetBird
+# client's resolver; NetBird no longer manages /etc/resolv.conf. If NetBird is down, only NetBird
+# peer names fail. Switched by hand once on 2026-11-07 (detached, with rollback), managed here since.
 - name: Forward netbird.cloud to the NetBird resolver (Unbound drop-in)
   ansible.builtin.copy:
     src: netbird-forward.conf
@@ -9,3 +10,45 @@
     group: root
     mode: "0644"
   notify: Restart unbound
+
+- name: Apply a changed Unbound configuration before relying on it
+  ansible.builtin.meta: flush_handlers
+
+# A new Pi whose Unbound does not answer yet must not lose its DNS
+- name: Check that Unbound answers before making it the system resolver
+  ansible.builtin.command: "dig +short +time=2 +tries=1 {{ item }} @127.0.0.1"
+  loop:
+    - hooks.slack.com
+    - homepi.internal
+  register: dns_unbound_check
+  changed_when: false
+  check_mode: false
+  failed_when: dns_unbound_check.stdout | length == 0
+
+- name: Find the NetBird client configuration
+  ansible.builtin.stat:
+    path: /var/lib/netbird/default.json
+  register: dns_netbird_config
+
+# The file holds the NetBird private keys: never logged, only DisableDNS is used
+- name: Read the NetBird client configuration
+  ansible.builtin.slurp:
+    src: /var/lib/netbird/default.json
+  register: dns_netbird_raw
+  when: dns_netbird_config.stat.exists
+  no_log: true
+
+- name: Stop NetBird from managing the system DNS
+  ansible.builtin.shell: netbird down && netbird up --disable-dns
+  when:
+    - dns_netbird_config.stat.exists
+    - not ((dns_netbird_raw.content | b64decode | from_json).DisableDNS | default(false))
+
+- name: Point the system resolver at Unbound
+  ansible.builtin.copy:
+    src: resolv.conf
+    dest: /etc/resolv.conf
+    owner: root
+    group: root
+    mode: "0644"
+    backup: true
