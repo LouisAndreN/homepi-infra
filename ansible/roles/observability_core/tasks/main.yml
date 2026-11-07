@@ -72,10 +72,11 @@
   ansible.builtin.meta: flush_handlers
 
 - name: Prometheus accepted its configuration (last reload successful)
-  ansible.builtin.command: "curl -sf http://127.0.0.1:9090/api/v1/query?query=prometheus_config_last_reload_successful"
+  # Live value from /metrics: the query API returns the last self-scrape, which can still show 1 after a rejected reload
+  ansible.builtin.command: "curl -sf http://127.0.0.1:9090/metrics"
   register: observability_reload_state
   changed_when: false
   check_mode: false
   retries: 20
   delay: 3
-  until: observability_reload_state.rc == 0 and observability_reload_state.stdout is search('"value":\[[0-9.]+,"1"\]')
+  until: observability_reload_state.rc == 0 and observability_reload_state.stdout is search('(?m)^prometheus_config_last_reload_successful 1$')

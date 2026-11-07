@@ -75,12 +75,14 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
 - The release gate tests the controller, not the runtime: the laptop runs its own Ansible with
   ansible.posix, the Pi runs ansible-core 2.20.1 with community.sops only (v0.1.35 passed the gate
   and failed on the Pi). The `storage` role is enforced builtin-only; roadmap B11.
-- Drift is verified only when a new tag is deployed; roadmap B9.
+- Drift detection is hourly: the check timer runs the deployed tag in check mode. `GitopsDrift`
+  fires on changed tasks; a failed check run (how the storage role reports drift) raised no alert
+  until `GitopsCheckFailing` (v0.1.43). A drift stays unseen up to about an hour.
 - unattended-upgrades can rewrite the boot chain silently (2026-11-06: initramfs rebuilt by a
   firmware package); nothing alerts that the next boot is untested; roadmap B10.
-- Loki runs the memberlist kvstore for a single node and listens on `*:7946` on every interface,
-  IoT network included; only the nftables input policy blocks it. `/ready` answers 503 for 3 to 4
-  minutes after boot, cause not found. Fix with the `inmemory` kvstore in B5, then measure.
+- Loki (fixed in v0.1.42): it ran the memberlist kvstore for a single node and listened on `*:7946`
+  on every interface. With the `inmemory` kvstore nothing listens on 7946 and `/ready` answers 200
+  18 s after a restart (it took 3 to 4 minutes after boot with memberlist).
 - Mosquitto loads `conf.d/99-debug.conf` in production (client identifiers and noise in the logs).
 - Logs are written three times: journal (1.2G), rsyslog (rotated weekly, about 500M) and Loki.
   Loki itself produces 56% of the syslog lines; `NFT-DROP-INPUT` is logged without a rate limit

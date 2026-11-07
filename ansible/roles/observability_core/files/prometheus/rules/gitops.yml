@@ -72,3 +72,13 @@ groups:
         annotations:
           summary: "Grafana differs from its Terraform code"
           description: "{{ $value }} Grafana object(s) would change if Terraform were applied again."
+      # A check run that fails is how the storage role reports drift (it fails on purpose): without this
+      # rule, the hourly check detected storage drift and nobody was told (found 2026-11-07).
+      - alert: GitopsCheckFailing
+        expr: homepi_gitops_check_success == 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "The hourly GitOps check of the deployed tag failed"
+          description: "The check-mode run of the deployed tag failed, for example on storage drift. Read: journalctl -u homepi-gitops@check --since -2h. Storage drift is repaired by hand with storage.yml (docs/runbooks/storage.md)."

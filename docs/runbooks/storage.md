@@ -48,4 +48,5 @@ Ansible: a wrong variable must not be able to shrink a logical volume.
 
 ## Known gap
 
-`site.yml` verifies storage only when a new tag is deployed. Continuous drift detection is roadmap B9.
+The hourly check timer runs the deployed tag in check mode: storage drift makes that run fail and
+raises `GitopsCheckFailing` (v0.1.43). Between two runs, a drift stays unseen up to about an hour.
