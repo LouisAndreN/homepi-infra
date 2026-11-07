@@ -28,7 +28,13 @@ read -r -p "Physical access to the Pi confirmed? Type NFT-APPLY to apply with a 
 [ "$A" = "NFT-APPLY" ] || { echo "STOPPED: not confirmed, nothing applied"; exit 1; }
 ssh "$HOST" "sudo -H bash -s -- $WINDOW" << 'REMOTE' || { echo "STOPPED: could not arm the rollback, nothing applied"; exit 1; }
 set -e
-{ echo "destroy table inet filter"; nft list table inet filter; } > /run/homepi-nft/rollback.nft
+# Rollback covers every table the new file destroys or creates: restore the ones that exist now, drop the new ones
+: > /run/homepi-nft/rollback.nft
+grep -E '^destroy table [a-z0-9]+ [a-z0-9_]+$' /run/homepi-nft/new.nft | while read -r _ _ fam name; do
+  echo "destroy table $fam $name" >> /run/homepi-nft/rollback.nft
+  nft list table "$fam" "$name" >> /run/homepi-nft/rollback.nft 2>/dev/null || true
+done
+grep -q . /run/homepi-nft/rollback.nft
 nft -c -f /run/homepi-nft/rollback.nft
 systemctl stop homepi-nft-rollback.timer 2>/dev/null || true; systemctl reset-failed homepi-nft-rollback.service 2>/dev/null || true
 systemd-run --quiet --unit=homepi-nft-rollback --on-active="$1" /usr/sbin/nft -f /run/homepi-nft/rollback.nft
@@ -42,7 +48,9 @@ if ssh -o ControlPath=none -o ConnectTimeout=5 -o BatchMode=yes "$HOST" true </d
 tcp "$LAN_IP" 443 && echo "ok   LAN https" || { [ "$L443" = up ] && { echo "FAIL LAN https"; FAIL=1; } || echo "info LAN https down before and after"; }
 if [ "$N22" = up ]; then tcp "$NB_IP" 22 && echo "ok   NetBird ssh" || { echo "FAIL NetBird ssh"; FAIL=1; }; else echo "info NetBird ssh not reachable from this laptop before, not tested"; fi
 AFT=$(state); echo "$AFT"
-[ "$(val "$AFT" tables)" = "$(val "$B" tables)" ] && echo "ok   same tables (CrowdSec, NetBird, iptables untouched)" || { echo "FAIL tables changed"; FAIL=1; }
+MISSING=$(comm -23 <(val "$B" tables | tr ' ' '\n' | sed '/^$/d' | sort) <(val "$AFT" tables | tr ' ' '\n' | sed '/^$/d' | sort) | tr '\n' ' ')
+ADDED=$(comm -13 <(val "$B" tables | tr ' ' '\n' | sed '/^$/d' | sort) <(val "$AFT" tables | tr ' ' '\n' | sed '/^$/d' | sort) | tr '\n' ' ')
+[ -z "$MISSING" ] && echo "ok   every table from before still exists (CrowdSec, NetBird, iptables untouched)${ADDED:+, added: $ADDED}" || { echo "FAIL tables gone: $MISSING"; FAIL=1; }
 [ "$(val "$AFT" iot)" -ge "$(val "$B" iot)" ] && echo "ok   IoT clients $(val "$AFT" iot)" || { echo "FAIL IoT clients $(val "$AFT" iot) (before $(val "$B" iot))"; FAIL=1; }
 [ "$(val "$AFT" nat)" = "$(val "$B" nat)" ] && echo "ok   IoT NAT present" || { echo "FAIL IoT NAT"; FAIL=1; }
 echo "info NetBird wt0 rules in inet filter: before $(val "$B" nb_injected), after $(val "$AFT" nb_injected)"
