@@ -95,6 +95,7 @@
     - receive.denyNonFastForwards
     - receive.denyDeletes
   register: gitops_receive
-  changed_when: "'changed' in gitops_receive.stdout"
+  # Exact comparison: the substring test matched 'unchanged' too and reported a change on every run
+  changed_when: gitops_receive.stdout | trim == 'changed'
   become: true
   become_user: "{{ gitops_push_user }}"

@@ -35,6 +35,10 @@ Rules:
 Method for every component: import the live configuration, run check mode until it reports 0
 change, commit (adoption), then change it in a separate release.
 
+Idempotence rule (learned with v0.1.33): check mode skips commands and shell tasks, so it cannot
+prove idempotence. Every adopted role must pass two consecutive real runs on the deployed code,
+the second one with changed=0. changed_when and failed_when compare exact values, never substrings.
+
 | Step | Scope | Proof |
 |---|---|---|
 | B1 | `storage`: LVM layout as data (used by the restore), Loki moved to its own XFS volume (space taken from `lv-scratch`, recreated smaller) | `df -i /var` no longer contains Loki; Loki data intact after the move |
