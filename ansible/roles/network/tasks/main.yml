@@ -1,0 +1,58 @@
+---
+# B2a: verify-only. Every task runs in check mode, whatever the playbook mode, and the run fails on drift.
+
+- name: Network files match the repository (check mode only)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop: "{{ network_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  check_mode: true
+  register: network_files_state
+
+- name: hostapd.conf matches the repository, passphrase from SOPS (check mode only)
+  ansible.builtin.template:
+    src: hostapd.conf.j2
+    dest: /etc/hostapd/hostapd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  vars:
+    network_hostapd_wpa_passphrase: "{{ lookup('community.sops.sops', playbook_dir ~ '/secrets/network.sops.yaml', extract='[\"hostapd_wpa_passphrase\"]') }}"
+  check_mode: true
+  diff: false
+  no_log: true
+  register: network_hostapd_state
+
+- name: Network services enabled and running (check mode only)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ network_services }}"
+  check_mode: true
+  register: network_services_state
+
+- name: Collect network drift
+  ansible.builtin.set_fact:
+    network_drift: >-
+      {%- set d = [] -%}
+      {%- for r in network_files_state.results if r is changed -%}{%- set _ = d.append(r.item.dest) -%}{%- endfor -%}
+      {%- if network_hostapd_state is changed -%}{%- set _ = d.append('/etc/hostapd/hostapd.conf') -%}{%- endif -%}
+      {%- for r in network_services_state.results if r is changed -%}{%- set _ = d.append('service ' ~ r.item) -%}{%- endfor -%}
+      {{ d }}
+
+- name: Show network drift
+  ansible.builtin.debug:
+    msg: "network drift: {{ network_drift | join(' | ') if network_drift else 'none' }}"
+
+- name: Fail on network drift
+  ansible.builtin.fail:
+    msg: >-
+      Network drift detected: {{ network_drift | join(' | ') }}. Network files are never applied by
+      GitOps; see docs/runbooks/network.md before touching the firewall.
+  when: network_drift | length > 0

@@ -1,0 +1,26 @@
+# Interface
+interface=wlx0013eff27090
+driver=nl80211
+
+# SSID IoT
+ssid=Pi-IoT
+
+# 2.4GHz
+hw_mode=g
+channel=6
+country_code=JP
+ieee80211d=1
+#ieee80211h=1
+ieee80211n=1
+wmm_enabled=1
+
+# Security WPA2
+auth_algs=1
+wpa=2
+wpa_passphrase={{ network_hostapd_wpa_passphrase }}
+wpa_key_mgmt=WPA-PSK
+wpa_pairwise=CCMP
+rsn_pairwise=CCMP
+
+# Isolation sensors
+ap_isolate=1

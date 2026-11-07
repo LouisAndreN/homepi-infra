@@ -15,5 +15,7 @@
     - dns
     - service_ordering
     - boot_chain
+    # Verify only: never writes network files, never reloads (docs/runbooks/network.md)
+    - network
     # Verify only: the storage role fails on drift and never changes boot-critical files
     - storage
