@@ -12,6 +12,7 @@ hardening_absent:
   - /etc/nginx/ssl/homepi.fullchain.pem
   - /etc/nginx/ssl/homepi.key
   - /etc/step-ca/secrets/root_ca_key
+  - /etc/mosquitto/acl/revoked.acl
 hardening_owned:
   - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
   - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}

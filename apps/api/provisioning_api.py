@@ -46,8 +46,6 @@ MQTT_PORT       = 1883
 MQTT_USER       = "homepi-api"
 MQTT_PASS       = os.environ.get("API_MQTT_PASS", "")
 
-ACL_REVOKED     = "/etc/mosquitto/acl/revoked.acl"
-MOSQUITTO_PID   = "/run/mosquitto/mosquitto.pid"
 
 LED_PRESETS_PATH = Path("/var/lib/homepi/led_presets.json")
 
@@ -191,17 +189,6 @@ def get_mqtt() -> mqtt.Client:
     return c
 
 # --- step-ca helpers --------------------
-
-def revoke_via_acl(device_id: str):
-    """Revocation ACL Mosquitto - deconnexion < 1s."""
-    with open (ACL_REVOKED, "a") as f:
-        f.write(f"\nuser {device_id}\ntopic # deny\n")
-    try:
-        pid = int(Path(MOSQUITTO_PID).read_text().strip())
-        os.kill(pid, 1)    # SIGHUP -> rechargement ACL
-        log.info(f"Mosquitto reloaded for {device_id} revocation")
-    except Exception as e:
-        log.warning(f"SIGHUP Mosquitto failed: {e}")
 
 # --- Firmware helpers --------------------------
 def get_latest_firmware(chip_target: str) -> dict | None:
@@ -677,22 +664,6 @@ async def confirm_device(device_id: str):
         conn.execute(
             "UPDATE devices SET status='approved' WHERE device_id=?", (device_id,)
         )
-    # Retirer du revoked.acl si present
-    if Path(ACL_REVOKED).exists():
-        lines = Path(ACL_REVOKED).read_text().splitlines()
-        filtered, skip = [], False
-        for line in lines:
-            if line.strip() == f"user {device_id}":
-                skip = True; continue
-            if skip and line.strip().startswith("topic"):
-                skip = False; continue
-            filtered.append(line)
-        Path(ACL_REVOKED).write_text("\n".join(filtered))
-        try:
-            pid = int(Path(MOSQUITTO_PID).read_text().strip())
-            os.kill(pid, 1)
-        except Exception:
-            pass
     audit(device_id, "reactivated", operator="operator")
     return {"device_id": device_id, "status": "approved"}
 
@@ -700,7 +671,7 @@ async def confirm_device(device_id: str):
 
 @app.post("/api/admin/devices/{device_id}/suspend")
 async def suspend_device(device_id: str):
-    """Suspend un device - revocation ACL immediate."""
+    """Suspend a device: homepi-acl-sync drops it from the MQTT allow-list within about 70 s."""
     with db() as conn:
         row = conn.execute(
             "SELECT cert_fingerprint FROM devices WHERE device_id=?", (device_id,)
@@ -712,7 +683,6 @@ async def suspend_device(device_id: str):
         conn.execute(
             "UPDATE devices SET status='suspended' WHERE device_id=?", (device_id,)
         )
-    revoke_via_acl(device_id)
     audit(device_id, "suspended", operator="operator")
     return {"device_id": device_id, "status": "suspended"}
 
