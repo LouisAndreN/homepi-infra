@@ -1,0 +1,15 @@
+---
+# Verify only (B7 pulled forward, 2026-11-08). One application served twice: 8090 (device routes via
+# nginx) and 8091 (admin routes via nginx + Authelia). Known flaws: docs/runbooks/nginx-api.md.
+api_files:
+  - {src: provisioning_api.py, dest: /opt/homepi/api/provisioning_api.py, owner: homepi-api, group: homepi-api, mode: "0644"}
+  - {src: homepi-api.service, dest: /etc/systemd/system/homepi-api.service, owner: root, group: root, mode: "0644"}
+  - {src: homepi-api-admin.service, dest: /etc/systemd/system/homepi-api-admin.service, owner: root, group: root, mode: "0644"}
+# Secrets and state: presence, owner and mode only, content never read
+api_stat_files:
+  - {path: /etc/homepi/master.key, owner: root, group: homepi-api, mode: "0640"}
+  - {path: /etc/homepi/step-ca/ca_password, owner: root, group: homepi-api, mode: "0640"}
+  - {path: /etc/homepi/api.env, owner: root, group: homepi-api, mode: "0640"}
+  - {path: /var/lib/homepi/devices.db, owner: homepi-api, group: homepi-api, mode: "0644"}
+api_services: [homepi-api, homepi-api-admin]
+api_pip: /opt/homepi/api-venv/bin/pip

@@ -1,0 +1,19 @@
+---
+# Verify only (B6 pulled forward, 2026-11-08). Files loaded by nginx, adopted byte for byte; owner and
+# mode recorded from the Pi. Dead files are listed in docs/runbooks/nginx-api.md, not adopted.
+nginx_files:
+  - {src: nginx.conf, dest: /etc/nginx/nginx.conf, owner: root, group: root, mode: "0644"}
+  - {src: site-homepi.internal, dest: /etc/nginx/sites-available/homepi.internal, owner: root, group: root, mode: "0644"}
+  - {src: site-auth.homepi.internal, dest: /etc/nginx/sites-available/auth.homepi.internal, owner: root, group: root, mode: "0644"}
+  - {src: snippet-ssl-homepi.conf, dest: /etc/nginx/snippets/ssl-homepi.conf, owner: root, group: root, mode: "0644"}
+  - {src: snippet-homepi-freeze-device-registration.conf, dest: /etc/nginx/snippets/homepi-freeze-device-registration.conf, owner: root, group: root, mode: "0644"}
+nginx_links:
+  - {path: /etc/nginx/sites-enabled/homepi.internal, src: /etc/nginx/sites-available/homepi.internal}
+  - {path: /etc/nginx/sites-enabled/auth.homepi.internal, src: /etc/nginx/sites-available/auth.homepi.internal}
+# TLS files declared in the loaded configuration (renewed or secret: presence, owner and mode only)
+nginx_stat_files:
+  - {path: /etc/nginx/ssl/wildcard.homepi.bundle.pem, owner: root, group: root, mode: "0644"}
+  - {path: /etc/nginx/ssl/wildcard.homepi.fullchain.pem, owner: root, group: root, mode: "0600"}
+  - {path: /etc/nginx/ssl/wildcard.homepi.key, owner: root, group: root, mode: "0600"}
+  - {path: /etc/step-ca/certs/root_ca.crt, owner: root, group: iot-platform, mode: "0640"}
+nginx_services: [nginx]

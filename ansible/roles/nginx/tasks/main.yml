@@ -1,0 +1,76 @@
+---
+# Verify only. Every task runs in check mode (nginx -t is read-only) and the run fails on drift.
+
+- name: nginx files match the repository (check mode only)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: "{{ item.owner }}"
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop: "{{ nginx_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  check_mode: true
+  register: nginx_files_state
+
+- name: nginx enabled sites link to the adopted files (check mode only)
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    src: "{{ item.src }}"
+    state: link
+  loop: "{{ nginx_links }}"
+  loop_control:
+    label: "{{ item.path }}"
+  check_mode: true
+  register: nginx_links_state
+
+- name: nginx TLS files present with the expected owner and mode (content never read)
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    get_checksum: false
+    get_mime: false
+  loop: "{{ nginx_stat_files }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: nginx_stat_state
+
+- name: nginx configuration test (read-only)
+  ansible.builtin.command: nginx -t
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: nginx_test
+
+- name: nginx service enabled and running (check mode only)
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop: "{{ nginx_services }}"
+  check_mode: true
+  register: nginx_services_state
+
+- name: Collect nginx drift
+  ansible.builtin.set_fact:
+    nginx_drift: >-
+      {%- set d = [] -%}
+      {%- for r in nginx_files_state.results if r is changed -%}{%- set _ = d.append(r.item.dest) -%}{%- endfor -%}
+      {%- for r in nginx_links_state.results if r is changed -%}{%- set _ = d.append(r.item.path ~ ' link') -%}{%- endfor -%}
+      {%- for r in nginx_stat_state.results -%}
+      {%- if not r.stat.exists -%}{%- set _ = d.append(r.item.path ~ ' missing') -%}
+      {%- elif r.stat.pw_name != r.item.owner or r.stat.gr_name != r.item.group or r.stat.mode != r.item.mode -%}{%- set _ = d.append(r.item.path ~ ' is ' ~ r.stat.pw_name ~ ':' ~ r.stat.gr_name ~ ' ' ~ r.stat.mode) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- if nginx_test.rc != 0 -%}{%- set _ = d.append('nginx -t fails') -%}{%- endif -%}
+      {%- for r in nginx_services_state.results if r is changed -%}{%- set _ = d.append('service ' ~ r.item) -%}{%- endfor -%}
+      {{ d }}
+
+- name: Show nginx drift
+  ansible.builtin.debug:
+    msg: "nginx drift: {{ nginx_drift | join(' | ') if nginx_drift else 'none' }}"
+
+- name: Fail on nginx drift
+  ansible.builtin.fail:
+    msg: "nginx drift detected: {{ nginx_drift | join(' | ') }}. See docs/runbooks/nginx-api.md."
+  when: nginx_drift | length > 0
