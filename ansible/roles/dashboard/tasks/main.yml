@@ -146,6 +146,7 @@
     - name: Every served file is readable by nginx (www-data), in apply and check
       ansible.builtin.command:
         argv: [runuser, -u, www-data, --, find, -L, "{{ dashboard_current }}/", "(", "!", -readable, -o, -type, d, "!", -executable, ")", -print]
+        chdir: /  # www-data cannot enter the Ansible working directory
       register: dashboard_unreadable
       changed_when: false
       check_mode: false
@@ -178,6 +179,7 @@
 - name: Served dashboard readable by nginx (www-data), on every apply and check
   ansible.builtin.command:
     argv: [runuser, -u, www-data, --, find, -L, "{{ dashboard_current }}/", "(", "!", -readable, -o, -type, d, "!", -executable, ")", -print]
+    chdir: /  # www-data cannot enter the Ansible working directory
   register: dashboard_served_unreadable
   changed_when: false
   check_mode: false

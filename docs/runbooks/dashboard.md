@@ -30,8 +30,8 @@ never registered; `site.webmanifest` had been edited by hand in the web root.
 Measured on 2026-11-08: the v0.1.64 release served 403 to every browser
 without a cached shell ("open() index.html failed (13: Permission denied)").
 The release had index.html 0600 and assets/ and icons/ 0700, while the build
-user's umask is 0022: the restrictive modes came from before the build (icons/
-is copied verbatim from public/), and `copy` with `remote_src` applies `mode`
+user's umask is 0022: the origin of the restrictive modes is unknown (GitOps
+units also run with umask 0022; icons/ is copied verbatim from public/), and `copy` with `remote_src` applies `mode`
 to the top directory only and kept them below it. Files from `public/` kept
 0644, so /sw.js and /site.webmanifest answered 200, and the `/ -> 302`
 health check only saw the Authelia redirect, never the file.
@@ -43,3 +43,8 @@ cause), and checks that www-data can read every served file (find -readable as
 www-data): inside the rebuild block, where a failure rolls back to the previous
 release, and since v0.1.70 also at the end of the role on every apply and
 check. Proven by a negative test (index.html 0600 -> check failed=1).
+
+The find runs with `chdir: /` (v0.1.71): started from the Ansible working
+directory, which www-data cannot enter, it exits 1 ("Failed to restore
+initial working directory"); the release precheck runs from another
+directory and did not show it.
