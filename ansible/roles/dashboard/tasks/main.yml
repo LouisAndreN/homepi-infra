@@ -154,9 +154,10 @@
         ln -sfn {{ dashboard_previous | quote }} {{ (dashboard_current ~ '.new') | quote }}
         && mv -T {{ (dashboard_current ~ '.new') | quote }} {{ dashboard_current | quote }}
       when: not ansible_check_mode and dashboard_previous is defined and ((dashboard_at_failure.stat.islnk | default(false)) or not dashboard_at_failure.stat.exists)
+      register: dashboard_rollback
 
     - name: Report the rollback
       ansible.builtin.fail:
         msg: >-
-          dashboard deployment failed{{ ' (check mode: nothing changed)' if ansible_check_mode else (' and was rolled back to ' ~ dashboard_previous if dashboard_previous is defined else '') }}:
+          dashboard deployment failed{{ ' (check mode: nothing changed)' if ansible_check_mode else (' and was rolled back to ' ~ dashboard_previous if (dashboard_rollback is defined and dashboard_rollback is not skipped) else ' before the switch (nothing was changed)') }}:
           {{ ansible_failed_result.msg | default('see the failed task above') }}
