@@ -3,7 +3,6 @@
 # mode recorded from the Pi. Dead files are listed in docs/runbooks/nginx-api.md, not adopted.
 nginx_files:
   - {src: nginx.conf, dest: /etc/nginx/nginx.conf, owner: root, group: root, mode: "0644"}
-  - {src: site-homepi.internal, dest: /etc/nginx/sites-available/homepi.internal, owner: root, group: root, mode: "0644"}
   - {src: site-auth.homepi.internal, dest: /etc/nginx/sites-available/auth.homepi.internal, owner: root, group: root, mode: "0644"}
   - {src: snippet-ssl-homepi.conf, dest: /etc/nginx/snippets/ssl-homepi.conf, owner: root, group: root, mode: "0644"}
   - {src: snippet-homepi-freeze-device-registration.conf, dest: /etc/nginx/snippets/homepi-freeze-device-registration.conf, owner: root, group: root, mode: "0644"}
@@ -17,3 +16,12 @@ nginx_stat_files:
   - {path: /etc/nginx/ssl/wildcard.homepi.key, owner: root, group: root, mode: "0600"}
   - {path: /etc/step-ca/certs/root_ca.crt, owner: root, group: iot-platform, mode: "0640"}
 nginx_services: [nginx]
+# v0.1.56: applied with nginx -t, reload, checks through nginx and automatic rollback (tasks/main.yml)
+nginx_apply_files:
+  - {src: site-homepi.internal, dest: /etc/nginx/sites-available/homepi.internal, mode: "0644"}
+  - {src: "{{ playbook_dir }}/roles/pki/files/mosquitto-ca_chain.crt", dest: /etc/nginx/ssl/client-ca-chain.pem, mode: "0644"}
+# Status codes measured through nginx before the change (2026-11-08)
+nginx_health_checks:
+  - {path: /step/roots, status: "201"}
+  - {path: /api/devices/esp32-0a171a18/status, status: "200"}
+  - {path: /, status: "302"}

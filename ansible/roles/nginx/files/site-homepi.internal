@@ -15,7 +15,7 @@ server {
     ssl_protocols       TLSv1.2 TLSv1.3;
     #ssl_session_cache   shared:SSL:10m;
 
-    ssl_client_certificate /etc/step-ca/certs/root_ca.crt;
+    ssl_client_certificate /etc/nginx/ssl/client-ca-chain.pem;
     ssl_verify_client      optional;
     ssl_verify_depth       2;
 
@@ -188,7 +188,7 @@ server {
 	deny  all;
 
         # Passer le CN du client cert au backend (pour /api/devices/{id}/renew)
-        proxy_set_header X-SSL-Client-CN $ssl_client_s_dn;
+        proxy_set_header X-SSL-Client-DN $ssl_client_s_dn;
         proxy_set_header X-SSL-Verify    $ssl_client_verify;
 
 	proxy_pass         http://127.0.0.1:8090/api/devices/;

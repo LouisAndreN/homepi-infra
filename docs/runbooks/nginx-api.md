@@ -5,8 +5,8 @@
 - Nginx serves `homepi.internal` and `auth.homepi.internal`. Routes: `/api/devices/` (IoT subnet, no user
   authentication) to 127.0.0.1:8090; `/api/admin/` (LAN and NetBird, Authelia 2FA) to 127.0.0.1:8091;
   `/step/roots` and `/step/sign` (IoT subnet) to step-ca; `/fw/` (IoT subnet).
-- Client certificates: `ssl_verify_client optional`, trusted CA is the root alone, so a client that sends
-  its leaf without the intermediate fails (400).
+- Client certificates: `ssl_verify_client optional`, verified against the CA chain (intermediate and root,
+  `/etc/nginx/ssl/client-ca-chain.pem`) since v0.1.56, so a client that sends only its leaf verifies.
 - One application (`provisioning_api:app`) runs twice: `homepi-api` (8090) and `homepi-api-admin` (8091).
   The only separation is the Nginx routing; the API has no authentication of its own, so every local
   process can call the admin routes on either port.
@@ -17,8 +17,10 @@
 
 ## Known flaws (open)
 
-1. `/renew` identity check never runs: the API reads `X-SSL-Client-DN`, Nginx sets `X-SSL-Client-CN`, and
-   `X-SSL-Verify` is not checked; a client can also send the header itself. Masked by the freeze.
+1. Fixed in v0.1.56: `/renew` and `x5c-enrolled` require `X-SSL-Verify: SUCCESS` and a client certificate
+   whose CN is the device (`_require_client_identity`, tested in `apps/api/tests/test_identity_guard.py`);
+   nginx sets `X-SSL-Client-DN` itself, which replaces any value a client sends. The routes stay closed
+   (freeze and `API_ALLOW_DEVICE_SELF_ENROLLMENT`) until the firmware presents its certificate on HTTPS.
 2. API signing is broken: `/etc/homepi/step-ca/ca_password` does not open the `admin` provisioner, so the
    fallback enrollment and `renew` cannot sign (first renewal due September 2027).
 3. Suspension writes `revoked.acl`, which mosquitto does not load, with an invalid line, and the API user
@@ -39,7 +41,8 @@
 
 ## Model
 
-Role `nginx` verifies only; `provisioning_api` deploys the API code from `apps/api` (database migration,
+Role `nginx` applies the main site and the client CA chain (nginx -t, reload, checks, rollback) and
+verifies the rest; `provisioning_api` deploys the API code from `apps/api` (database migration,
 automatic rollback of code and database) and verifies the rest: files byte for byte, TLS files and secrets by presence,
 owner and mode, `nginx -t`, the Python packages against `requirements.lock`, the services. Fixes go
 through a release, never by hand.

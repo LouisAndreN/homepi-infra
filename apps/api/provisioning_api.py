@@ -618,12 +618,13 @@ class X5CEnrolledRequest(BaseModel):
 
 
 @app.post("/api/devices/x5c-enrolled", dependencies=[Depends(_self_enrollment_enabled)])
-async def x5c_enrolled(req: X5CEnrolledRequest):
+async def x5c_enrolled(req: X5CEnrolledRequest, request: Request):
     """
     Called by ESP32 after enrollment X5C succedded.
     Device has already its LDevID signed by step-ca - HMAC not needed.
     We check only if device_id matches with expected format.
     """
+    _require_client_identity(request, req.device_id)
     if not req.device_id.startswith("esp32-"):
         raise HTTPException(400, "Invalid device_id format")
 
@@ -736,6 +737,28 @@ def _extract_cn(dn: str) -> str:
     return m.group(1).strip() if m else ''
 
 
+def _client_cn(dn: str) -> str:
+    """CN of a subject DN in RFC 2253 (CN=a,O=b or C=JP,O=b,CN=a) or OpenSSL slash form (/C=JP/CN=a)."""
+    for part in dn.replace("/", ",").split(","):
+        key, _, value = part.strip().partition("=")
+        if key.strip().upper() == "CN":
+            return value.strip()
+    return ""
+
+
+def _require_client_identity(request: Request, device_id: str) -> None:
+    """mTLS identity for device routes: nginx verified the client certificate and set these headers.
+
+    nginx sets X-SSL-Verify and X-SSL-Client-DN on /api/devices/ (proxy_set_header replaces any value a
+    client sends). The certificate must verify and its CN must be the device the request is about.
+    """
+    if request.headers.get("X-SSL-Verify", "") != "SUCCESS":
+        raise HTTPException(403, "Client certificate required")
+    cn = _client_cn(request.headers.get("X-SSL-Client-DN", ""))
+    if not cn or cn != device_id:
+        raise HTTPException(403, "Client certificate does not match the device")
+
+
 
 @app.post("/api/devices/{device_id}/renew", dependencies=[Depends(_self_enrollment_enabled)])
 async def renew(device_id: str, req: EnrollRequest, request: Request):
@@ -743,10 +766,7 @@ async def renew(device_id: str, req: EnrollRequest, request: Request):
     ESP32 renouvelle son LDevID (a J-30).
     Le cert client actuel est verifie par Mosquitto/Nginx (mTLS).
     """
-    dn = request.headers.get("X-SSL-Client-DN", "")
-    cn = _extract_cn(dn)
-    if cn and cn != device_id:
-        raise HTTPException(403, f"CN mismatch: {cn} != {device_id}")
+    _require_client_identity(request, device_id)
 
     # Check device is active
     with db() as conn:

@@ -1,7 +1,87 @@
 ---
-# Verify only. Every task runs in check mode (nginx -t is read-only) and the run fails on drift.
+# nginx: the main site and the client CA chain are applied (nginx -t, reload, checks through nginx,
+# automatic rollback); the other loaded files, the enabled-site links and the TLS files are verified only.
 
-- name: nginx files match the repository (check mode only)
+- name: nginx applied files differ from the Pi? (check mode only)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "{{ item.mode }}"
+  loop: "{{ nginx_apply_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  check_mode: true
+  register: nginx_apply_probe
+
+- name: Apply the nginx site and the client CA chain, rolling back on any failure
+  when: nginx_apply_probe is changed
+  block:
+    - name: Install the nginx applied files
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: root
+        group: root
+        mode: "{{ item.mode }}"
+        backup: true
+      loop: "{{ nginx_apply_files }}"
+      loop_control:
+        label: "{{ item.dest }}"
+      register: nginx_apply_install
+
+    - name: nginx configuration test after the change
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Reload nginx
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Routes answer through nginx after the reload
+      ansible.builtin.command:
+        argv: [curl, -sk, -o, /dev/null, -w, "%{http_code}", --max-time, "5", --resolve, "homepi.internal:443:127.0.0.1", "https://homepi.internal{{ item.path }}"]
+      loop: "{{ nginx_health_checks }}"
+      loop_control:
+        label: "{{ item.path }} -> {{ item.status }}"
+      register: nginx_health
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: nginx_health.stdout == item.status
+      when: not ansible_check_mode
+
+  rescue:
+    - name: Restore the previous nginx files
+      ansible.builtin.copy:
+        src: "{{ item.backup_file }}"
+        dest: "{{ item.dest }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      loop: "{{ (nginx_apply_install.results | default([])) | selectattr('backup_file', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: nginx configuration test after the rollback
+      ansible.builtin.command: nginx -t
+      changed_when: false
+
+    - name: Reload nginx with the previous files
+      ansible.builtin.systemd_service:
+        name: nginx
+        state: reloaded
+
+    - name: Report the rollback
+      ansible.builtin.fail:
+        msg: >-
+          nginx change failed and was rolled back:
+          {{ ansible_failed_result.msg | default('see the failed task above') }}
+
+- name: Other nginx files match the repository (check mode only)
   ansible.builtin.copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"
