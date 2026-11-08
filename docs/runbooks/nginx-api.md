@@ -100,3 +100,21 @@ re-enrollment loop of 2026-11-07 signed 232 certificates in a day), `DeviceApiRe
 refused requests in an hour), `DeviceMetricsStale`. Manual run:
 
     sudo /usr/local/sbin/homepi-device-metrics --stdout
+
+## Device certificate renewal (v0.1.59)
+
+`POST /step/renew` (IoT subnet and loopback only) proxies to step-ca
+`/1.0/renew`. The device authenticates with a token signed by the key of its
+current certificate (x5c header, issuer `step-ca-client/1.0`, subject = CN).
+Nginx terminates TLS, so mTLS renewal cannot reach step-ca; the token flow is
+the supported path. No provisioner password is involved, and step-ca refuses
+to renew a revoked certificate (passive revocation, model C).
+
+All `/step/` routes verify step-ca (`proxy_ssl_verify on`, root of the PKI,
+name `homepi.internal`, depth 2). Before v0.1.59 they did not: a local process
+listening on 127.0.0.1:8443 while step-ca was down would have received device
+requests.
+
+Target (option A): the API holds no CA secret. `/api/devices/enroll` (HMAC
+fallback) and API-side signing in `/renew` are removed in the next API release;
+the API keeps the registry only.
