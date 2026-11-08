@@ -34,7 +34,6 @@ export const API_BASE = ''
 export const PROMETHEUS_BASE = '/metrics-proxy'
 
 // Pairing window duration (secondes) — doit correspondre à SESSION_TTL dans provisioning_api.py
-export const PAIRING_TTL = 60
 
 // Plan d'appartement — adapte les pièces et appareils à ton logement
 export const ROOMS = [

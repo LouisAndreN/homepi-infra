@@ -56,7 +56,7 @@ def _route(name):
     return next(n for n in TREE.body if isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name == name)
 
 
-@pytest.mark.parametrize("name, device_arg", [("renew", "device_id"), ("x5c_enrolled", "req.device_id")])
+@pytest.mark.parametrize("name, device_arg", [("x5c_enrolled", "req.device_id")])
 def test_device_routes_call_the_guard_first(name, device_arg):
     body = [s for s in _route(name).body if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant))]
     assert ast.unparse(body[0]) == f"_require_client_identity(request, {device_arg})"

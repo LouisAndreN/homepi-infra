@@ -8,7 +8,7 @@ Routes :
   /api/admin/*     -> LAN (Dashboard), Authelia via Nginx
 """
 
-import asyncio, hashlib, hmac, json, logging, os, secrets, sqlite3, subprocess, time, threading, shutil
+import hashlib, json, logging, os, sqlite3, time, threading, shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -37,8 +37,6 @@ def _self_enrollment_enabled():
 
 # --- Config -------------------
 DB_PATH         = "/var/lib/homepi/devices.db"
-MASTER_KEY      = Path("/etc/homepi/master.key").read_bytes()
-CA_PASSWORD     = Path("/etc/homepi/step-ca/ca_password").read_text().strip()
 STEP_ROOT_CA    = "/etc/step-ca/certs/root_ca.crt"
 STEP_CA_URL     = "https://127.0.0.1:8443"
 PAIRING_TTL     = 60    # seconds
@@ -139,23 +137,9 @@ def audit(device_id: str, event: str, detail: str = "", operator: str = "system"
 
 
 # --- HMAC helpers --------------------
-def derive_device_key(device_id: str) -> bytes:
-    return HKDF(
-        algorithm=hashes.SHA256(), length=32,
-        salt=None, info=b"homepi-device-v1"
-    ).derive(MASTER_KEY + device_id.encode())
 
 
-def compute_pin(device_id: str) -> str:
-    key = derive_device_key(device_id)
-    return hmac.new(key, b"pin-v1", hashlib.sha256).hexdigest()[:6].upper()
 
-def verify_hmac_proof(device_id: str, nonce: str, proof:str) -> bool:
-    key = derive_device_key(device_id)
-    expected = hmac.new(
-        key, f"{device_id}:{nonce}".encode(), hashlib.sha256
-    ).hexdigest()
-    return hmac.compare_digest(expected, proof)
 
 
 # --- MQTT client ---------------------
@@ -207,28 +191,6 @@ def get_mqtt() -> mqtt.Client:
     return c
 
 # --- step-ca helpers --------------------
-def step_sign_csr(csr_pem: str, device_id: str, not_after: str = "8760h") -> str:
-    """Signe un CSR via step-ca CLI -> retourne le cert PEM. """
-    import tempfile
-    with tempfile.NamedTemporaryFile(suffix=".csr", delete=False, mode="w") as f:
-        f.write(csr_pem); csr_path = f.name
-    cert_path = csr_path.replace(".csr", ".crt")
-    try:
-        r = subprocess.run([
-            "step", "ca", "certificate", device_id,
-            cert_path, csr_path,
-            "--ca-url", STEP_CA_URL,
-            "--root", STEP_ROOT_CA,
-            "--provisioner-password-file", "/etc/homepi/step-ca/ca_password",
-            "--not-after", not_after,
-            "--force"
-        ], capture_output=True, text=True, timeout=30)
-        if r.returncode != 0:
-            raise RuntimeError(f"step ca: {r.stderr}")
-        return Path(cert_path).read_text()
-    finally:
-        Path(csr_path).unlink(missing_ok=True)
-        Path(cert_path).unlink(missing_ok=True)
 
 def revoke_via_acl(device_id: str):
     """Revocation ACL Mosquitto - deconnexion < 1s."""
@@ -539,52 +501,7 @@ app.add_middleware(CORSMiddleware,
 # DEVICE ROUTES   /api/devices/*
 # ==============================================
 
-class AnnounceRequest(BaseModel):
-    device_id:      str
-    chip_id:        str
-    fw_version:     str
-    capabilities:   list[str]
-    nonce:          str
-    hmac_proof:     str
 
-@app.post("/api/devices/announce")
-async def announce(req: AnnounceRequest):
-    """
-    ESP32 s'annonce avec preuve HMAC.
-    Cree/met a jour le device en pre_announced.
-    Declenche une notification SSE si une session pairing est ouverte.
-    """
-    if not verify_hmac_proof(req.device_id, req.nonce, req.hmac_proof):
-        raise HTTPException(403, "HMAC proof invalid")
-
-    with db() as conn:
-        conn.execute("""
-            INSERT INTO devices
-              (device_id, chip_id, fw_version, capabilities, status, last_seen)
-            VALUES (?, ?, ?, ?, 'pre_announced', strftime('%Y-%m-%dT%H:%M:%SZ','now'))
-            ON CONFLICT(device_id) DO UPDATE SET
-              chip_id=excluded.chip_id,
-              fw_version=excluded.fw_version,
-              capabilities=excluded.capabilities,
-              last_seen=excluded.last_seen,
-              status=CASE WHEN status='suspended' THEN 'suspended'
-                         ELSE 'pre_announced' END
-        """, (req.device_id, req.chip_id, req.fw_version,
-              json.dumps(req.capabilities)))
-    audit(req.device_id, "announced", f"chip={req.chip_id} fw={req.fw_version}")
-
-    # Notifier les sessions pairing ouvertes
-    for sess in _sessions.values():
-        if sess["phase"] == "waiting":
-            sess["phase"] = "seen"
-            sess["device_id"] = req.device_id
-            sess["device_data"] = req.model_dump()
-            for q in sess["queues"]:
-                q.put_nowait({"event": "device_seen",
-                              **req.model_dump(),
-                              "pin": compute_pin(req.device_id)})
-
-    return {"status": "announced", "device_id": req.device_id}
 
 @app.get("/api/devices/{device_id}/status")
 async def device_status(device_id: str):
@@ -599,9 +516,6 @@ async def device_status(device_id: str):
 
 
 
-class EnrollRequest(BaseModel):
-    device_id:  str
-    csr_pem:    str
 
 
 
@@ -690,51 +604,9 @@ async def x5c_enrolled(req: X5CEnrolledRequest, request: Request):
 
 
 
-@app.post("/api/devices/enroll")
-async def enroll(req: EnrollRequest):
-    """
-    ESP32 envoie un CSR -> recoit son LDevID.
-    Requis : device en status 'approved'.
-    """
-    with db() as conn:
-        row = conn.execute(
-            "SELECT status FROM devices WHERE device_id=?", (req.device_id,)
-        ).fetchone()
-    if not row:
-        raise HTTPException(404, "Unknown device")
-    if row["status"] != "approved":
-        raise HTTPException(403, f"Not approved (status={row['status']})")
-    cert_pem = step_sign_csr(req.csr_pem, req.device_id)
-
-    # Extraire fingerprint et expiry du cert
-    import subprocess as sp
-    fp = sp.run(["openssl","x509","-noout","-fingerprint","-sha256"],
-                input=cert_pem, capture_output=True, text=True).stdout.strip()
-    exp = sp.run(["openssl","x509","-noout","-enddate"],
-                 input=cert_pem, capture_output=True, text=True).stdout.strip()
-
-    with db() as conn:
-        conn.execute("""
-            UPDATE devices SET
-              status='active', cert_fingerprint=?, cert_expiry=?,
-              enrolled_at=strftime('%Y-%m-%dT%H:%M:%SZ','now'), confirmed_by='operator'
-            WHERE device_id=?
-        """, (fp, exp.replace("notAfter=","").strip(), req.device_id))
-    audit(req.device_id, "enrolled", f"fp={fp}", "api")
-
-    return {"device_id": req.device_id, "cert_pem": cert_pem}
 
 
 
-def _extract_cn(dn: str) -> str:
-    """Parse CN from complete DN.
-    Supported formats :
-       '/CN=esp32-819ff7b8/0=HomePi/C=JP'  (OpenSSL slash)
-       'CN=esp32-819ff7b8,0=HomePi,C=JP'   (RFC 4514)
-    """
-    import re
-    m = re.search(r'(?:^|[,/])CN=([^,/]+)', dn or '')
-    return m.group(1).strip() if m else ''
 
 
 def _client_cn(dn: str) -> str:
@@ -760,42 +632,6 @@ def _require_client_identity(request: Request, device_id: str) -> None:
 
 
 
-@app.post("/api/devices/{device_id}/renew", dependencies=[Depends(_self_enrollment_enabled)])
-async def renew(device_id: str, req: EnrollRequest, request: Request):
-    """
-    ESP32 renouvelle son LDevID (a J-30).
-    Le cert client actuel est verifie par Mosquitto/Nginx (mTLS).
-    """
-    _require_client_identity(request, device_id)
-
-    # Check device is active
-    with db() as conn:
-        row = conn.execute(
-            "SELECT status FROM devices WHERE device_id=?", (device_id,)
-        ).fetchone()
-    if not row or row["status"] != "active":
-        raise HTTPException(403, "Device not active")
-
-    cert_pem = step_sign_csr(req.csr_pem, device_id)
-
-    # Extract fingerprint + expiry of new cert
-    import subprocess as sp
-    fp  = sp.run(["openssl","x509","-noout","-fingerprint","-sha256"],
-                input=cert_pem, capture_output=True, text=True).stdout.strip()
-    exp = sp.run(["openssl","x509","-noout","-enddate"],
-                 input=cert_pem, capture_output=True, text=True).stdout.strip()
-
-    with db() as conn:
-        conn.execute("""
-            UPDATE devices SET
-              cert_fingerprint = ?,
-              cert_expiry      = ?,
-              enrolled_at      = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-            WHERE device_id = ?
-         """, (fp, exp.replace("notAfter=","").strip(), device_id))
-
-    audit(device_id, "cert_renewed", f"fp={fp}", "device")
-    return {"device_id": device_id, "cert_pem": cert_pem}
 
 
 
@@ -803,77 +639,13 @@ async def renew(device_id: str, req: EnrollRequest, request: Request):
 # ADMIN ROUTES   /api/admin/*
 # ==========================================
 
-@app.post("/api/admin/pairing/open")
-async def pairing_open():
-    """Ouvre une fenetre de pairing (TTL=60s)."""
-    sid = secrets.token_hex(16)
-    _sessions[sid] = {
-        "phase":     "waiting",
-        "device_id": None,
-        "device_data": None,
-        "remaining": PAIRING_TTL,
-        "queues":    [],
-    }
-
-    async def countdown():
-        for i in range(PAIRING_TTL, 0, -1):
-            await asyncio.sleep(1)
-            if sid not in _sessions:
-                return
-            _sessions[sid]["remaining "] = i
-            for q in _sessions[sid]["queues"]:
-                q.put_nowait({"event": "heartbeat", "remaining": i})
-        if sid in _sessions and _sessions[sid]["phase"] == "waiting":
-            for q in _sessions[sid]["queues"]:
-                q.put_nowait({"event": "expired"})
-            _sessions.pop(sid, None)
-
-    asyncio.create_task(countdown())
-    return {"session_id": sid, "ttl": PAIRING_TTL}
-
-
-
-@app.get("/api/admin/pairing/stream/{session_id}")
-async def pairing_stream(session_id: str):
-    """SSE - notifications temps reel vers le dashboard."""
-    if session_id not in _sessions:
-        raise HTTPException(404, "Session not found")
-
-    queue: asyncio.Queue = asyncio.Queue()
-    _sessions[session_id]["queues"].append(queue)
-
-    async def event_generator():
-        try:
-            while True:
-                data = await asyncio.wait_for(queue.get(), timeout=5)
-                yield f"data: {json.dumps(data)}\n\n"
-                if data.get("event") in ("device_seen", "expired"):
-                    break
-        except asyncio.TimeoutError:
-            yield 'data: {"event":"heartbeat"}\n\n'
-        finally:
-            if session_id in _sessions:
-                try: _sessions[session_id]["queues"].remove(queue)
-                except ValueError: pass
-
-    return StreamingResponse(
-        event_generator(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
-    )
 
 
 
 
-@app.post("/api/admin/pairing/confirm/{device_id}")
-async def pairing_confirm(device_id: str):
-    """Operateur confirme - device passe en 'approved'."""
-    with db() as conn:
-        conn.execute(
-            "UPDATE devices SET status='approved', confirmed_by='operator' "
-            "WHERE device_id=?", (device_id,))
-    audit(device_id, "operator_approved", operator="operator")
-    return {"device_id": device_id, "status": "approved"}
+
+
+
 
 
 

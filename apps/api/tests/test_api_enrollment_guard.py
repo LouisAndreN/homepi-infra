@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 SOURCE = (Path(__file__).resolve().parents[1] / "provisioning_api.py").read_text(encoding="utf-8")
-ROUTES = ('"/api/devices/x5c-enrolled"', '"/api/devices/{device_id}/renew"')
+ROUTES = ('"/api/devices/x5c-enrolled"',)
 
 
 class SelfEnrollmentGuardTests(unittest.TestCase):

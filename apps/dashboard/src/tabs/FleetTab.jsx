@@ -5,7 +5,6 @@ import { statusColorForValue } from '../hooks/thresholds.js'
 import { DeviceDetailModal } from '../components/DeviceDetailModal.jsx'
 
 const API         = ''
-const PAIRING_TTL = 60
 
 function timeSince(iso) {
   if (!iso) return 'never'
@@ -76,188 +75,6 @@ function MetricPills({ readings, isLive }) {
       })}
     </div>
   )
-}
-
-// ── Pairing Wizard ────────────────────────────────────────────
-function PairingWizard({ onDone, onBack }) {
-  const [phase,     setPhase]     = useState('idle')
-  const [remaining, setRemaining] = useState(PAIRING_TTL)
-  const [device,    setDevice]    = useState(null)
-  const [error,     setError]     = useState('')
-  const esRef = useRef(null)
-
-  const cleanup = () => {
-    if (esRef.current) { esRef.current.close(); esRef.current = null }
-  }
-  useEffect(() => () => cleanup(), [])
-
-  async function openSession() {
-    setPhase('opening'); setError('')
-    try {
-      const r = await fetch(`${API}/api/admin/pairing/open`, { method:'POST' })
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      const d = await r.json()
-      setRemaining(d.ttl)
-      setPhase('waiting')
-      const es = new EventSource(`${API}/api/admin/pairing/stream/${d.session_id}`)
-      esRef.current = es
-      es.onmessage = e => {
-        const data = JSON.parse(e.data)
-        if (data.event === 'heartbeat')   setRemaining(data.remaining)
-        if (data.event === 'device_seen') { setDevice(data); setPhase('seen'); cleanup() }
-        if (data.event === 'expired')     { setPhase('expired'); cleanup() }
-      }
-      es.onerror = () => { setPhase('expired'); cleanup() }
-    } catch(e) { setError(e.message); setPhase('idle') }
-  }
-
-  async function confirmDevice() {
-    if (!device) return
-    setPhase('confirming')
-    try {
-      const r = await fetch(
-        `${API}/api/admin/devices/${device.device_id}/confirm`,
-        { method:'POST' })
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      setPhase('done')
-      if (onDone) onDone()
-    } catch(e) { setError(e.message); setPhase('seen') }
-  }
-
-  const wrap = children => (
-    <div style={{ maxWidth:400, margin:'0 auto', width:'100%', padding:'0 16px' }}>
-      <button onClick={onBack} style={{
-        background:'none', border:'none', color:'var(--text2)',
-        fontSize:12, cursor:'pointer', marginBottom:16, padding:0
-      }}>← Back to fleet</button>
-      <div style={{
-        background:'var(--bg)', border:'0.5px solid var(--border)',
-        borderRadius:12, padding:24
-      }}>{children}</div>
-    </div>
-  )
-
-  if (phase === 'idle') return wrap(<>
-    <div style={{ fontSize:16, fontWeight:500, marginBottom:8 }}>Add a Device</div>
-    <div style={{ fontSize:13, color:'var(--text2)', lineHeight:1.7, marginBottom:20 }}>
-      Click <strong style={{color:'var(--text)'}}>Open window</strong>, then hold the
-      button on your ESP32-C3 for <strong style={{color:'var(--text)'}}>2 seconds</strong>.
-    </div>
-    <div style={{
-      background:'var(--bg2)', borderRadius:8, padding:'10px 14px',
-      marginBottom:20, fontSize:12, color:'var(--text2)', lineHeight:1.9
-    }}>
-      <span style={{color:'var(--warn)'}}>●</span> Fast blink → pairing in progress<br/>
-      <span style={{color:'var(--accent-vivid)'}}>●</span> Slow blink → waiting for confirmation<br/>
-      <span style={{color:'var(--ok)'}}>●</span> Solid → MQTT mTLS active
-    </div>
-    {error && <div style={{ fontSize:12, color:'var(--danger)', marginBottom:12 }}>{error}</div>}
-    <button onClick={openSession} style={{
-      width:'100%', padding:'10px 0', borderRadius:8,
-      border:'none', background:'var(--accent)', color:'#fff',
-      fontSize:13, fontWeight:500, cursor:'pointer'
-    }}>Open Pairing Window</button>
-  </>)
-
-  if (phase === 'opening') return wrap(
-    <div style={{ textAlign:'center', color:'var(--text2)', fontSize:13 }}>Opening…</div>
-  )
-
-  if (phase === 'waiting') return wrap(<>
-    <div style={{ textAlign:'center', marginBottom:20 }}>
-      <div style={{
-        width:64, height:64, borderRadius:'50%', margin:'0 auto 16px',
-        border:'2px solid var(--border)', display:'flex',
-        alignItems:'center', justifyContent:'center',
-        fontSize:22, fontWeight:500, fontFamily:'monospace', color:'var(--accent)'
-      }}>{remaining}</div>
-      <div style={{ fontSize:15, fontWeight:500, marginBottom:6 }}>Waiting…</div>
-      <div style={{ fontSize:13, color:'var(--text2)' }}>
-        Hold the button for <strong style={{color:'var(--text)'}}>2 seconds</strong>
-      </div>
-    </div>
-    <button onClick={() => { cleanup(); setPhase('idle') }} style={{
-      width:'100%', padding:'8px 0', borderRadius:8,
-      border:'0.5px solid var(--border)', background:'transparent',
-      color:'var(--text2)', fontSize:12, cursor:'pointer'
-    }}>Cancel</button>
-  </>)
-
-  if (phase === 'seen') return wrap(<>
-    <div style={{ fontSize:15, fontWeight:500, marginBottom:4 }}>Device Detected ✓</div>
-    <div style={{ fontSize:12, color:'var(--text2)', marginBottom:16 }}>
-      Verify before confirming
-    </div>
-    <div style={{
-      background:'var(--bg2)', borderRadius:8,
-      padding:'10px 14px', marginBottom:16
-    }}>
-      {[
-        ['Device ID',  device?.device_id],
-        ['Chip ID',    device?.chip_id],
-        ['Firmware',   device?.fw_version],
-        ['hw_model',   device?.hw_model],
-        ['Sensors',    device?.capabilities?.join(', ')],
-      ].map(([k,v]) => (
-        <div key={k} style={{
-          display:'flex', justifyContent:'space-between',
-          padding:'5px 0', borderBottom:'0.5px solid var(--border)', fontSize:12
-        }}>
-          <span style={{ color:'var(--text2)' }}>{k}</span>
-          <span style={{ fontFamily:'monospace', color:'var(--text)' }}>{v || '—'}</span>
-        </div>
-      ))}
-    </div>
-    {error && <div style={{ fontSize:12, color:'var(--danger)', marginBottom:10 }}>{error}</div>}
-    <div style={{ display:'flex', gap:8 }}>
-      <button onClick={() => { cleanup(); setPhase('idle') }} style={{
-        flex:1, padding:'9px 0', borderRadius:8,
-        border:'0.5px solid var(--border)', background:'transparent',
-        color:'var(--text2)', fontSize:12, cursor:'pointer'
-      }}>Cancel</button>
-      <button onClick={confirmDevice} style={{
-        flex:2, padding:'9px 0', borderRadius:8,
-        border:'none', background:'var(--ok)', color:'#fff',
-        fontSize:12, fontWeight:500, cursor:'pointer'
-      }}>Confirm Device</button>
-    </div>
-  </>)
-
-  if (phase === 'confirming') return wrap(
-    <div style={{ textAlign:'center', color:'var(--text2)', fontSize:13 }}>
-      Issuing mTLS certificate…
-    </div>
-  )
-
-  if (phase === 'done') return wrap(<>
-    <div style={{ textAlign:'center', padding:'8px 0 16px' }}>
-      <div style={{ fontSize:32, marginBottom:12, color:'var(--ok)' }}>✓</div>
-      <div style={{ fontSize:15, fontWeight:500, marginBottom:8 }}>Device Activated</div>
-      <div style={{ fontSize:12, color:'var(--text2)', lineHeight:1.6, marginBottom:20 }}>
-        mTLS certificate issued. The ESP32 will connect within 30s.<br/>
-        LED will turn solid green.
-      </div>
-    </div>
-    <button onClick={() => { setPhase('idle'); setDevice(null); onDone && onDone() }}
-      style={{
-        width:'100%', padding:'10px 0', borderRadius:8,
-        border:'none', background:'var(--accent)', color:'#fff',
-        fontSize:13, fontWeight:500, cursor:'pointer'
-      }}>Done</button>
-  </>)
-
-  if (phase === 'expired') return wrap(<>
-    <div style={{ fontSize:15, fontWeight:500, marginBottom:8 }}>Window Expired</div>
-    <div style={{ fontSize:13, color:'var(--text2)', marginBottom:20, lineHeight:1.6 }}>
-      No device detected in {PAIRING_TTL}s. Make sure the ESP32 is powered
-      and connected to the IoT network.
-    </div>
-    <button onClick={() => setPhase('idle')} style={{
-      width:'100%', padding:'10px 0', borderRadius:8,
-      border:'none', background:'var(--accent)', color:'#fff',
-      fontSize:13, fontWeight:500, cursor:'pointer'
-    }}>Try Again</button>
-  </>)
 }
 
 // ── OTA Panel (device individuel) ─────────────────────────────
@@ -620,7 +437,6 @@ function DeploymentPanel({ onBack }) {
 // ── Main FleetTab ─────────────────────────────────────────────
 export function FleetTab() {
   const [devices,         setDevices]         = useState([])
-  const [pairing,         setPairing]         = useState(false)
   const [showDeployments, setShowDeployments] = useState(false)
   const [expanded,        setExpanded]        = useState(null) // actions provisioning (Confirm/Suspend/OTA) — séparé du modal détail
   const [detailDevice,    setDetailDevice]    = useState(null) // device pour DeviceDetailModal (lecture seule, télémétrie)
@@ -670,14 +486,6 @@ export function FleetTab() {
   }, {})
   const filtered = devices.filter(d =>
     filter === 'all' || d.status === filter)
-
-  if (pairing) return (
-    <div style={{ height:'100%', overflow:'auto', paddingTop:20 }}>
-      <PairingWizard
-        onDone={() => { setPairing(false); load() }}
-        onBack={() => setPairing(false)}/>
-    </div>
-  )
 
   if (showDeployments) return (
     <div style={{ height:'100%', overflow:'hidden' }}>
@@ -731,11 +539,7 @@ export function FleetTab() {
             background:'transparent', color:'var(--text2)',
             fontSize:11, cursor:'pointer'
           }}>Refresh</button>
-          <button onClick={() => setPairing(true)} style={{
-            padding:'6px 14px', borderRadius:7,
-            border:'none', background:'var(--accent)',
-            color:'#fff', fontSize:12, fontWeight:500, cursor:'pointer'
-          }}>+ Add Device</button>
+          <span title="Devices are provisioned on the bench (provision_device.sh), then enroll with their IDevID" style={{ fontSize:12, color:'var(--text2)' }}>Add devices on the bench</span>
           <button onClick={() => setShowDeployments(true)} style={{
             padding:'5px 10px', borderRadius:6,
             border:'0.5px solid var(--border)',

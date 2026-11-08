@@ -118,3 +118,23 @@ requests.
 Target (option A): the API holds no CA secret. `/api/devices/enroll` (HMAC
 fallback) and API-side signing in `/renew` are removed in the next API release;
 the API keeps the registry only.
+
+## Option A applied (v0.1.60)
+
+The API holds no CA secret and signs nothing. Removed: `/api/devices/announce`,
+`/api/devices/enroll`, `/api/devices/{id}/renew`, `/api/admin/pairing/*`, the
+HMAC/PIN helpers, `step_sign_csr`, and the startup reads of
+`/etc/homepi/master.key` and `/etc/homepi/step-ca/ca_password`. The deployment
+proves the removed routes answer 404. `test_no_ca_secret.py` keeps it that way.
+
+Enrollment: bench provisioning (IDevID) + X5C provisioner. Renewal: device ->
+`/step/renew` (token, `x5cInsecure`, aud `https://homepi.internal/1.0/renew`),
+then `x5c-enrolled` to update the registry. `admin/devices/{id}/renew` only
+sends an MQTT `renew_cert` command; the device renews itself.
+
+The two secret files stay on the Pi (verified by owner and mode) until a canary
+device proves the new firmware; then they are destroyed.
+
+Code, migrations and the API virtualenv are root:root: the service can no
+longer rewrite its own code or libraries. `/opt/homepi/firmware` stays writable
+by the API (uploads). The dashboard is not deployed by Ansible yet (gap).
