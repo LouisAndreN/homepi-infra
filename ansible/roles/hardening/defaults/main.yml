@@ -13,6 +13,11 @@ hardening_absent:
   - /etc/nginx/ssl/homepi.key
   - /etc/step-ca/secrets/root_ca_key
   - /etc/mosquitto/acl/revoked.acl
+  - /etc/authelia/secrets.txt
+  - /etc/authelia/docker-compose.yml
+  - /etc/authelia/config
+  - /etc/authelia/configuration.yml.dpkg-old
+  - /var/lib/authelia/db.sqlite3.bak
 hardening_owned:
   - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
   - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}

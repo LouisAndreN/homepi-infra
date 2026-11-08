@@ -1,0 +1,65 @@
+theme: auto
+log:
+  level: info
+  format: json    # For integration SIEM / Loki after
+
+server:
+  address: 'tcp://127.0.0.1:9091/'
+
+# =============== AUTHENTICATION ================
+authentication_backend:
+  file:
+    path: /etc/authelia/users_database.yml
+    password:
+      algorithm: argon2id
+      iterations: 3       # Recommended in production (security vsa performance)
+      memory: 19456       # 19 MiB
+      parallelism: 4
+
+# ================= ACCESS CONTROL ================
+access_control:
+  default_policy: deny                # Least-privilege principle (Zero-Trust)
+  rules:
+    - domain: "homepi.internal"
+      policy: two_factor              # 2FA for everything
+
+# ================ SESSION MANAGEMENT ===============
+session:
+  name: authelia_session
+  expiration: '12h'                  # Entreprise standard (8-12h)
+  inactivity: '45m'
+  remember_me: '30d'
+  cookies:
+    - name: authelia_session
+      domain: homepi.internal
+      authelia_url: 'https://auth.homepi.internal/authelia'
+      default_redirection_url: 'https://homepi.internal/'
+      same_site: lax
+      expiration: '12h'
+      inactivity: '45m'
+
+# =================== STORAGE ====================
+storage:
+  local:
+    path: /var/lib/authelia/db.sqlite3
+
+# ================== NOTIFIER ==================
+notifier:
+  disable_startup_check: true
+  filesystem:
+    filename: /var/lib/authelia/notification.txt
+  # To migrate to SMTP in production for critical alerting
+
+# ================= IDENTITY VALIDATION ===============
+
+# ================ REGULATION (Anti-bruteforce) ==============
+regulation:
+  max_retries: 5
+  find_time: '2m'
+  ban_time: '15m'
+
+# ================ TELEMETRY =================
+telemetry:
+  metrics:
+    enabled: true
+    address: 'tcp://127.0.0.1:9959'

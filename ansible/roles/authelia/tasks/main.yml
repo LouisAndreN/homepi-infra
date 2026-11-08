@@ -1,44 +1,136 @@
-# Authelia, step 1 (adoption): secrets environment, users database and drop-in from the repository.
-# configuration.yml is adopted in the next step, without any secret inside. See docs/runbooks/authelia.md.
-- name: Authelia secrets environment (SOPS)
-  ansible.builtin.copy:
-    content: "{{ authelia_env_content }}"
-    dest: /var/lib/secrets/authelia.env
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
-  notify: Restart authelia
-
-- name: Authelia users database (SOPS)
-  ansible.builtin.copy:
-    content: "{{ authelia_users_content }}"
-    dest: /etc/authelia/users_database.yml
-    owner: authelia
-    group: authelia
-    mode: "0640"
-  no_log: true
-  notify: Restart authelia
-
-- name: Authelia drop-in directory
+# Authelia: configuration without secrets, secrets environment and users from SOPS, drop-in.
+# A change restarts Authelia, then health and the storage key are checked; on failure the
+# previous files are restored. See docs/runbooks/authelia.md.
+- name: Rollback copy directory
   ansible.builtin.file:
-    path: /etc/systemd/system/authelia.service.d
+    path: /var/backups/authelia
     state: directory
     owner: root
     group: root
-    mode: "0755"
+    mode: "0700"
 
-- name: Authelia drop-in loading the secrets environment
-  ansible.builtin.copy:
-    src: authelia-secrets.conf
-    dest: /etc/systemd/system/authelia.service.d/secrets.conf
-    owner: root
-    group: root
-    mode: "0644"
-  notify: Restart authelia
+- name: Authelia change with rollback
+  block:
+    - name: Keep the current files as the rollback copy
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "/var/backups/authelia/{{ item.name }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      loop:
+        - {src: /etc/authelia/configuration.yml, name: configuration.yml}
+        - {src: /var/lib/secrets/authelia.env, name: authelia.env}
+        - {src: /etc/authelia/users_database.yml, name: users_database.yml}
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+      when: not ansible_check_mode
 
-- name: Authelia enabled and running
-  ansible.builtin.systemd:
-    name: authelia
-    enabled: true
-    state: started
+    - name: Authelia configuration (no secret inside)
+      ansible.builtin.copy:
+        src: configuration.yml
+        dest: /etc/authelia/configuration.yml
+        owner: authelia
+        group: authelia
+        mode: "0640"
+      register: authelia_cfg
+
+    - name: Authelia secrets environment (SOPS)
+      ansible.builtin.copy:
+        content: "{{ authelia_env_content }}"
+        dest: /var/lib/secrets/authelia.env
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      register: authelia_env
+
+    - name: Authelia users database (SOPS)
+      ansible.builtin.copy:
+        content: "{{ authelia_users_content }}"
+        dest: /etc/authelia/users_database.yml
+        owner: authelia
+        group: authelia
+        mode: "0640"
+      no_log: true
+      register: authelia_users
+
+    - name: Authelia drop-in directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/authelia.service.d
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Authelia drop-in loading the secrets environment
+      ansible.builtin.copy:
+        src: authelia-secrets.conf
+        dest: /etc/systemd/system/authelia.service.d/secrets.conf
+        owner: root
+        group: root
+        mode: "0644"
+      register: authelia_dropin
+
+    - name: Restart Authelia after a change
+      ansible.builtin.systemd:
+        name: authelia
+        state: restarted
+        daemon_reload: true
+      when: (not ansible_check_mode) and (authelia_cfg is changed or authelia_env is changed or authelia_users is changed or authelia_dropin is changed)
+
+    - name: Authelia enabled and running
+      ansible.builtin.systemd:
+        name: authelia
+        enabled: true
+        state: started
+
+    - name: Authelia answers on its health endpoint
+      ansible.builtin.uri:
+        url: http://127.0.0.1:9091/api/health
+        status_code: 200
+      register: authelia_health
+      retries: 15
+      delay: 2
+      until: authelia_health.status == 200
+      when: not ansible_check_mode
+
+    - name: Storage encryption key opens the database
+      ansible.builtin.command:
+        argv: [systemd-run, --quiet, --wait, --pipe, --collect, -p, User=authelia, -p, Group=authelia,
+               -p, "EnvironmentFile=/var/lib/secrets/authelia.env", /usr/bin/authelia, storage, encryption, check,
+               --config, /etc/authelia/configuration.yml]
+        chdir: /
+      register: authelia_storage
+      changed_when: false
+      failed_when: "'SUCCESS' not in authelia_storage.stdout"
+      when: not ansible_check_mode
+
+  rescue:
+    - name: Restore the previous Authelia files
+      ansible.builtin.copy:
+        src: "/var/backups/authelia/{{ item.name }}"
+        dest: "{{ item.dest }}"
+        remote_src: true
+        owner: "{{ item.owner }}"
+        group: "{{ item.owner }}"
+        mode: "{{ item.mode }}"
+      loop:
+        - {name: configuration.yml, dest: /etc/authelia/configuration.yml, owner: authelia, mode: "0640"}
+        - {name: authelia.env, dest: /var/lib/secrets/authelia.env, owner: root, mode: "0600"}
+        - {name: users_database.yml, dest: /etc/authelia/users_database.yml, owner: authelia, mode: "0640"}
+      loop_control:
+        label: "{{ item.name }}"
+      no_log: true
+
+    - name: Restart Authelia on the previous files
+      ansible.builtin.systemd:
+        name: authelia
+        state: restarted
+        daemon_reload: true
+
+    - name: Report the rollback
+      ansible.builtin.fail:
+        msg: "Authelia change failed and was rolled back to the previous files. See docs/runbooks/authelia.md."

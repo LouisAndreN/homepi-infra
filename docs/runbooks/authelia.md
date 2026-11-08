@@ -18,13 +18,19 @@ every user to enroll 2FA again.
   (authelia 0640) from `ansible/secrets/authelia.sops.yaml`, byte-identical to the adopted files.
 - Drop-in `authelia.service.d/secrets.conf` (`EnvironmentFile=`).
 
-## Next (v0.1.77)
+## Managed (v0.1.77)
 
-`configuration.yml` as a template without any secret; archive `secrets.txt`,
-`docker-compose.yml`, `config/` (unused second users file), `configuration.yml.dpkg-old`,
-`/var/lib/authelia/db.sqlite3.bak`; new random JWT and session secrets (sessions end); the storage
-key stays (it sits next to the database and in the same backups, so rotating it would not reduce
-exposure).
+- `/etc/authelia/configuration.yml` from the repository, with no secret inside (generated on the
+  Pi from the live file minus the three secret lines, checked equal after parsing). The three
+  secrets come only from `authelia.env`, so a restored `/etc/authelia` can no longer bring back a
+  wrong storage key.
+- New random JWT and session secrets (64 characters); the storage key is unchanged (it sits next
+  to the database and in the same backups, rotating it would not reduce exposure).
+- A change restarts Authelia, then the role checks `/api/health` and `authelia storage encryption
+  check`; on failure the previous files (`/var/backups/authelia`, root 0700) are restored.
+- Retired to `/root/homepi-removed/authelia` and checked absent by `hardening`: `secrets.txt`,
+  `docker-compose.yml`, `config/` (unused second users file), `configuration.yml.dpkg-old`,
+  `/var/lib/authelia/db.sqlite3.bak`.
 
 ## Notes
 
