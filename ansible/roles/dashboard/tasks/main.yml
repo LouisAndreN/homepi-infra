@@ -65,8 +65,7 @@
         dest: "{{ dashboard_build }}/"
         owner: "{{ dashboard_build_user }}"
         group: "{{ dashboard_build_user }}"
-        mode: "0644"
-        directory_mode: "0755"
+        mode: u=rwX,go=rX  # X: execute on directories only (a numeric mode also hits the top directory)
 
     - name: Locked dependencies (integrity checked, no install scripts)
       ansible.builtin.command:
@@ -101,8 +100,7 @@
         remote_src: true
         owner: root
         group: root
-        mode: "0644"
-        directory_mode: "0755"
+        mode: u=rwX,go=rX  # X: execute on directories only (a numeric mode also hits the top directory)
       when: not ansible_check_mode
 
     - name: Release stamp
