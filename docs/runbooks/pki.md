@@ -64,3 +64,34 @@ so a step-ca outage of about 23 hours is tolerated once the broker enforces it. 
 
 `/opt/homepi/crl_sync.sh` is no longer scheduled; it is removed with the B7 cleanup (`homepi-triage`
 still refers to it).
+
+## X5C provisioner bound to the IDevID (v0.1.58, defect 5)
+
+Measured on 2026-11-08: the `idevid-x5c` provisioner had no template and no name
+policy. A test IDevID for a fictitious device obtained certificates for its own
+name, for another device name and for `homepi.internal`, each with the default
+usages (serverAuth and clientAuth). All test certificates were valid 5 minutes
+and revoked at once.
+
+Fix (applied manually with automatic rollback, then pinned here):
+`/etc/step-ca/templates/idevid-x5c.tpl` (`roles/pki/files/step-idevid-x5c.tpl`)
+takes the subject and the only DNS SAN from the IDevID common name
+(`.AuthorizationCrt`), refuses an IDevID name outside `^esp32-[0-9a-f]{8}$`,
+refuses any requested subject or SAN that differs, and limits usage to
+digitalSignature + clientAuth. Renewals (`/renew`) copy the existing
+certificate and are not affected.
+
+Proof after the change, same test IDevID:
+
+| requested name   | result                                                  |
+|------------------|---------------------------------------------------------|
+| own name         | issued, CN and SAN = own name, EKU clientAuth only      |
+| another device   | refused: requested subject does not match the IDevID    |
+| homepi.internal  | refused                                                 |
+| homepi-backup    | refused                                                 |
+
+Backup of the previous configuration: `/var/backups/step-ca/ca.json.before-b3.3`.
+
+Still open: `admin` has no name policy. `ca.json` is mode 0644, but its
+directory `/etc/step-ca/config` is 0700 root:root, so only root can read it
+(step-ca runs as root; only its unit and `homepi-audit` reference the file).
