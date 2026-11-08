@@ -8,6 +8,9 @@ hardening_absent:
   - /usr/local/bin/deploy-dashboard
   - /opt/homepi/crl_sync.sh
   - /etc/mosquitto/conf.d/99-debug.conf
+  - /etc/nginx/sites-available/grafana
+  - /etc/nginx/ssl/homepi.fullchain.pem
+  - /etc/nginx/ssl/homepi.key
 hardening_owned:
   - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
   - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}

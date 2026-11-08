@@ -50,7 +50,7 @@ if systemctl is-active --quiet step-ca; then systemctl stop step-ca; CA_STOPPED=
 # Pinned binaries are reinstalled by Ansible. Terraform keeps its state, not its provider cache or plans.
 rc=0
 tar -C / -cf "$WORK/etc-and-state.tar" \
-  --exclude='etc/homepi/age.key' --exclude='etc/shadow*' --exclude='etc/gshadow*' \
+  --exclude='etc/homepi-gitops/age.key' --exclude='etc/shadow*' --exclude='etc/gshadow*' \
   --exclude='var/lib/homepi/*.db*' \
   --exclude='usr/local/bin/loki' --exclude='usr/local/bin/node_exporter' --exclude='usr/local/bin/sops' \
   --exclude='var/lib/homepi-terraform/data' --exclude='var/lib/homepi-terraform/review-data' \

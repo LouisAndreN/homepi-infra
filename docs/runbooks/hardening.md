@@ -24,3 +24,15 @@ writable (sw.js world-writable), and the API owned its own code and libraries.
 
 A pip upgrade of a virtualenv rewrites RECORD with the files, so it passes. A
 hand-edited file inside a virtualenv fails the check: reinstall the package.
+
+## Backups (v0.1.67)
+
+State backups are age-encrypted to two recipients: the laptop SOPS key and a
+paper key (2026-11-08, two copies held offline, verified by retyping). The
+previous second recipient had no known private key and was removed. The Pi
+SOPS key (`/etc/homepi-gitops/age.key`) is excluded (the old exclusion named a
+path that never existed). Restores were proven with both keys. The archives
+still contain the step-ca root key until it goes offline.
+
+Retired: the disabled `grafana` nginx site and its expired certificate and key
+(archived in /root/homepi-removed/nginx).

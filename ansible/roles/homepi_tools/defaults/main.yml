@@ -20,4 +20,4 @@ homepi_tools_timers:
 # Backups are encrypted for the laptop key and the recovery key, never for the Pi itself
 homepi_backup_recipients:
   - age19pzszgu50mddaw92mmeg8yqs7jl45pywszqlmp27mwfuvjx3xe7q62d8ls
-  - age1f0lezhj8mddsqjt4mtyswtp4yyuek9hpc57azkxz4q5358fxgyssx4kgqt
+  - age1vpw0xxettmeucah0jv8anw2m59zu9n7awayksgdegzp2y62x5a7sej5ekg  # paper key (2026-11-08), held offline in two copies
