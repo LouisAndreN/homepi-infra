@@ -174,3 +174,11 @@
         msg: >-
           dashboard deployment failed{{ ' (check mode: nothing changed)' if ansible_check_mode else (' and was rolled back to ' ~ dashboard_previous if (dashboard_rollback is defined and dashboard_rollback is not skipped) else ' before the switch (nothing was changed)') }}:
           {{ ansible_failed_result.msg | default('see the failed task above') }}
+
+- name: Served dashboard readable by nginx (www-data), on every apply and check
+  ansible.builtin.command:
+    argv: [runuser, -u, www-data, --, find, -L, "{{ dashboard_current }}/", "(", "!", -readable, -o, -type, d, "!", -executable, ")", -print]
+  register: dashboard_served_unreadable
+  changed_when: false
+  check_mode: false
+  failed_when: dashboard_served_unreadable.rc != 0 or (dashboard_served_unreadable.stdout | length) > 0

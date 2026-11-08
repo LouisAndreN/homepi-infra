@@ -29,14 +29,17 @@ never registered; `site.webmanifest` had been edited by hand in the web root.
 
 Measured on 2026-11-08: the v0.1.64 release served 403 to every browser
 without a cached shell ("open() index.html failed (13: Permission denied)").
-The build user's umask made Vite write index.html, the JS and the CSS 0600
-and assets/ 0700; `copy` with `remote_src` applies `mode` to the top
-directory only and kept those modes below it. Files from `public/` kept
+The release had index.html 0600 and assets/ and icons/ 0700, while the build
+user's umask is 0022: the restrictive modes came from before the build (icons/
+is copied verbatim from public/), and `copy` with `remote_src` applies `mode`
+to the top directory only and kept them below it. Files from `public/` kept
 0644, so /sw.js and /site.webmanifest answered 200, and the `/ -> 302`
 health check only saw the Authelia redirect, never the file.
 
 Fix: the release and the rollback target were made readable (chmod
-u=rwX,go=rX, root-owned trees only). The role builds with umask 022,
-reapplies u=rwX,go=rX recursively after the copy, and checks in apply and
-check mode that www-data can read every served file (find -readable as
-www-data); in apply a failure rolls back to the previous release.
+u=rwX,go=rX, root-owned trees only). The role reapplies u=rwX,go=rX
+recursively after the copy (the fix), builds with umask 022 (harmless, not the
+cause), and checks that www-data can read every served file (find -readable as
+www-data): inside the rebuild block, where a failure rolls back to the previous
+release, and since v0.1.70 also at the end of the role on every apply and
+check. Proven by a negative test (index.html 0600 -> check failed=1).
