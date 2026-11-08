@@ -95,3 +95,29 @@ Backup of the previous configuration: `/var/backups/step-ca/ca.json.before-b3.3`
 Still open: `admin` has no name policy. `ca.json` is mode 0644, but its
 directory `/etc/step-ca/config` is 0700 root:root, so only root can read it
 (step-ca runs as root; only its unit and `homepi-audit` reference the file).
+
+## admin provisioner: own password and name template (v0.1.66)
+
+Measured on 2026-11-08: `password.txt` opened the root key, the intermediate
+key and the `admin` JWK key; `admin` could issue any name. The `admin` key was
+re-encrypted (`step crypto change-pass`, same JWK and kid, compact JWE) with a
+dedicated password (`step_admin_password` in `secrets/pki.sops.yaml`).
+
+Names: an x509 `policy` in the provisioner was accepted by step-ca 0.30.2 but
+not enforced (evil.example was issued in the test; rolled back). The limit is a
+template instead (`/etc/step-ca/templates/admin.tpl`, `roles/pki/files/step-admin.tpl`):
+subject and every SAN must be homepi.internal, homepi, *.homepi.internal, a
+single-label subdomain of homepi.internal, 127.0.0.1, 192.168.200.1 or
+192.168.0.151; usage serverAuth + clientAuth. Renewals copy the existing
+certificate and do not go through the template.
+
+Proof: homepi.internal and x.homepi.internal issued; esp32-ffffffff,
+evil.example and homepi.internal with an extra SAN evil.example refused;
+password.txt can no longer sign an admin token; copies of the broker and nginx
+certificates renew. Backup: /var/backups/step-ca/ca.json.before-b3.3-admin.
+
+To issue a new server certificate: password from
+`sops -d --extract '["step_admin_password"]' ansible/secrets/pki.sops.yaml`.
+
+Still open: password.txt opens the root and intermediate keys; the root key is
+online and in the nightly state backup (encrypted to two offline recipients).

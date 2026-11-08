@@ -11,6 +11,7 @@ pki_files:
   - {src: step-defaults.json, dest: /etc/step-ca/config/defaults.json, owner: root, group: root, mode: "0644"}
   - {src: step-aws-edge.tpl, dest: /etc/step-ca/templates/aws-edge.tpl, owner: root, group: root, mode: "0644"}
   - {src: step-idevid-x5c.tpl, dest: /etc/step-ca/templates/idevid-x5c.tpl, owner: root, group: root, mode: "0644"}
+  - {src: step-admin.tpl, dest: /etc/step-ca/templates/admin.tpl, owner: root, group: root, mode: "0644"}
   - {src: step-ca.service, dest: /etc/systemd/system/step-ca.service, owner: root, group: root, mode: "0644"}
   - {src: step-renew.service, dest: /etc/systemd/system/step-renew.service, owner: root, group: root, mode: "0644"}
   - {src: step-renew-root.conf, dest: /etc/systemd/system/step-renew.service.d/root.conf, owner: root, group: root, mode: "0644"}
@@ -27,5 +28,5 @@ pki_stat_files:
   - {path: /etc/mosquitto/certs/broker.key, owner: mosquitto, group: mosquitto, mode: "0640"}
   - {path: /etc/mosquitto/certs/broker_chain.crt, owner: mosquitto, group: mosquitto, mode: "0640"}
   - {path: /etc/mosquitto/passwd/telegraf.passwd, owner: root, group: mosquitto, mode: "0640"}
-  - {path: /etc/step-ca/config/ca.json, owner: root, group: root, mode: "0644", sha256: 17349e1b26d473942da66dba6d8d4d6144cea27b0b0ae4da3fd4d2695e38bcec}
+  - {path: /etc/step-ca/config/ca.json, owner: root, group: root, mode: "0644", sha256: ee524c1d8f31b997dd67360f251acd3228d2c06213929d3eb63f51e953f212ea}
 pki_services: [step-ca, mosquitto, step-renew.timer, step-renew-mosquitto.timer]
