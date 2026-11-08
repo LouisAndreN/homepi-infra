@@ -25,3 +25,7 @@ nginx_health_checks:
   - {path: /step/roots, status: "201"}
   - {path: /api/devices/esp32-0a171a18/status, status: "200"}
   - {path: /, status: "302"}
+  - {path: /influx/api/v2/buckets, status: "403"}
+# v0.1.61: read-only InfluxDB token injected by nginx on /influx/api/v2/query (never shown, never in the browser)
+nginx_influx_auth_snippet: /etc/nginx/snippets/homepi-influx-auth.conf
+nginx_influx_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_dashboard_token\"]') }}"

@@ -111,7 +111,10 @@ server {
     }
 
     # --- InfluxDB API -- React -> InfluxDB direct ---------------
-    location /influx/ {
+    # InfluxDB: query only (v0.1.61). nginx replaces any Authorization header with a
+    # read-only token on iot-hot (snippet rendered from SOPS, 0600 root). The browser
+    # holds no token. Every other InfluxDB route is refused before Authelia.
+    location = /influx/api/v2/query {
         allow 192.168.0.0/24;
         allow 100.64.0.0/10;
         allow 127.0.0.1;
@@ -120,12 +123,17 @@ server {
         auth_request     /authelia/api/verify;
         error_page 401   =302 https://auth.homepi.internal/?rd=$scheme://$host$request_uri;
 
-        proxy_pass         http://127.0.0.1:8086/;
+        include            /etc/nginx/snippets/homepi-influx-auth.conf;
+        proxy_pass         http://127.0.0.1:8086/api/v2/query;
         proxy_set_header   Host              $host;
         proxy_set_header   X-Real-IP         $remote_addr;
-	proxy_set_header   X-Forwarded-Proto $scheme;
-	proxy_buffering    off;
-	proxy_read_timeout 30s;
+        proxy_set_header   X-Forwarded-Proto $scheme;
+        proxy_buffering    off;
+        proxy_read_timeout 30s;
+    }
+
+    location /influx/ {
+        return 403;
     }
 
     # --- Prometheus API -- React -> Prometheus direct -----

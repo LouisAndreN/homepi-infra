@@ -15,9 +15,31 @@
   check_mode: true
   register: nginx_apply_probe
 
+- name: nginx InfluxDB token snippet differs from SOPS? (check mode only, content never shown)
+  ansible.builtin.copy:
+    content: 'proxy_set_header Authorization "Token {{ nginx_influx_token }}";'
+    dest: "{{ nginx_influx_auth_snippet }}"
+    owner: root
+    group: root
+    mode: "0600"
+  check_mode: true
+  no_log: true
+  register: nginx_secret_probe
+
 - name: Apply the nginx site and the client CA chain, rolling back on any failure
-  when: nginx_apply_probe is changed
+  when: nginx_apply_probe is changed or nginx_secret_probe is changed
   block:
+    - name: Install the nginx InfluxDB token snippet (before the site that includes it)
+      ansible.builtin.copy:
+        content: 'proxy_set_header Authorization "Token {{ nginx_influx_token }}";'
+        dest: "{{ nginx_influx_auth_snippet }}"
+        owner: root
+        group: root
+        mode: "0600"
+        backup: true
+      no_log: true
+      register: nginx_secret_install
+
     - name: Install the nginx applied files
       ansible.builtin.copy:
         src: "{{ item.src }}"
@@ -54,6 +76,17 @@
       when: not ansible_check_mode
 
   rescue:
+    - name: Restore the previous nginx InfluxDB token snippet
+      ansible.builtin.copy:
+        src: "{{ nginx_secret_install.backup_file }}"
+        dest: "{{ nginx_influx_auth_snippet }}"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0600"
+      no_log: true
+      when: nginx_secret_install.backup_file is defined
+
     - name: Restore the previous nginx files
       ansible.builtin.copy:
         src: "{{ item.backup_file }}"

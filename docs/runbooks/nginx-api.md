@@ -138,3 +138,18 @@ device proves the new firmware; then they are destroyed.
 Code, migrations and the API virtualenv are root:root: the service can no
 longer rewrite its own code or libraries. `/opt/homepi/firmware` stays writable
 by the API (uploads). The dashboard is not deployed by Ansible yet (gap).
+
+## InfluxDB through nginx (v0.1.61)
+
+Before: `/influx/` proxied the whole InfluxDB API and the dashboard bundle
+carried `VITE_INFLUX_TOKEN` (read-only on iot-hot, measured 2026-11-08: no
+write, no access to authorizations). Every browser that loaded the dashboard
+cached the token.
+
+Now: only `POST /influx/api/v2/query` is proxied (LAN and NetBird, Authelia).
+nginx replaces the Authorization header with a dedicated read-only token on
+iot-hot (`influx_dashboard_token` in `secrets/influx.sops.yaml`, rendered to
+`/etc/nginx/snippets/homepi-influx-auth.conf`, 0600 root). Any other
+`/influx/` path answers 403 before Authelia (health check). The dashboard
+bundle without the token ships with the dashboard role (v0.1.62); the old
+token is revoked after that.
