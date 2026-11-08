@@ -1,0 +1,64 @@
+---
+# Hardening: verify only. Fails the run on any regression of the 2026-11-08 containment.
+
+- name: Audit world-writable paths reachable by every account and virtualenv integrity
+  ansible.builtin.command:
+    argv: [python3, -I, "{{ role_path }}/files/hardening-audit.py", "{{ hardening_venvs | to_json }}"]
+  check_mode: false
+  changed_when: false
+  register: hardening_audit
+
+- name: Retired paths
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop: "{{ hardening_absent }}"
+  register: hardening_absent_state
+
+- name: Pinned owners and modes
+  ansible.builtin.stat:
+    path: "{{ item.path }}"
+    get_checksum: false
+  loop: "{{ hardening_owned }}"
+  loop_control:
+    label: "{{ item.path }}"
+  register: hardening_owned_state
+
+- name: Files not owned by root in root trees
+  ansible.builtin.command:
+    argv: [find, "{{ item }}", -xdev, "(", "!", -user, root, -o, "!", -group, root, ")", -print, -quit]
+  loop: "{{ hardening_root_trees }}"
+  check_mode: false
+  changed_when: false
+  failed_when: false
+  register: hardening_trees_state
+
+- name: Collect hardening drift
+  ansible.builtin.set_fact:
+    hardening_drift: >-
+      {%- set d = [] -%}
+      {%- set a = hardening_audit.stdout | from_json -%}
+      {%- for p in a.exposed -%}{%- set _ = d.append(p ~ ' is world-writable') -%}{%- endfor -%}
+      {%- for v, r in a.venvs.items() -%}
+      {%- for p in r.modified -%}{%- set _ = d.append(p ~ ' differs from its RECORD') -%}{%- endfor -%}
+      {%- for p in r.missing -%}{%- set _ = d.append(p ~ ' missing from ' ~ v) -%}{%- endfor -%}
+      {%- endfor -%}
+      {%- for r in hardening_absent_state.results if r.stat.exists -%}{%- set _ = d.append(r.item ~ ' should not exist') -%}{%- endfor -%}
+      {%- for r in hardening_owned_state.results -%}
+      {%- if not r.stat.exists -%}{%- set _ = d.append(r.item.path ~ ' missing') -%}
+      {%- elif r.stat.pw_name != r.item.owner or r.stat.gr_name != r.item.group or r.stat.mode != r.item.mode -%}{%- set _ = d.append(r.item.path ~ ' is ' ~ r.stat.pw_name ~ ':' ~ r.stat.gr_name ~ ' ' ~ r.stat.mode) -%}
+      {%- endif -%}
+      {%- endfor -%}
+      {%- for r in hardening_trees_state.results if r.stdout -%}{%- set _ = d.append(r.item ~ ' holds ' ~ r.stdout ~ ' (not root:root)') -%}{%- endfor -%}
+      {{ d }}
+
+- name: Show hardening drift
+  ansible.builtin.debug:
+    msg: >-
+      hardening: {{ (hardening_audit.stdout | from_json).venvs | dict2items | map(attribute='value.checked') | sum }} venv files checked;
+      drift: {{ hardening_drift | join(' | ') if hardening_drift else 'none' }}
+
+- name: Fail on hardening drift
+  ansible.builtin.fail:
+    msg: "hardening drift detected: {{ hardening_drift | join(' | ') }}. See docs/runbooks/hardening.md."
+  when: hardening_drift | length > 0

@@ -1,0 +1,20 @@
+---
+# Verify only (v0.1.65): today's containment must not regress. See docs/runbooks/hardening.md.
+hardening_venvs:
+  - /opt/pironman5/venv
+  - /opt/homepi/api-venv
+hardening_absent:
+  - /opt/homepi-dashboard
+  - /usr/local/bin/deploy-dashboard
+  - /opt/homepi/crl_sync.sh
+  - /etc/mosquitto/conf.d/99-debug.conf
+hardening_owned:
+  - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
+  - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}
+# Trees run or served by root: no file may belong to another account
+hardening_root_trees:
+  - /opt/pironman5
+  - /opt/homepi/scripts
+  - /opt/homepi/api
+  - /opt/homepi/api-venv
+  - /var/www/homepi-dashboard-releases
