@@ -1,0 +1,14 @@
+---
+# Dashboard built from the deployed tag (apps/dashboard) by an unprivileged user, served by nginx from a
+# root-owned release directory behind the /var/www/homepi-dashboard symlink (v0.1.62).
+dashboard_src: "{{ playbook_dir }}/../apps/dashboard"
+dashboard_build_user: homepi-build
+dashboard_build_home: /var/lib/homepi-build
+dashboard_releases: /var/www/homepi-dashboard-releases
+dashboard_current: /var/www/homepi-dashboard
+dashboard_legacy: "{{ dashboard_releases }}/legacy-2026-09-27"
+dashboard_stamp: .homepi-source
+dashboard_health_checks:
+  - {path: /sw.js, status: "200"}
+  - {path: /site.webmanifest, status: "200"}
+  - {path: /, status: "302"}

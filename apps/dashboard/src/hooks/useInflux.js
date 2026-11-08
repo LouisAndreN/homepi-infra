@@ -1,8 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 
 const INFLUX_ORG   = 'iot-org'
-const INFLUX_TOKEN = import.meta.env.VITE_INFLUX_TOKEN ?? ''
-const BASE         = '/influx'
+const BASE         = '/influx'  // nginx adds the read-only token (v0.1.61)
 
 // Découpe UNE ligne CSV en respectant les champs entre guillemets (RFC 4180) —
 // une virgule à l'intérieur d'une paire de guillemets ("bme688,bh1750") ne doit
@@ -69,7 +68,6 @@ export async function fluxQuery(flux) {
   const r = await fetch(`${BASE}/api/v2/query?org=${INFLUX_ORG}`, {
     method:  'POST',
     headers: {
-      'Authorization': `Token ${INFLUX_TOKEN}`,
       'Content-Type':  'application/vnd.flux',
       'Accept':        'application/csv',
     },

@@ -1,4 +1,4 @@
-const CACHE = 'homepi-1790474458' + __BUILD_TIME__
+const CACHE = 'homepi-shell-v2'  // public/ is copied verbatim by Vite: no build-time constant here
 const STATIC = ['/']
 
 self.addEventListener('install', e => {

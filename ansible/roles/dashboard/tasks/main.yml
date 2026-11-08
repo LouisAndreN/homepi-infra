@@ -1,0 +1,162 @@
+---
+# Dashboard: built from the deployed tag by an unprivileged user (npm ci --ignore-scripts: lockfile
+# integrity, no install scripts), checked (assets present, no token), installed as a root-owned release
+# directory and switched atomically through a symlink. The stamp (content hash of apps/dashboard)
+# detects drift in check mode. Any failure points the symlink back to the previous release.
+
+- name: Content hash of apps/dashboard in the deployed tag
+  ansible.builtin.command:
+    argv: [python3, -I, "{{ role_path }}/files/source-hash.py", "{{ dashboard_src }}"]
+  check_mode: false
+  changed_when: false
+  register: dashboard_tree
+
+- name: Served dashboard is the deployed source? (check mode only)
+  ansible.builtin.copy:
+    content: "{{ dashboard_tree.stdout }}\n"
+    dest: "{{ dashboard_current }}/{{ dashboard_stamp }}"
+    owner: root
+    group: root
+    mode: "0644"
+  check_mode: true
+  register: dashboard_probe
+
+- name: Unprivileged build user
+  ansible.builtin.user:
+    name: "{{ dashboard_build_user }}"
+    system: true
+    home: "{{ dashboard_build_home }}"
+    create_home: true
+    shell: /usr/sbin/nologin
+
+- name: Build, check and switch the dashboard, rolling back on any failure
+  when: dashboard_probe is changed
+  vars:
+    dashboard_build: "{{ dashboard_build_home }}/build-{{ dashboard_tree.stdout[:12] }}"
+    dashboard_release: "{{ dashboard_releases }}/{{ dashboard_tree.stdout[:12] }}"
+  block:
+    - name: Served path before the change
+      ansible.builtin.stat:
+        path: "{{ dashboard_current }}"
+      register: dashboard_before
+
+    - name: Previous release (rollback target)
+      ansible.builtin.set_fact:
+        dashboard_previous: >-
+          {{ dashboard_before.stat.lnk_source if (dashboard_before.stat.islnk | default(false))
+             else dashboard_legacy }}
+
+    - name: Clean build directory
+      ansible.builtin.file:
+        path: "{{ dashboard_build }}"
+        state: absent
+
+    - name: Build directory owned by the build user
+      ansible.builtin.file:
+        path: "{{ dashboard_build }}"
+        state: directory
+        owner: "{{ dashboard_build_user }}"
+        group: "{{ dashboard_build_user }}"
+        mode: "0755"
+
+    - name: Sources of the deployed tag
+      ansible.builtin.copy:
+        src: "{{ dashboard_src }}/"
+        dest: "{{ dashboard_build }}/"
+        owner: "{{ dashboard_build_user }}"
+        group: "{{ dashboard_build_user }}"
+        mode: "0644"
+        directory_mode: "0755"
+
+    - name: Locked dependencies (integrity checked, no install scripts)
+      ansible.builtin.command:
+        argv: [runuser, -u, "{{ dashboard_build_user }}", --, env, "HOME={{ dashboard_build_home }}", npm, ci, --ignore-scripts, --no-audit, --no-fund]
+        chdir: "{{ dashboard_build }}"
+      when: not ansible_check_mode  # chdir is checked before check mode skips the task
+
+    - name: Build
+      ansible.builtin.command:
+        argv: [runuser, -u, "{{ dashboard_build_user }}", --, env, "HOME={{ dashboard_build_home }}", npm, run, build]
+        chdir: "{{ dashboard_build }}"
+      when: not ansible_check_mode
+
+    - name: Build references only existing assets and carries no token
+      ansible.builtin.command:
+        argv: [python3, -I, "{{ role_path }}/files/check-dashboard-build.py", "{{ dashboard_build }}/dist"]
+      changed_when: false
+      when: not ansible_check_mode
+
+    - name: Releases directory
+      ansible.builtin.file:
+        path: "{{ dashboard_releases }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Root-owned release directory
+      ansible.builtin.copy:
+        src: "{{ dashboard_build }}/dist/"
+        dest: "{{ dashboard_release }}/"
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+        directory_mode: "0755"
+      when: not ansible_check_mode
+
+    - name: Release stamp
+      ansible.builtin.copy:
+        content: "{{ dashboard_tree.stdout }}\n"
+        dest: "{{ dashboard_release }}/{{ dashboard_stamp }}"
+        owner: root
+        group: root
+        mode: "0644"
+      when: not ansible_check_mode
+
+    - name: Keep the hand-deployed directory as the first rollback target
+      ansible.builtin.command:
+        argv: [mv, -T, "{{ dashboard_current }}", "{{ dashboard_legacy }}"]
+      when: not ansible_check_mode and dashboard_before.stat.exists and dashboard_before.stat.isdir and not (dashboard_before.stat.islnk | default(false))
+
+    - name: Switch the served release atomically
+      ansible.builtin.shell: >-
+        ln -sfn {{ dashboard_release | quote }} {{ (dashboard_current ~ '.new') | quote }}
+        && mv -T {{ (dashboard_current ~ '.new') | quote }} {{ dashboard_current | quote }}
+      when: not ansible_check_mode
+
+    - name: Dashboard answers through nginx
+      ansible.builtin.command:
+        argv: [curl, -sk, -o, /dev/null, -w, "%{http_code}", --max-time, "5", --resolve, "homepi.internal:443:127.0.0.1", "https://homepi.internal{{ item.path }}"]
+      loop: "{{ dashboard_health_checks }}"
+      loop_control:
+        label: "{{ item.path }} -> {{ item.status }}"
+      register: dashboard_health
+      changed_when: false
+      retries: 5
+      delay: 2
+      until: dashboard_health.stdout == item.status
+      when: not ansible_check_mode
+
+    - name: Remove the build directory (the npm cache stays in the build user's home)
+      ansible.builtin.file:
+        path: "{{ dashboard_build }}"
+        state: absent
+
+  rescue:
+    - name: Served path at the failure
+      ansible.builtin.stat:
+        path: "{{ dashboard_current }}"
+      register: dashboard_at_failure
+
+    - name: Point the dashboard back to the previous release
+      ansible.builtin.shell: >-
+        ln -sfn {{ dashboard_previous | quote }} {{ (dashboard_current ~ '.new') | quote }}
+        && mv -T {{ (dashboard_current ~ '.new') | quote }} {{ dashboard_current | quote }}
+      when: not ansible_check_mode and dashboard_previous is defined and ((dashboard_at_failure.stat.islnk | default(false)) or not dashboard_at_failure.stat.exists)
+
+    - name: Report the rollback
+      ansible.builtin.fail:
+        msg: >-
+          dashboard deployment failed{{ ' (check mode: nothing changed)' if ansible_check_mode else (' and was rolled back to ' ~ dashboard_previous if dashboard_previous is defined else '') }}:
+          {{ ansible_failed_result.msg | default('see the failed task above') }}
