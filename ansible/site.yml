@@ -24,6 +24,7 @@
     - mqtt_acl
     # Verify only: nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md)
     - nginx
+    - authelia
     # Verify only: provisioning API code, units and Python packages
     - provisioning_api
     # Applies: device identity activity for Prometheus (v0.1.57)

@@ -1,0 +1,44 @@
+# Authelia, step 1 (adoption): secrets environment, users database and drop-in from the repository.
+# configuration.yml is adopted in the next step, without any secret inside. See docs/runbooks/authelia.md.
+- name: Authelia secrets environment (SOPS)
+  ansible.builtin.copy:
+    content: "{{ authelia_env_content }}"
+    dest: /var/lib/secrets/authelia.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  notify: Restart authelia
+
+- name: Authelia users database (SOPS)
+  ansible.builtin.copy:
+    content: "{{ authelia_users_content }}"
+    dest: /etc/authelia/users_database.yml
+    owner: authelia
+    group: authelia
+    mode: "0640"
+  no_log: true
+  notify: Restart authelia
+
+- name: Authelia drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/authelia.service.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Authelia drop-in loading the secrets environment
+  ansible.builtin.copy:
+    src: authelia-secrets.conf
+    dest: /etc/systemd/system/authelia.service.d/secrets.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart authelia
+
+- name: Authelia enabled and running
+  ansible.builtin.systemd:
+    name: authelia
+    enabled: true
+    state: started

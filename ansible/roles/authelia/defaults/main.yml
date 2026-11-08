@@ -1,0 +1,4 @@
+authelia_sops_file: "{{ playbook_dir }}/secrets/authelia.sops.yaml"
+# rstrip=false keeps the final newline, so the files stay byte-identical to the adopted ones
+authelia_env_content: "{{ lookup('community.sops.sops', authelia_sops_file, extract='[\"authelia_env\"]', rstrip=false) }}"
+authelia_users_content: "{{ lookup('community.sops.sops', authelia_sops_file, extract='[\"authelia_users_database\"]', rstrip=false) }}"
