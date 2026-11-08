@@ -75,7 +75,7 @@
 
     - name: Build
       ansible.builtin.command:
-        argv: [runuser, -u, "{{ dashboard_build_user }}", --, env, "HOME={{ dashboard_build_home }}", npm, run, build]
+        argv: [runuser, -u, "{{ dashboard_build_user }}", --, sh, -c, 'umask 022 && exec env HOME="$0" npm run build', "{{ dashboard_build_home }}"]
         chdir: "{{ dashboard_build }}"
       when: not ansible_check_mode
 
@@ -101,6 +101,13 @@
         owner: root
         group: root
         mode: u=rwX,go=rX  # X: execute on directories only (a numeric mode also hits the top directory)
+      when: not ansible_check_mode
+
+    - name: Release readable at every level (copy keeps the build modes below the top directory)
+      ansible.builtin.file:
+        path: "{{ dashboard_release }}"
+        recurse: true
+        mode: u=rwX,go=rX
       when: not ansible_check_mode
 
     - name: Release stamp
@@ -135,6 +142,14 @@
       delay: 2
       until: dashboard_health.stdout == item.status
       when: not ansible_check_mode
+
+    - name: Every served file is readable by nginx (www-data), in apply and check
+      ansible.builtin.command:
+        argv: [runuser, -u, www-data, --, find, -L, "{{ dashboard_current }}/", "(", "!", -readable, -o, -type, d, "!", -executable, ")", -print]
+      register: dashboard_unreadable
+      changed_when: false
+      check_mode: false
+      failed_when: dashboard_unreadable.rc != 0 or (dashboard_unreadable.stdout | length) > 0
 
     - name: Remove the build directory (the npm cache stays in the build user's home)
       ansible.builtin.file:

@@ -24,3 +24,19 @@ bundle; nginx injects the token since v0.1.61).
 Fixed with the role: `sw.js` used `__BUILD_TIME__`, which Vite does not replace
 in `public/` (the service worker failed to install); `service-worker.js` was
 never registered; `site.webmanifest` had been edited by hand in the web root.
+
+## Served files readable by nginx (v0.1.69)
+
+Measured on 2026-11-08: the v0.1.64 release served 403 to every browser
+without a cached shell ("open() index.html failed (13: Permission denied)").
+The build user's umask made Vite write index.html, the JS and the CSS 0600
+and assets/ 0700; `copy` with `remote_src` applies `mode` to the top
+directory only and kept those modes below it. Files from `public/` kept
+0644, so /sw.js and /site.webmanifest answered 200, and the `/ -> 302`
+health check only saw the Authelia redirect, never the file.
+
+Fix: the release and the rollback target were made readable (chmod
+u=rwX,go=rX, root-owned trees only). The role builds with umask 022,
+reapplies u=rwX,go=rX recursively after the copy, and checks in apply and
+check mode that www-data can read every served file (find -readable as
+www-data); in apply a failure rolls back to the previous release.
