@@ -1,0 +1,10 @@
+[Unit]
+Description=HomePi device identity metrics (step-ca sign and renew requests, IoT requests through nginx)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-device-metrics
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/node_exporter/textfile_collector

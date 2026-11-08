@@ -89,3 +89,14 @@ The role stops the API, backs the database up to `/var/backups/homepi-api/device
 migrates as `homepi-api` (devices.db is in WAL mode: the -wal and -shm files must stay owned by the API
 user), installs the code, restarts and requires HTTP 200 on 8090 and 8091; on any failure it restores
 code and database.
+
+## Device identity metrics and alerts (v0.1.57)
+
+`homepi-device-metrics` (timer: 3 minutes after boot, then every 5 minutes) publishes the sign and renew
+requests served by step-ca over the last hour and day (step-ca journal) and the requests from IoT devices
+to `/api/devices/` and `/step/` over the last hour by status class (nginx access log; the Pi's own
+192.168.200.1 is left out). Alerts: `DeviceEnrollmentBurst` (more than 20 sign requests in an hour: the
+re-enrollment loop of 2026-11-07 signed 232 certificates in a day), `DeviceApiRefusals` (more than 30
+refused requests in an hour), `DeviceMetricsStale`. Manual run:
+
+    sudo /usr/local/sbin/homepi-device-metrics --stdout

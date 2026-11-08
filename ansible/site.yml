@@ -25,5 +25,7 @@
     - nginx
     # Verify only: provisioning API code, units and Python packages
     - provisioning_api
+    # Applies: device identity activity for Prometheus (v0.1.57)
+    - device_metrics
     # Verify only: the storage role fails on drift and never changes boot-critical files
     - storage

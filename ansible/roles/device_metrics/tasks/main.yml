@@ -1,0 +1,42 @@
+---
+# v0.1.57: device identity activity for Prometheus (docs/runbooks/nginx-api.md).
+
+- name: Device metrics exporter
+  ansible.builtin.copy:
+    src: homepi-device-metrics
+    dest: /usr/local/sbin/homepi-device-metrics
+    owner: root
+    group: root
+    mode: "0755"
+  register: device_metrics_script
+
+- name: Device metrics service and timer
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [homepi-device-metrics.service, homepi-device-metrics.timer]
+  register: device_metrics_units
+
+- name: Reload systemd after a device metrics unit change
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: device_metrics_units is changed
+
+# Check mode does not install a new unit: skip only when the unit is about to be created, never ignore errors
+- name: Device metrics timer enabled and running
+  ansible.builtin.systemd_service:
+    name: homepi-device-metrics.timer
+    enabled: true
+    state: started
+  when: not (ansible_check_mode and device_metrics_units is changed)
+
+- name: Publish the device metrics now when the exporter or units changed (fails the run if it fails)
+  ansible.builtin.systemd_service:
+    name: homepi-device-metrics.service
+    state: started
+  when:
+    - not (ansible_check_mode and device_metrics_units is changed)
+    - device_metrics_script is changed or device_metrics_units is changed

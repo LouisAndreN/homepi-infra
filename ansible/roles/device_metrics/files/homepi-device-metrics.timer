@@ -1,0 +1,9 @@
+[Unit]
+Description=HomePi device identity metrics, after boot and every 5 minutes
+
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target

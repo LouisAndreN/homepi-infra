@@ -1,0 +1,28 @@
+groups:
+  - name: devices
+    rules:
+      # v0.1.57: device identity activity (homepi-device-metrics, docs/runbooks/nginx-api.md)
+      - alert: DeviceEnrollmentBurst
+        expr: homepi_stepca_requests{endpoint="sign",window="1h"} > 20
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} certificate sign requests on step-ca in the last hour"
+          description: "Seven devices almost never sign. A burst means a re-enrollment loop (2026-11-07: 232 in a day, after 3 MQTT disconnects per device) or an unexpected enrollment. Check: journalctl -u step-ca --since -1h | grep /1.0/sign, and the MQTT connections on 8883."
+      - alert: DeviceApiRefusals
+        expr: sum(homepi_device_requests{status_class=~"4xx|5xx"}) > 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} refused device requests from the IoT network in the last hour"
+          description: "Devices call routes that refuse them: the frozen x5c-enrolled and renew, a certificate problem, or a client that is not a HomePi device. Check: grep '^192.168.200' /var/log/nginx/access.log | tail -20."
+      - alert: DeviceMetricsStale
+        expr: (time() - homepi_device_metrics_last_run_timestamp_seconds > 1800) or (homepi_device_metrics_success == 0) or absent(homepi_device_metrics_last_run_timestamp_seconds)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Device identity metrics are stale or failing"
+          description: "homepi-device-metrics.timer runs every 5 minutes. Check: systemctl status homepi-device-metrics.timer; journalctl -u homepi-device-metrics -n 20."

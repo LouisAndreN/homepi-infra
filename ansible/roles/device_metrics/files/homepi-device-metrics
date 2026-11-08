@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""homepi-device-metrics: device identity activity for Prometheus (textfile collector).
+
+- sign and renew requests served by step-ca in the last hour and the last day (step-ca journal);
+- requests from IoT devices to the device API and the step-ca proxy in the last hour, by status class
+  (nginx access log; the Pi's own address 192.168.200.1 is left out).
+A re-enrollment loop (2026-11-07: 232 signatures in a day) or a wall of refusals becomes visible.
+
+Usage: homepi-device-metrics [--stdout]
+"""
+import ipaddress
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+PROM = Path("/var/lib/node_exporter/textfile_collector/homepi_devices.prom")
+NGINX_LOGS = [Path("/var/log/nginx/access.log.1"), Path("/var/log/nginx/access.log")]
+IOT = ipaddress.ip_network("192.168.200.0/24")
+PI_IOT_ADDRESS = ipaddress.ip_address("192.168.200.1")
+WINDOW = 3600
+LINE = re.compile(r'^(\S+) \S+ \S+ \[([^\]]+)\] "(\S+) (\S+)[^"]*" (\d{3}) ')
+SIGN = re.compile(r'path=/1\.0/sign\b|"path":"/1\.0/sign"')
+RENEW = re.compile(r'path=/1\.0/renew\b|"path":"/1\.0/renew"')
+ROUTES = ("api_devices", "step")
+CLASSES = ("2xx", "3xx", "4xx", "5xx")
+
+
+def stepca_counts(since):
+    out = subprocess.run(["journalctl", "-u", "step-ca", "--since", since, "-o", "cat", "--no-pager", "-q"],
+                         capture_output=True, text=True, check=True).stdout.splitlines()
+    return sum(1 for l in out if SIGN.search(l)), sum(1 for l in out if RENEW.search(l))
+
+
+def device_requests(lines, now):
+    counts = {(r, c): 0 for r in ROUTES for c in CLASSES}
+    for line in lines:
+        m = LINE.match(line)
+        if not m:
+            continue
+        ip, ts, _method, url, status = m.groups()
+        try:
+            address = ipaddress.ip_address(ip)
+        except ValueError:
+            continue
+        if address not in IOT or address == PI_IOT_ADDRESS:
+            continue
+        route = "api_devices" if url.startswith("/api/devices/") else "step" if url.startswith("/step/") else None
+        if route is None or status[0] not in "2345":
+            continue
+        if now - datetime.strptime(ts, "%d/%b/%Y:%H:%M:%S %z").timestamp() > WINDOW:
+            continue
+        counts[(route, status[0] + "xx")] += 1
+    return counts
+
+
+def nginx_lines():
+    for path in NGINX_LOGS:
+        if path.exists():
+            with path.open(errors="replace") as handle:
+                yield from handle
+
+
+def render(success, signed, renewed, requests, now):
+    out = [
+        "# HELP homepi_device_metrics_success 1 if the last run read the step-ca journal and the nginx log.",
+        "# TYPE homepi_device_metrics_success gauge",
+        f"homepi_device_metrics_success {success}",
+        "# HELP homepi_device_metrics_last_run_timestamp_seconds Time of the last run.",
+        "# TYPE homepi_device_metrics_last_run_timestamp_seconds gauge",
+        f"homepi_device_metrics_last_run_timestamp_seconds {int(now)}",
+        "# HELP homepi_stepca_requests Requests served by step-ca on /1.0/sign and /1.0/renew in the window.",
+        "# TYPE homepi_stepca_requests gauge",
+    ]
+    out += [f'homepi_stepca_requests{{endpoint="sign",window="{w}"}} {n}' for w, n in signed.items()]
+    out += [f'homepi_stepca_requests{{endpoint="renew",window="{w}"}} {n}' for w, n in renewed.items()]
+    out += ["# HELP homepi_device_requests Requests from IoT devices in the last hour, by route and status class.",
+            "# TYPE homepi_device_requests gauge"]
+    out += [f'homepi_device_requests{{route="{r}",status_class="{c}"}} {n}' for (r, c), n in sorted(requests.items())]
+    return "\n".join(out) + "\n"
+
+
+def main():
+    now = time.time()
+    signed, renewed, requests, success = {}, {}, {(r, c): 0 for r in ROUTES for c in CLASSES}, 1
+    try:
+        for window, since in (("1h", "-1h"), ("24h", "-24h")):
+            signed[window], renewed[window] = stepca_counts(since)
+        requests = device_requests(nginx_lines(), now)
+    except Exception as error:  # publish the failure instead of stale numbers
+        print(f"homepi-device-metrics: {error}", file=sys.stderr)
+        signed, renewed, success = {}, {}, 0
+    text = render(success, signed, renewed, requests, now)
+    if "--stdout" in sys.argv[1:]:
+        sys.stdout.write(text)
+    else:
+        tmp = PROM.with_suffix(".prom.tmp")
+        tmp.write_text(text)
+        tmp.chmod(0o644)
+        tmp.replace(PROM)
+    return 0 if success else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
