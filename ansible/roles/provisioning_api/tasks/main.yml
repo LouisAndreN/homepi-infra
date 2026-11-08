@@ -1,7 +1,136 @@
 ---
-# Verify only. Every task runs in check mode (pip freeze is read-only) and the run fails on drift.
+# The API code is deployed from apps/api (one source of truth) with a one-time database migration and an
+# automatic rollback of code and database; units, secrets, Python packages and services are verified only.
+# devices.db runs in WAL mode: every sqlite access runs as homepi-api so the -wal and -shm files keep
+# belonging to the API user.
 
-- name: API code and units match the repository (check mode only)
+- name: API code from apps/api differs from the Pi? (check mode only)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: homepi-api
+    group: homepi-api
+    mode: "0644"
+  loop: "{{ api_code_files }}"
+  loop_control:
+    label: "{{ item.dest }}"
+  check_mode: true
+  register: api_code_probe
+
+- name: Database schema version (read-only, as the API user)
+  ansible.builtin.command:
+    argv: [runuser, -u, homepi-api, --, sqlite3, -readonly, "{{ api_db }}", "PRAGMA user_version;"]
+  check_mode: false
+  changed_when: false
+  register: api_db_version
+
+- name: Deploy the API code and migrate the database, rolling back on any failure
+  when: api_code_probe is changed or (api_db_version.stdout | int) < api_db_target_version
+  block:
+    - name: Stop the API services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+      loop: [homepi-api-admin, homepi-api]
+
+    - name: Backup directory owned by the API user
+      ansible.builtin.file:
+        path: "{{ api_db_backup | dirname }}"
+        state: directory
+        owner: homepi-api
+        group: homepi-api
+        mode: "0700"
+
+    - name: Back up the database as the API user (consistent sqlite copy)
+      ansible.builtin.command:
+        argv: [runuser, -u, homepi-api, --, sqlite3, "{{ api_db }}", ".backup '{{ api_db_backup }}'"]
+      changed_when: true
+      register: api_db_backup_done
+
+    - name: Migration directory
+      ansible.builtin.file:
+        path: /opt/homepi/api/migrations
+        state: directory
+        owner: homepi-api
+        group: homepi-api
+        mode: "0755"
+
+    - name: Migration script
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../apps/api/migrations/001_utc_timestamps.py"
+        dest: /opt/homepi/api/migrations/001_utc_timestamps.py
+        owner: homepi-api
+        group: homepi-api
+        mode: "0644"
+
+    - name: Migrate the database as the API user (once, in one transaction)
+      ansible.builtin.command:
+        argv: [runuser, -u, homepi-api, --, python3, /opt/homepi/api/migrations/001_utc_timestamps.py, "{{ api_db }}"]
+      register: api_migration
+      changed_when: api_migration.stdout is search('^migrated:')
+
+    - name: Install the API code
+      ansible.builtin.copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        owner: homepi-api
+        group: homepi-api
+        mode: "0644"
+        backup: true
+      loop: "{{ api_code_files }}"
+      loop_control:
+        label: "{{ item.dest }}"
+      register: api_code_install
+
+    - name: Start the API services
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+      loop: [homepi-api, homepi-api-admin]
+
+    - name: Both API ports answer
+      ansible.builtin.uri:
+        url: "http://127.0.0.1:{{ item }}/api/devices/{{ api_health_device }}/status"
+        status_code: 200
+      loop: [8090, 8091]
+      register: api_health
+      retries: 15
+      delay: 2
+      until: api_health.status == 200
+      when: not ansible_check_mode
+
+  rescue:
+    - name: Restore the previous API code
+      ansible.builtin.copy:
+        src: "{{ item.backup_file }}"
+        dest: "{{ item.dest }}"
+        remote_src: true
+        owner: homepi-api
+        group: homepi-api
+        mode: "0644"
+      loop: "{{ (api_code_install.results | default([])) | selectattr('backup_file', 'defined') | list }}"
+      loop_control:
+        label: "{{ item.dest }}"
+
+    - name: Restore the database from the backup
+      ansible.builtin.command:
+        argv: [runuser, -u, homepi-api, --, sqlite3, "{{ api_db }}", ".restore '{{ api_db_backup }}'"]
+      changed_when: true
+      when: api_db_backup_done is defined and api_db_backup_done is succeeded
+
+    - name: Start the API services again
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: started
+      loop: [homepi-api, homepi-api-admin]
+
+    - name: Report the rollback
+      ansible.builtin.fail:
+        msg: >-
+          API deployment failed and was rolled back (code and database):
+          {{ ansible_failed_result.msg | default('see the failed task above') }}
+
+- name: API units match the repository (check mode only)
   ansible.builtin.copy:
     src: "{{ item.src }}"
     dest: "{{ item.dest }}"

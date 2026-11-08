@@ -39,10 +39,24 @@
 
 ## Model
 
-Roles `nginx` and `provisioning_api` verify only: files byte for byte, TLS files and secrets by presence,
+Role `nginx` verifies only; `provisioning_api` deploys the API code from `apps/api` (database migration,
+automatic rollback of code and database) and verifies the rest: files byte for byte, TLS files and secrets by presence,
 owner and mode, `nginx -t`, the Python packages against `requirements.lock`, the services. Fixes go
 through a release, never by hand.
 
+## One source of truth for the API code (v0.1.55)
+
+Correction of v0.1.54, which called `apps/api` stale: it was the Pi that was behind. `apps/api` carried
+three commits never deployed (UTC timestamps, firmware version comparison without the v prefix, device
+self-enrollment routes closed by default with `API_ALLOW_DEVICE_SELF_ENROLLMENT`). Since v0.1.55 the role
+deploys `apps/api/provisioning_api.py` and `versions.py`; the tests in `apps/api/tests` run before every
+release.
+
+## Secrets held by the API (least privilege, to fix in B7)
+
+`/etc/homepi/api.env` holds the InfluxDB token and the Telegraf MQTT password next to the API's own MQTT
+password. A compromise of the API exposes InfluxDB and the Telegraf identity on the broker.
+
 ## Two copies of the API code (to reconcile in B7)
 
 `apps/api/provisioning_api.py` differs from the code running on the Pi (+25/-31 lines on
@@ -54,13 +68,21 @@ is stale. B7 keeps one copy only.
 `/etc/homepi/api.env` holds the InfluxDB token and the Telegraf MQTT password next to the API's own MQTT
 password. A compromise of the API exposes InfluxDB and the Telegraf identity on the broker.
 
-## Two copies of the API code (to reconcile in B7)
+## Timestamps: migration 001 (v0.1.55)
 
-`apps/api/provisioning_api.py` differs from the code running on the Pi (+25/-31 lines on
-2026-11-08). The role verifies the Pi copy (`roles/provisioning_api/files/provisioning_api.py`); `apps/api`
-is stale. B7 keeps one copy only.
+Until 2026-10-25 the API wrote `datetime('now','utc')`: SQLite's `utc` modifier treats `now` as local time,
+so on the Pi (Asia/Tokyo) every stored time was 9 hours early. Proven on 2026-11-08: the last `announce`
+of `esp32-819fe250` was stored as `2026-11-07 14:25:17`, and nginx logged it at `2026-11-08 08:25:17 JST`.
+Fixing the code was not enough: `CREATE TABLE IF NOT EXISTS` never changes an existing table, so the
+defaults of `audit_log.ts`, `unknown_capability_sets.first_seen`, `firmware_catalog.uploaded_at` and
+`ota_deployments.created_at` stayed wrong.
 
-## Secrets held by the API (least privilege, to fix in B7)
+`apps/api/migrations/001_utc_timestamps.py`, in one transaction: shifts old-format values by +9 hours to
+`%Y-%m-%dT%H:%M:%SZ`, rebuilds the tables with a wrong default (rows, indexes and triggers kept), sets
+`PRAGMA user_version = 1`; a second run does nothing, a failure changes nothing. Dry run on a copy of the
+live database before release: 7,497 audit rows shifted, four tables rebuilt, row counts unchanged.
 
-`/etc/homepi/api.env` holds the InfluxDB token and the Telegraf MQTT password next to the API's own MQTT
-password. A compromise of the API exposes InfluxDB and the Telegraf identity on the broker.
+The role stops the API, backs the database up to `/var/backups/homepi-api/devices.db.before-deploy`,
+migrates as `homepi-api` (devices.db is in WAL mode: the -wal and -shm files must stay owned by the API
+user), installs the code, restarts and requires HTTP 200 on 8090 and 8091; on any failure it restores
+code and database.
