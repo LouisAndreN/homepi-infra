@@ -1,0 +1,14 @@
+storage-wal-flush-on-shutdown = true
+reporting-disabled = true
+
+bolt-path = "/var/lib/influxdb/influxdb2/influxd.bolt"
+engine-path = "/var/lib/influxdb/influxdb2/engine"
+
+http-bind-address = "127.0.0.1:8086"
+
+query-concurrency = 8
+write-concurrency = 8
+storage-cache-max-memory-size = "512MB"
+storage-series-file-max-size = "256MB"
+
+influxql-max-select-series = 100000

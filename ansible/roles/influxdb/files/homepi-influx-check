@@ -1,0 +1,70 @@
+#!/usr/bin/env python3
+"""Compare the live InfluxDB state with the state described in the repository.
+
+Reads the expected state as JSON on stdin and the token from INFLUX_TOKEN.
+Prints one line per check and exits 1 on any drift. Never prints a token.
+"""
+import json
+import os
+import sys
+import urllib.parse
+import urllib.request
+
+URL = "http://127.0.0.1:8086"
+
+
+def get(path, **query):
+    q = ("?" + urllib.parse.urlencode(query)) if query else ""
+    req = urllib.request.Request(URL + path + q, headers=dict(Authorization="Token " + os.environ["INFLUX_TOKEN"]))
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def main():
+    exp = json.load(sys.stdin)
+    drift = []
+    orgs = get("/api/v2/orgs", org=exp["org"]).get("orgs", [])
+    if len(orgs) != 1:
+        print("FAIL org %s not found" % exp["org"])
+        return 1
+    oid = orgs[0]["id"]
+    live = dict()
+    for b in get("/api/v2/buckets", orgID=oid, limit=100).get("buckets", []):
+        if b.get("type") == "user":
+            rules = b.get("retentionRules") or []
+            live[b["name"]] = (rules[0].get("everySeconds", 0) // 3600) if rules else 0
+    want = dict((b["name"], b["retention_hours"]) for b in exp["buckets"])
+    for n in sorted(set(live) | set(want)):
+        ok = live.get(n) == want.get(n)
+        print(("ok  " if ok else "FAIL") + " bucket %s: live %s h, expected %s h" % (n, live.get(n, "absent"), want.get(n, "absent")))
+        if not ok:
+            drift.append("bucket " + n)
+    tasks = dict((t["name"], t) for t in get("/api/v2/tasks", orgID=oid, limit=100).get("tasks", []))
+    for t in exp["tasks"]:
+        lt = tasks.get(t["name"])
+        if lt is None:
+            print("FAIL task %s: absent" % t["name"])
+            drift.append("task " + t["name"])
+            continue
+        same = lt.get("flux", "").strip() == t["flux"].strip()
+        active = lt.get("status") == "active"
+        print(("ok  " if same and active else "FAIL") + " task %s: status %s, flux %s" % (t["name"], lt.get("status"), "identical" if same else "DIFFERENT"))
+        if not (same and active):
+            drift.append("task " + t["name"])
+    for n in sorted(set(tasks) - set(t["name"] for t in exp["tasks"])):
+        print("FAIL task %s: not in the repository" % n)
+        drift.append("task " + n)
+    auths = get("/api/v2/authorizations", orgID=oid).get("authorizations", [])
+    live_a = sorted((a.get("description") or "") for a in auths if a.get("status") == "active")
+    want_a = sorted(exp["authorizations"])
+    ok = live_a == want_a
+    extra = "" if ok else " (extra: %s; missing: %s)" % (sorted(set(live_a) - set(want_a)), sorted(set(want_a) - set(live_a)))
+    print(("ok  " if ok else "FAIL") + " authorizations: %d active, expected %d%s" % (len(live_a), len(want_a), extra))
+    if not ok:
+        drift.append("authorizations")
+    print("drift: " + (", ".join(drift) if drift else "none"))
+    return 1 if drift else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -22,6 +22,7 @@
     # Applies: keeps the broker CRL fresh (B3.2a, docs/runbooks/pki.md)
     - pki_crl
     - mqtt_acl
+    - influxdb
     # Verify only: nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md)
     - nginx
     - authelia

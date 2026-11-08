@@ -1,0 +1,17 @@
+influxdb_admin_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_admin_token\"]') }}"
+influxdb_check: /usr/local/sbin/homepi-influx-check
+# State inside InfluxDB that a rebuild must recreate; checked on every apply and check.
+influxdb_expected:
+  org: iot-org
+  buckets:
+    - {name: iot-hot, retention_hours: 720}
+    - {name: iot-archives, retention_hours: 8760}
+  tasks:
+    - name: downsample_iot_hot_to_archives
+      flux: "{{ lookup('file', role_path + '/files/tasks/downsample_iot_hot_to_archives.flux') }}"
+  authorizations:
+    - telegraf-write
+    - grafana-read
+    - cli-admin
+    - downsample-task-v2
+    - homepi-dashboard via nginx (read iot-hot)

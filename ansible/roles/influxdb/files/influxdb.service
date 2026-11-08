@@ -1,0 +1,18 @@
+[Unit]
+Description=InfluxDB v2 time-series database
+Documentation=https://docs.influxdata.com/influxdb/
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=influxdb
+Group=influxdb
+LimitNOFILE=65536
+Environment=INFLUXD_CONFIG_PATH=/etc/influxdb/config.toml
+ExecStart=/usr/bin/influxd
+KillMode=control-group
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target
