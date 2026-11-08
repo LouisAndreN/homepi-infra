@@ -92,3 +92,13 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
 - `homepi_devices` is scraped every hour: an outage of the API on 127.0.0.1:8090 can stay unseen up
   to an hour, and after each Prometheus restart the target stays `unknown` up to an hour.
 - Btrfs applies `compress` per filesystem: the archives subvolume gets zstd:3 like the others.
+
+## SOPS history encrypted to a lost recipient (recorded 2026-11-08, v0.1.75)
+
+Until v0.1.74 every encrypted `*.sops.yaml` was also encrypted to `age1f0lez…`, a recovery key whose
+private part cannot be located; v0.1.75 replaced it by the paper key without changing any value. The
+older versions stay in the Git history (10 commits). Once the repository is public, whoever holds
+that key can read the values committed then, which are still the current ones. Before publication:
+rotate those secrets (Grafana service account token, InfluxDB tokens, step-ca admin password,
+Prometheus scrape password, Alertmanager webhooks, AWS and network secrets) or accept the risk
+explicitly.

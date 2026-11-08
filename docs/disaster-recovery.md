@@ -6,39 +6,52 @@ on a new Raspberry Pi and a new NVMe drive.
 ## Targets
 - **RTO: 4 hours** from new hardware on the desk to sensors publishing and alerts working.
 - **RPO, configuration: 0** (the newest signed release tag is the source of truth).
-- **RPO, state and time series: 24 hours** (nightly backups).
+- **RPO, state and time series: 24 hours** (nightly state backup; InfluxDB export weekly).
 
-## What survives each failure (2026-10-28)
-| Failure | Lost today | Fixed by |
+## What survives each failure (2026-11-08)
+| Failure | What remains | Proof |
 |---|---|---|
-| NVMe | every backup kept on the Pi; last manual copies are 2026-10-28 (state) and 2026-10-20 (InfluxDB) | off-site copy (phase 1) |
-| Pi board | the Wi-Fi interface name `wlx0013eff27090` changes with a new USB adapter | stable interface name (phase 2) |
-| Laptop | the release signing key | documented key replacement in `allowed_signers` |
-| Pi and laptop | the repository (laptop and the Pi bare repository only) | hosted remote (phase 1) |
+| NVMe or the whole Pi | Signed repository on GitHub; age-encrypted state and InfluxDB archives in S3 (Object Lock GOVERNANCE 30 days), uploaded nightly by `homepi-offsite` | C2 (v0.1.75): S3 copies byte-identical to the Pi, decrypted, SQLite integrity ok |
+| Laptop | GitHub; backups decrypt with the paper key; SOPS secrets decrypt with the Pi key or the paper key | v0.1.67 restore with the paper key; v0.1.75 SOPS decrypt with the paper key |
+| Laptop and Pi together | GitHub, S3, the paper key (two paper copies), the root CA escrow (USB copy) | Paper key opens backups, SOPS (since v0.1.75) and the root escrow |
+| Paper key copies | The laptop key still opens backups and SOPS | Rotate: new paper key, re-key backups and SOPS |
+| Release signing key (laptop) | A new key goes into `allowed_signers` through a commit signed by the old one, or by hand on the Pi | Documented, not drilled |
+
+## Keys
+- **Laptop SOPS key** (`~/.config/sops/age/keys.txt`): backup recipient and SOPS recipient.
+- **Paper key** (two paper copies, never stored digitally): backup recipient (since v0.1.67), SOPS
+  recipient (since v0.1.75), and the only recipient of the root CA escrow.
+- **Pi age key** (`/etc/homepi-gitops/age.key`): SOPS recipient so the Pi decrypts its own secrets.
+  It is excluded from the backups on purpose: a rebuilt Pi gets a new one.
 
 ## Phases
-1. **Code and data survive the hardware**: hosted repository remote; automatic off-site copy of the
-   age-encrypted backups to object storage that the Pi can write but not read or delete; daily
-   InfluxDB export; a restore test from the off-site copy.
-2. **The whole platform is code**: storage bootstrap, network (stable interface name, one firewall
-   loader, hostapd, DNS, DHCP), PKI (step-ca, Mosquitto), InfluxDB, Telegraf, Grafana, Nginx,
-   Authelia, CrowdSec, NetBird, the provisioning API and the dashboard. Each role is first taken over
-   as found (check mode reports no change), then changed in its own commits.
+1. **Code and data survive the hardware**: done (phase A; restore from S3 proven, C2).
+2. **The whole platform is code**: phase B of `docs/roadmap.md`.
 3. **Restoring state is code**: `homepi-restore` puts data and secrets back on a host built by
    Ansible (SQLite databases, step-ca database, Terraform state, InfluxDB export, SSH host keys).
-   It never restores `/etc` as a whole.
+   It never restores `/etc` as a whole (C1).
 4. **Game day**: a full rebuild on blank storage with the original NVMe unplugged, timed against
-   the RTO, repeated every quarter.
+   the RTO, repeated every quarter (C3).
 
 ## Manual steps that stay manual
 - Writing Ubuntu Server 24.04 arm64 to the new drive and the first SSH login.
-- The LUKS passphrase of the data volume.
-- The two trust anchors in `/etc/homepi-gitops`: the Pi's age key and `allowed_signers`.
-- Plugging in the USB key that holds the recovery key, if the laptop key is gone.
+- The LUKS passphrase or keyfile of the data volume (see `docs/runbooks/disk-encryption.md`).
+- The trust anchors in `/etc/homepi-gitops`: `allowed_signers`, and a **new** Pi age key
+  (`age-keygen`), whose public key replaces the old Pi recipient in `.sops.yaml`, followed by
+  `sops updatekeys` on every encrypted `*.sops.yaml` from the laptop (or with the paper key) and a
+  signed tag.
+- Typing the paper key if the laptop key is gone.
 
-## Interim emergency procedure (until phase 3 exists)
-Restore from the newest state archive only these paths, then rerun the playbook:
-`var/lib/homepi`, `var/lib/secrets`, `var/lib/homepi-terraform`, `etc/step-ca`, `etc/homepi`,
-`etc/homepi-gitops`, `etc/mosquitto`, `etc/nginx`, `etc/authelia`, `etc/grafana`, `etc/influxdb`,
-`etc/telegraf`, the SQLite databases shipped next to them, and the InfluxDB line-protocol export.
-This list is checked during the first game day; until then it is a best effort.
+## Archive layout (state)
+- `sqlite/var/lib/{homepi/devices.db,grafana/grafana.db,authelia/db.sqlite3}`: consistent online
+  copies of the SQLite databases.
+- `etc-and-state.tar`: `/etc` and the state directories (no root CA key, no Pi age key).
+- `opt.tar`: `/opt`.
+
+## Interim emergency procedure (until `homepi-restore` exists)
+Rebuild the host with Ansible from the newest signed tag, then restore from the newest state
+archive only: the SQLite databases from `sqlite/`, and from `etc-and-state.tar` the paths
+`var/lib/secrets`, `var/lib/homepi-terraform`, `etc/step-ca`, `etc/homepi`, `etc/mosquitto`,
+`etc/nginx`, `etc/authelia`, `etc/grafana`, `etc/influxdb`, `etc/telegraf`, plus
+`etc/homepi-gitops/allowed_signers` (never an old Pi age key: create a new one, see above), then
+import the InfluxDB line-protocol export. This list is checked during the first game day (C3).
