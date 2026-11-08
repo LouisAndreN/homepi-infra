@@ -121,3 +121,24 @@ To issue a new server certificate: password from
 
 Still open: password.txt opens the root and intermediate keys; the root key is
 online and in the nightly state backup (encrypted to two offline recipients).
+
+## Root CA key offline (v0.1.68)
+
+step-ca only needs the intermediate key: `ca.json` does not reference the root
+key. On 2026-11-08 the root key left the Pi:
+
+- Escrow: `homepi-root-escrow-2026-11-08.tar.age` (age, paper key only; root
+  key re-encrypted with a dedicated password stored only inside the escrow,
+  plus root and intermediate certificates and a README). Copies: laptop
+  `~/homepi-escrow` and one USB key, both verified by sha256 after replug.
+  Decryption and key/certificate match proven with the retyped paper key.
+- Removal: the key was moved to RAM, step-ca restarted without it, renewals of
+  the broker and nginx certificates proven, then the RAM copy was destroyed and
+  the filesystem trimmed (shred is ineffective on Btrfs and NVMe).
+- `hardening` checks that `/etc/step-ca/secrets/root_ca_key` stays absent.
+
+Use the escrow only to sign a new intermediate (see its README), on an offline
+machine. Not done on purpose: re-encrypting the intermediate key with a new
+password; it is the same key in the kept pre-2026-11-08 archives, and the
+nightly backup holds it with its password. Only a new intermediate key would
+make those archives useless for it.
