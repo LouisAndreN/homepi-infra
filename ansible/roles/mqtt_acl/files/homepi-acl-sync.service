@@ -1,0 +1,7 @@
+[Unit]
+Description=HomePi MQTT device ACL from the device registry
+After=mosquitto.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-acl-sync

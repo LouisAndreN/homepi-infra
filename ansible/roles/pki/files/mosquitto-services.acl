@@ -1,0 +1,9 @@
+# HomePi MQTT ACL for the loopback listener 1883 (service accounts, password file).
+# Device certificates use listener 8883 and the generated devices.acl, never this file.
+user telegraf-bridge
+topic read iot/#
+
+user homepi-api
+topic write iot/#
+topic write homepi/#
+topic read  iot/+/sensors

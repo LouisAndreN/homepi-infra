@@ -21,6 +21,7 @@
     - pki
     # Applies: keeps the broker CRL fresh (B3.2a, docs/runbooks/pki.md)
     - pki_crl
+    - mqtt_acl
     # Verify only: nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md)
     - nginx
     # Verify only: provisioning API code, units and Python packages

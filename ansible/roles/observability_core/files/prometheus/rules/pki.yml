@@ -26,3 +26,22 @@ groups:
         annotations:
           summary: "The broker CRL on {{ $labels.instance }} expires in less than 6 hours"
           description: "Once the broker enforces the CRL, an expired CRL rejects every device. Run: sudo systemctl start homepi-crl-sync, then check step-ca (docs/runbooks/pki.md)."
+
+  - name: homepi-mqtt-acl
+    rules:
+      - alert: MqttAclSyncFailing
+        expr: homepi_mqtt_acl_sync_success == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: MQTT device ACL is not synced from the registry
+          description: Revocations and new devices are not applied on the broker. See docs/runbooks/mqtt-acl.md.
+      - alert: MqttAclSyncStale
+        expr: (time() - homepi_mqtt_acl_last_success_timestamp_seconds > 600) or absent(homepi_mqtt_acl_last_success_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: MQTT device ACL sync has not succeeded for 10 minutes
+          description: The homepi-acl-sync timer is stopped or failing. See docs/runbooks/mqtt-acl.md.

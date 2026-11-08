@@ -4,7 +4,7 @@
 pki_files:
   - {src: mosquitto.conf, dest: /etc/mosquitto/mosquitto.conf, owner: root, group: root, mode: "0644"}
   - {src: mosquitto-homepi_iot.conf, dest: /etc/mosquitto/conf.d/homepi_iot.conf, owner: root, group: root, mode: "0644"}
-  - {src: mosquitto-devices.acl, dest: /etc/mosquitto/acl/devices.acl, owner: mosquitto, group: mosquitto, mode: "0640"}
+  - {src: mosquitto-services.acl, dest: /etc/mosquitto/acl/services.acl, owner: mosquitto, group: mosquitto, mode: "0640"}
   - {src: mosquitto-ca_chain.crt, dest: /etc/mosquitto/certs/ca_chain.crt, owner: mosquitto, group: mosquitto, mode: "0644"}
   - {src: step-root_ca.crt, dest: /etc/step-ca/certs/root_ca.crt, owner: root, group: iot-platform, mode: "0640"}
   - {src: step-intermediate_ca.crt, dest: /etc/step-ca/certs/intermediate_ca.crt, owner: root, group: root, mode: "0600"}

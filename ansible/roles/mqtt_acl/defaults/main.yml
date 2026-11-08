@@ -1,0 +1,2 @@
+mqtt_acl_sync: /usr/local/sbin/homepi-acl-sync
+mqtt_acl_file: /etc/mosquitto/acl/devices.acl
