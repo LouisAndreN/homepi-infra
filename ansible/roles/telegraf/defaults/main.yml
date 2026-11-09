@@ -1,0 +1,4 @@
+telegraf_mqtt_password: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/pki.sops.yaml', extract='[\"mqtt_telegraf_password\"]') }}"
+telegraf_influx_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_telegraf_token\"]') }}"
+telegraf_passwd_tool: /usr/local/sbin/homepi-mqtt-passwd
+telegraf_broker_passwd_file: /etc/mosquitto/passwd/telegraf.passwd

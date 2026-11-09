@@ -1,0 +1,100 @@
+# Telegraf: MQTT (telegraf-bridge, read only) -> InfluxDB iot-hot (telegraf-write).
+# Secrets come from SOPS through an environment file only systemd reads. See docs/runbooks/telegraf.md.
+- name: Mosquitto password tool
+  ansible.builtin.copy:
+    src: homepi-mqtt-passwd
+    dest: "{{ telegraf_passwd_tool }}"
+    owner: root
+    group: root
+    mode: "0755"
+  register: telegraf_passwd_tool_task
+
+- name: telegraf-bridge password in the broker password file matches SOPS
+  ansible.builtin.command:
+    argv: "{{ [telegraf_passwd_tool, telegraf_broker_passwd_file, 'telegraf-bridge'] + (['--check'] if ansible_check_mode else []) }}"
+    stdin: "{{ telegraf_mqtt_password }}"
+    chdir: /
+  register: telegraf_broker_password
+  changed_when: telegraf_broker_password.stdout in ['changed', 'would change']
+  check_mode: false
+  no_log: true
+  when: not (ansible_check_mode and telegraf_passwd_tool_task is changed)
+
+- name: Mosquitto reloads the password file
+  ansible.builtin.systemd:
+    name: mosquitto
+    state: reloaded
+  when: telegraf_broker_password is changed
+
+- name: Telegraf secrets (environment file read by systemd only)
+  ansible.builtin.copy:
+    content: |
+      TELEGRAF_MQTT_PASSWORD={{ telegraf_mqtt_password }}
+      TELEGRAF_INFLUX_TOKEN={{ telegraf_influx_token }}
+    dest: /var/lib/secrets/telegraf.env
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: telegraf_env
+
+- name: Telegraf loads its secrets
+  ansible.builtin.copy:
+    src: telegraf-secrets.conf
+    dest: /etc/systemd/system/telegraf.service.d/secrets.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: telegraf_dropin
+
+- name: Telegraf no longer loads api.env (it carried the homepi-api MQTT password)
+  ansible.builtin.file:
+    path: /etc/systemd/system/telegraf.service.d/homepi.conf
+    state: absent
+  register: telegraf_legacy_dropin
+
+- name: Telegraf inputs and output
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/telegraf/telegraf.d/{{ item }}"
+    owner: root
+    group: telegraf
+    mode: "0640"
+  loop: [homepi_mqtt.conf, nilm.conf]
+  register: telegraf_confs
+
+- name: api.env no longer holds Telegraf credentials
+  ansible.builtin.lineinfile:
+    path: /etc/homepi/api.env
+    regexp: "^{{ item }}="
+    state: absent
+  loop: [MOSQUITTO_TELEGRAF_PASS, INFLUX_TOKEN]
+  no_log: true
+  diff: false
+
+- name: New configuration authenticates to the broker (test run, nothing written)
+  ansible.builtin.command:
+    argv: [systemd-run, --quiet, --wait, --pipe, --collect, -p, User=telegraf,
+           -p, "EnvironmentFile=/var/lib/secrets/telegraf.env",
+           /usr/bin/telegraf, --config, /etc/telegraf/telegraf.conf, --config-directory, /etc/telegraf/telegraf.d,
+           --test, --test-wait, "10", --input-filter, mqtt_consumer]
+    chdir: /
+  register: telegraf_test
+  changed_when: false
+  failed_when: telegraf_test.rc != 0 or 'E!' in (telegraf_test.stdout + telegraf_test.stderr)
+  when:
+    - not ansible_check_mode
+    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed
+
+- name: Telegraf restarted on the new configuration
+  ansible.builtin.systemd:
+    name: telegraf
+    state: restarted
+    daemon_reload: true
+  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed
+
+- name: Telegraf enabled and running
+  ansible.builtin.systemd:
+    name: telegraf
+    enabled: true
+    state: started

@@ -23,6 +23,7 @@
     - pki_crl
     - mqtt_acl
     - influxdb
+    - telegraf
     # Verify only: nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md)
     - nginx
     - authelia

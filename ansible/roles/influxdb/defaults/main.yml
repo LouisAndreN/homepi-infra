@@ -1,5 +1,6 @@
 influxdb_admin_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_admin_token\"]') }}"
 influxdb_check: /usr/local/sbin/homepi-influx-check
+influxdb_token_file: /var/lib/secrets/influx-admin.token
 # State inside InfluxDB that a rebuild must recreate; checked on every apply and check.
 influxdb_expected:
   org: iot-org

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Compare the live InfluxDB state with the state described in the repository.
 
-Reads the expected state as JSON on stdin and the token from INFLUX_TOKEN.
+Reads the expected state as JSON on stdin and the token from INFLUX_TOKEN or
+/var/lib/secrets/influx-admin.token.
 Prints one line per check and exits 1 on any drift. Never prints a token.
 """
 import json
@@ -11,11 +12,21 @@ import urllib.parse
 import urllib.request
 
 URL = "http://127.0.0.1:8086"
+TOKEN_FILE = "/var/lib/secrets/influx-admin.token"
+
+
+def token():
+    """INFLUX_TOKEN when set (manual runs), otherwise the root-only token file."""
+    t = os.environ.get("INFLUX_TOKEN")
+    if t:
+        return t
+    with open(TOKEN_FILE) as f:
+        return f.read().strip()
 
 
 def get(path, **query):
     q = ("?" + urllib.parse.urlencode(query)) if query else ""
-    req = urllib.request.Request(URL + path + q, headers=dict(Authorization="Token " + os.environ["INFLUX_TOKEN"]))
+    req = urllib.request.Request(URL + path + q, headers=dict(Authorization="Token " + token()))
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.load(r)
 

@@ -1,0 +1,77 @@
+#!/usr/bin/env python3
+"""Set one user's password in a Mosquitto password file ($7$, PBKDF2-SHA512).
+
+Usage: homepi-mqtt-passwd FILE USER [--check] < password
+The password is read on stdin so it never appears in argv. Prints "unchanged"
+when the stored hash already verifies, "would change" with --check, and
+"changed" after rewriting. Other lines are kept byte for byte; owner and mode
+are preserved; the write is atomic.
+"""
+import base64
+import hashlib
+import hmac
+import os
+import sys
+import tempfile
+
+ITERATIONS = 101
+
+
+def verifies(stored, pw):
+    p = stored.split("$")
+    if len(p) != 5 or p[1] != "7":
+        return False
+    want = base64.b64decode(p[4])
+    dk = hashlib.pbkdf2_hmac("sha512", pw, base64.b64decode(p[3]), int(p[2]), len(want))
+    return hmac.compare_digest(dk, want)
+
+
+def main():
+    check = "--check" in sys.argv[1:]
+    args = [a for a in sys.argv[1:] if a != "--check"]
+    if len(args) != 2:
+        sys.exit("usage: homepi-mqtt-passwd FILE USER [--check] < password")
+    path, user = args
+    pw = sys.stdin.read().rstrip("\n").encode()
+    if len(pw) < 24:
+        sys.exit("refused: password shorter than 24 characters")
+    with open(path) as f:
+        lines = f.read().splitlines(True)
+    idx = [i for i, l in enumerate(lines) if l.split(":", 1)[0] == user]
+    if len(idx) > 1:
+        sys.exit("refused: %s appears %d times" % (user, len(idx)))
+    if idx and verifies(lines[idx[0]].rstrip("\n").split(":", 1)[1], pw):
+        print("unchanged")
+        return
+    if check:
+        print("would change")
+        return
+    salt = os.urandom(12)
+    dk = hashlib.pbkdf2_hmac("sha512", pw, salt, ITERATIONS, 64)
+    stored = "$7$%d$%s$%s" % (ITERATIONS, base64.b64encode(salt).decode(), base64.b64encode(dk).decode())
+    if not verifies(stored, pw):
+        sys.exit("internal error: the new hash does not verify")
+    new = "%s:%s\n" % (user, stored)
+    if idx:
+        lines[idx[0]] = new
+    else:
+        if lines and not lines[-1].endswith("\n"):
+            lines[-1] += "\n"
+        lines.append(new)
+    st = os.stat(path)
+    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=".homepi-passwd.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write("".join(lines))
+        os.chown(tmp, st.st_uid, st.st_gid)
+        os.chmod(tmp, st.st_mode & 0o7777)
+        os.replace(tmp, path)
+    except BaseException:
+        if os.path.exists(tmp):
+            os.unlink(tmp)
+        raise
+    print("changed")
+
+
+if __name__ == "__main__":
+    main()

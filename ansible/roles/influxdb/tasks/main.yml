@@ -33,14 +33,22 @@
     mode: "0755"
   register: influxdb_checker
 
+- name: InfluxDB admin token for the state checker (root only)
+  ansible.builtin.copy:
+    content: "{{ influxdb_admin_token }}"
+    dest: "{{ influxdb_token_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+  register: influxdb_token_file_task
+
 - name: InfluxDB state matches the repository (buckets, tasks, authorizations)
   ansible.builtin.command:
     argv: ["{{ influxdb_check }}"]
     stdin: "{{ influxdb_expected | to_json }}"
     chdir: /
-  environment:
-    INFLUX_TOKEN: "{{ influxdb_admin_token }}"
   register: influxdb_state
   changed_when: false
   check_mode: false
-  when: not (ansible_check_mode and influxdb_checker is changed)
+  when: not (ansible_check_mode and (influxdb_checker is changed or influxdb_token_file_task is changed))

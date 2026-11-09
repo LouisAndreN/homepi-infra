@@ -18,6 +18,9 @@ hardening_absent:
   - /etc/authelia/config
   - /etc/authelia/configuration.yml.dpkg-old
   - /var/lib/authelia/db.sqlite3.bak
+  - /etc/telegraf/telegraf.conf.disabled
+  - /etc/influxdb/tasks
+  - /root/.influxdbv2
 hardening_owned:
   - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
   - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}
