@@ -1,0 +1,66 @@
+# Managed by Ansible (role grafana): the active lines of the former grafana.ini, with
+# Grafana on a unix socket and secrets read from /etc/grafana/secrets.
+# See docs/runbooks/grafana.md.
+
+[server]
+domain = homepi.internal
+root_url = https://homepi.internal/grafana/
+serve_from_sub_path = true
+router_logging = false
+protocol = socket
+socket = {{ grafana_socket }}
+socket_gid = {{ grafana_socket_gid }}
+socket_mode = 0660
+
+[security]
+admin_user = iot-admin
+admin_password = $__file{/etc/grafana/secrets/admin_password}
+secret_key = $__file{/etc/grafana/secrets/secret_key}
+disable_gravatar = true
+cookie_secure = true
+cookie_samesite = none
+allow_embedding = true
+strict_transport_security = true
+
+[users]
+allow_sign_up = false
+auto_assign_org_role = Viewer
+
+[auth]
+disable_login_form = true
+
+[auth.proxy]
+enabled = true
+header_name = X-WEBAUTH-USER
+header_property = username
+auto_sign_up = true
+enable_login_token = false
+
+[unified_alerting.reserved_labels]
+disabled_labels =
+
+[unified_alerting.state_history.annotations]
+max_age =
+max_annotations_to_keep =
+
+[unified_alerting.prometheus_conversion]
+rule_query_offset = 1m
+default_datasource_uid =
+
+[recording_rules]
+enabled = true
+timeout = 30s
+default_datasource_uid =
+
+[metrics]
+enabled           = true
+disable_total_stats = false
+basic_auth_username = prometheus
+basic_auth_password = $__file{/etc/grafana/secrets/metrics_password}
+
+[feature_toggles]
+enable = geomap
+
+[geomap]
+geoip_database_path = /var/lib/GeoIP
+default_baselayer_config = {"type":"xyz","config":{"attribution" = "OpenStreetMap","url" = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"}}

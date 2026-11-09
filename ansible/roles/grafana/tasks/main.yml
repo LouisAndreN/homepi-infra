@@ -1,0 +1,134 @@
+# Grafana on a unix socket that only nginx (www-data) can reach: the auth proxy header is
+# trusted only from nginx. Machine clients use nginx 127.0.0.1:3001 (identity headers stripped).
+# See docs/runbooks/grafana.md.
+- name: Group shared by Grafana and nginx for the socket
+  ansible.builtin.group:
+    name: "{{ grafana_socket_group }}"
+    system: true
+  register: grafana_group
+
+- name: grafana in the socket group
+  ansible.builtin.user:
+    name: grafana
+    groups: "{{ grafana_socket_group }}"
+    append: true
+  register: grafana_member
+  when: not (ansible_check_mode and grafana_group is changed)
+
+- name: www-data in the socket group
+  ansible.builtin.user:
+    name: www-data
+    groups: "{{ grafana_socket_group }}"
+    append: true
+  register: grafana_nginx_member
+  when: not (ansible_check_mode and grafana_group is changed)
+
+- name: Socket group id
+  ansible.builtin.getent:
+    database: group
+    key: "{{ grafana_socket_group }}"
+  failed_when: false
+
+- name: Previous grafana.ini kept once for rollback (root only)
+  ansible.builtin.file:
+    path: /var/backups/grafana
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Previous grafana.ini copied once
+  ansible.builtin.copy:
+    src: /etc/grafana/grafana.ini
+    dest: /var/backups/grafana/grafana.ini.pre-v0.1.80
+    remote_src: true
+    force: false
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Grafana secrets directory
+  ansible.builtin.file:
+    path: /etc/grafana/secrets
+    state: directory
+    owner: root
+    group: grafana
+    mode: "0750"
+
+- name: Grafana secrets (read through $__file)
+  ansible.builtin.copy:
+    content: "{{ item.value }}"
+    dest: "/etc/grafana/secrets/{{ item.name }}"
+    owner: root
+    group: grafana
+    mode: "0640"
+  loop:
+    - {name: secret_key, value: "{{ grafana_secret_key }}"}
+    - {name: admin_password, value: "{{ grafana_admin_password }}"}
+    - {name: metrics_password, value: "{{ grafana_metrics_password }}"}
+  no_log: true
+  register: grafana_secrets
+
+- name: grafana.ini
+  ansible.builtin.template:
+    src: grafana.ini.j2
+    dest: /etc/grafana/grafana.ini
+    owner: root
+    group: grafana
+    mode: "0640"
+  register: grafana_ini
+
+- name: Grafana runtime directory traversable by nginx
+  ansible.builtin.copy:
+    src: grafana-socket.conf
+    dest: /etc/systemd/system/grafana-server.service.d/socket.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: grafana_dropin
+
+- name: Grafana restarted on the new configuration
+  ansible.builtin.systemd:
+    name: grafana-server
+    state: restarted
+    daemon_reload: true
+  when: grafana_member is changed or grafana_secrets is changed or grafana_ini is changed or grafana_dropin is changed
+
+- name: nginx workers pick up the socket group
+  ansible.builtin.systemd:
+    name: nginx
+    state: reloaded
+  when: grafana_nginx_member is changed
+
+- name: Grafana enabled and running
+  ansible.builtin.systemd:
+    name: grafana-server
+    enabled: true
+    state: started
+
+- name: Grafana socket present
+  ansible.builtin.wait_for:
+    path: "{{ grafana_socket }}"
+    timeout: 90
+  when: not ansible_check_mode
+
+- name: Grafana state checker
+  ansible.builtin.copy:
+    src: homepi-grafana-check
+    dest: "{{ grafana_check }}"
+    owner: root
+    group: root
+    mode: "0755"
+  register: grafana_checker
+
+- name: Grafana reachable only through nginx, data source healthy
+  ansible.builtin.command:
+    argv: ["{{ grafana_check }}", "{{ grafana_socket }}"]
+    chdir: /
+  register: grafana_state
+  changed_when: false
+  check_mode: false
+  retries: 6
+  delay: 5
+  until: grafana_state.rc == 0
+  when: not (ansible_check_mode and (grafana_checker is changed or grafana_ini is changed or grafana_dropin is changed or grafana_member is changed or grafana_nginx_member is changed))

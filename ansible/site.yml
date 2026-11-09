@@ -26,6 +26,7 @@
     - telegraf
     # Verify only: nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md)
     - nginx
+    - grafana
     - authelia
     # Verify only: provisioning API code, units and Python packages
     - provisioning_api

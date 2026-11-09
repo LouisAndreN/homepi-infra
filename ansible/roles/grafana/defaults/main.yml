@@ -1,0 +1,7 @@
+grafana_secret_key: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/grafana.sops.yaml', extract='[\"grafana_secret_key\"]') }}"
+grafana_admin_password: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/grafana.sops.yaml', extract='[\"grafana_admin_password\"]') }}"
+grafana_metrics_password: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/monitoring.sops.yaml', extract='[\"grafana_scrape_password\"]') }}"
+grafana_socket: /run/grafana/grafana.sock
+grafana_socket_group: grafana-web
+grafana_socket_gid: "{{ ((ansible_facts.getent_group | default({}))[grafana_socket_group] | default(['x', '0']))[1] }}"
+grafana_check: /usr/local/sbin/homepi-grafana-check

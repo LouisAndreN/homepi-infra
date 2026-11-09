@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Check Grafana behind its unix socket.
+
+Health over the socket; nginx's user reaches it and other users do not; a forged
+identity through the loopback proxy (127.0.0.1:3001) is refused; the InfluxDB data
+source answers (proves secret_key still decrypts its token). Exits 1 on any failure.
+"""
+import http.client
+import json
+import socket
+import subprocess
+import sys
+
+SOCK = sys.argv[1] if len(sys.argv) > 1 else "/run/grafana/grafana.sock"
+ADMIN = {"X-WEBAUTH-USER": "iot-admin"}
+results = []
+
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost", timeout=15)
+        self.unix_path = path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(15)
+        s.connect(self.unix_path)
+        self.sock = s
+
+
+def get(path, headers=None):
+    c = UnixConnection(SOCK)
+    c.request("GET", path, headers=headers or {})
+    r = c.getresponse()
+    body = r.read()
+    c.close()
+    return r.status, body
+
+
+def curl_as(user, args):
+    return subprocess.run(["runuser", "-u", user, "--", "curl", "-s", "-o", "/dev/null", "-w", "%{http_code}"] + args,
+                          capture_output=True, text=True, cwd="/")
+
+
+def check(name, ok, detail):
+    print(("ok   " if ok else "FAIL ") + name + ": " + detail)
+    results.append(ok)
+
+
+st, _ = get("/grafana/api/health")
+check("health over the socket", st == 200, "HTTP %d" % st)
+r = curl_as("www-data", ["--unix-socket", SOCK, "http://localhost/grafana/api/health"])
+check("nginx user (www-data) reaches the socket", r.stdout == "200", "HTTP %s, curl rc %d" % (r.stdout, r.returncode))
+r = curl_as("nobody", ["--unix-socket", SOCK, "-H", "X-WEBAUTH-USER: iot-admin", "http://localhost/grafana/api/user"])
+check("other local users cannot reach the socket", r.returncode != 0, "curl rc %d" % r.returncode)
+r = curl_as("nobody", ["-H", "X-WEBAUTH-USER: iot-admin", "-H", "Remote-Role: Admin", "http://127.0.0.1:3001/grafana/api/user"])
+check("forged identity through the loopback proxy is refused", r.stdout == "401", "HTTP %s" % r.stdout)
+st, body = get("/grafana/api/datasources/name/influxdb", ADMIN)
+uid = json.loads(body).get("uid") if st == 200 else None
+if uid:
+    st, body = get("/grafana/api/datasources/uid/%s/health" % uid, ADMIN)
+    status = json.loads(body).get("status") if body else None
+    check("influxdb data source answers (token decrypted)", st == 200 and status == "OK", "HTTP %d, status %s" % (st, status))
+else:
+    check("influxdb data source", False, "not found (HTTP %d)" % st)
+sys.exit(0 if all(results) else 1)

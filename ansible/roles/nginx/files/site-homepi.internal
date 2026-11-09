@@ -217,7 +217,8 @@ server {
 	error_page 401    =302 https://auth.homepi.internal/?rd=$scheme://$host$request_uri;
 
 	proxy_set_header  X-WEBAUTH-USER    $authelia_user;
-	proxy_pass        http://127.0.0.1:3000/grafana/;
+	proxy_set_header  Remote-Role       "";   # a client-supplied role is never forwarded
+	proxy_pass        http://unix:/run/grafana/grafana.sock:/grafana/;
 	proxy_set_header  Host              $host;
 	proxy_set_header  X-Real-IP         $remote_addr;
 	proxy_set_header  X-Forwarded-For   $proxy_add_x_forwarded_for;
@@ -324,5 +325,23 @@ server {
         proxy_set_header        Host $host;
         proxy_set_header        X-Real-IP $remote_addr;
         proxy_read_timeout      30s;
+    }
+}
+
+# Machine clients of Grafana (Prometheus, Terraform): loopback only, no Authelia.
+# Identity headers are stripped, so Grafana requires its own credentials (basic auth or a token).
+server {
+    listen 127.0.0.1:3001;
+    server_name _;
+
+    location /grafana/ {
+        proxy_set_header  X-WEBAUTH-USER "";
+        proxy_set_header  Remote-Role    "";
+        proxy_set_header  Host           $host;
+        proxy_pass        http://unix:/run/grafana/grafana.sock:/grafana/;
+    }
+
+    location / {
+        return 404;
     }
 }
