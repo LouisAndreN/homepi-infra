@@ -1,0 +1,6 @@
+# Rebuild manifest (C1, phase R1). For now: services kept installed but disabled. The package and apt
+# source lists come next, from the inventory of 2026-11-10 minus what the platform does not need.
+packages_disabled_services:
+  - docker.socket
+  - docker.service
+  - containerd.service

@@ -1,0 +1,17 @@
+# Packages and services of the Pi (rebuild manifest). See docs/runbooks/packages.md.
+- name: Services kept installed but stopped and disabled
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ packages_disabled_services }}"
+
+- name: Disabled services stay inactive
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ item }}"]
+  loop: "{{ packages_disabled_services }}"
+  register: packages_disabled_state
+  changed_when: false
+  check_mode: false
+  failed_when: packages_disabled_state.stdout not in ['inactive', 'failed']
+  when: not ansible_check_mode

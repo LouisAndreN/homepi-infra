@@ -32,6 +32,8 @@ hardening_absent:
   - /etc/step-ca/config/ca.json.bak
   - /etc/step-ca/config/ca.json.bak-2026-11-01-151134
   - /etc/step-ca/config/ca.json.bak.20260517_171942
+  - /usr/local/bin/check-wifi-driver.sh
+  - /usr/local/bin/iot-admin
 hardening_owned:
   - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
   - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}

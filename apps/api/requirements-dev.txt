@@ -1,0 +1,6 @@
+# Test environment for apps/api: the exact packages of the Pi (pip freeze, pinned in the role),
+# plus the test tools. Install into the repository virtualenv:
+#   python3 -m pip install -r apps/api/requirements-dev.txt
+-r ../../ansible/roles/provisioning_api/files/requirements.lock
+pytest
+httpx
