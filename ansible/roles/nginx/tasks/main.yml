@@ -36,7 +36,7 @@
         owner: root
         group: root
         mode: "0600"
-        backup: true
+        backup: false   # the signed Git history is the backup
       no_log: true
       register: nginx_secret_install
 
@@ -47,7 +47,7 @@
         owner: root
         group: root
         mode: "{{ item.mode }}"
-        backup: true
+        backup: false   # the signed Git history is the backup
       loop: "{{ nginx_apply_files }}"
       loop_control:
         label: "{{ item.dest }}"

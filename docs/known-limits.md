@@ -102,3 +102,24 @@ that key can read the values committed then, which are still the current ones. B
 rotate those secrets (Grafana service account token, InfluxDB tokens, step-ca admin password,
 Prometheus scrape password, Alertmanager webhooks, AWS and network secrets) or accept the risk
 explicitly.
+
+## Former master.key on the Pi
+
+`/etc/homepi/master.key` was displayed in a session on 2026-11-08 and is treated as
+compromised. No code referenced it since v0.1.60. v0.1.83 moved it, with the unused
+`/etc/homepi/step-ca/ca_password`, to `/root/homepi-removed/provisioning_api/` and keeps both
+paths absent. Nightly archives taken before v0.1.83 contain it until their S3 retention
+expires (Object Lock GOVERNANCE, 30 days). Destruction of the archived copy is pending.
+
+## pironman5 runs as root
+
+The SunFounder case controller (`/usr/local/bin/pironman5`, pip-installed, venv in
+`/opt/pironman5`) runs as root with no `User=`: third-party code with full privileges. Its
+files are pinned by the hardening role; running it unprivileged (GPIO and I2C groups) is not
+done yet.
+
+## Group iot-platform
+
+`/etc/step-ca/certs/root_ca.crt` is `root:iot-platform 0640` (roles nginx and pki), a group
+named after the retired first platform. The certificate is public; who needs the group is
+not established yet. To rename or drop once measured.

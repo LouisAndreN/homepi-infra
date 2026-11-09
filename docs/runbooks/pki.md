@@ -142,3 +142,12 @@ machine. Not done on purpose: re-encrypting the intermediate key with a new
 password; it is the same key in the kept pre-2026-11-08 archives, and the
 nightly backup holds it with its password. Only a new intermediate key would
 make those archives useless for it.
+
+## Device identity trust anchor
+
+The step-ca provisioner `idevid-x5c` (type X5C) has one root: the Manufacturer CA
+(`CN=HomePi-Manufacturer-CA`, DER sha256 `6a0d04e3a1a8f058...`, valid to 2046). An ESP32 gets its
+LDevID only by presenting an IDevID signed by it (IEEE 802.1AR structure). The root lives
+base64-encoded in `/etc/step-ca/config/ca.json`, `authority.provisioners[].roots`: that is the
+trust anchor. `/etc/homepi/ca/manufacturer_ca.crt` is a reference copy that no program reads
+(root-owned and pinned since v0.1.83). The Manufacturer CA key is offline on the laptop.
