@@ -117,9 +117,3 @@ The SunFounder case controller (`/usr/local/bin/pironman5`, pip-installed, venv 
 `/opt/pironman5`) runs as root with no `User=`: third-party code with full privileges. Its
 files are pinned by the hardening role; running it unprivileged (GPIO and I2C groups) is not
 done yet.
-
-## Group iot-platform
-
-`/etc/step-ca/certs/root_ca.crt` is `root:iot-platform 0640` (roles nginx and pki), a group
-named after the retired first platform. The certificate is public; who needs the group is
-not established yet. To rename or drop once measured.

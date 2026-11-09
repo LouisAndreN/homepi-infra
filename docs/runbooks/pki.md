@@ -151,3 +151,17 @@ LDevID only by presenting an IDevID signed by it (IEEE 802.1AR structure). The r
 base64-encoded in `/etc/step-ca/config/ca.json`, `authority.provisioners[].roots`: that is the
 trust anchor. `/etc/homepi/ca/manufacturer_ca.crt` is a reference copy that no program reads
 (root-owned and pinned since v0.1.83). The Manufacturer CA key is offline on the laptop.
+
+## step-ca runs as step (v0.1.86)
+
+step-ca runs as the system user `step` in a systemd sandbox (`ProtectSystem=strict`,
+`ReadWritePaths=/etc/step-ca/db`, no capability, `SystemCallArchitectures=native`). It reads
+`ca.json` (root:step 0640, the device trust anchor), `intermediate_ca_key` and `password.txt`
+(root:step 0440) and writes only `db/` (step:step 0700). It cannot change its configuration,
+its keys or their modes. Public certificates are root:root 0644. The pki role stays
+verify-only: ownership changes are made on the Pi first, then the pins are released.
+Rollback: `/root/homepi-removed/pki/step-ca.service.before-v0.1.86`.
+
+Never run step-ca as root on `/etc/step-ca/db`: Badger writes a new table when it closes, and a
+root-owned file stops step-ca from starting as step. Any restore of `db/` ends with
+`systemctl stop step-ca; chown -R step:step /etc/step-ca/db; systemctl start step-ca`.
