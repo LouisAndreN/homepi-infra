@@ -32,3 +32,9 @@ its default base layer).
 
 `/var/backups/grafana/grafana.ini.pre-v0.1.80` (root 0600) is the file before v0.1.80. Restore it,
 revert the release, apply.
+
+## Outbound
+
+`[analytics]` reporting, update and plugin update checks are off: Grafana makes no call to
+grafana.com. `http_addr = 127.0.0.1` stays pinned so a return to `protocol = http` would not
+listen on every interface.

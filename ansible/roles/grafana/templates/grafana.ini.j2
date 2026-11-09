@@ -8,6 +8,7 @@ root_url = https://homepi.internal/grafana/
 serve_from_sub_path = true
 router_logging = false
 protocol = socket
+http_addr = 127.0.0.1
 socket = {{ grafana_socket }}
 socket_gid = {{ grafana_socket_gid }}
 socket_mode = 0660
@@ -64,3 +65,8 @@ enable = geomap
 [geomap]
 geoip_database_path = /var/lib/GeoIP
 default_baselayer_config = {"type":"xyz","config":{"attribution" = "OpenStreetMap","url" = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"}}
+
+[analytics]
+reporting_enabled = false
+check_for_updates = false
+check_for_plugin_updates = false

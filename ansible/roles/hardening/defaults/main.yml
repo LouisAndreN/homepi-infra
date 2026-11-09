@@ -21,6 +21,10 @@ hardening_absent:
   - /etc/telegraf/telegraf.conf.disabled
   - /etc/influxdb/tasks
   - /root/.influxdbv2
+  - /etc/homepi/master.key
+  - /etc/homepi/step-ca
+  - /etc/nginx/sites-available/homepi.internal.bak-20261023
+  - /etc/nginx/sites-available/edge-iot.OBSOLETE_never_enabled
 hardening_owned:
   - {path: /opt/pironman5, owner: root, group: root, mode: "0755"}
   - {path: /opt/homepi/scripts, owner: root, group: root, mode: "0755"}

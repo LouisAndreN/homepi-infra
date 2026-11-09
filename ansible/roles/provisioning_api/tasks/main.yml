@@ -238,3 +238,11 @@
   ansible.builtin.fail:
     msg: "API drift detected: {{ api_drift | join(' | ') }}. See docs/runbooks/nginx-api.md."
   when: api_drift | length > 0
+
+- name: Device identity trust anchor (public certificate, content pinned, root owned)
+  ansible.builtin.copy:
+    src: ca/manufacturer_ca.crt
+    dest: /etc/homepi/ca/manufacturer_ca.crt
+    owner: root
+    group: root
+    mode: "0644"
