@@ -1,7 +1,8 @@
 [Unit]
-Description=HomePi Provisioning API
-After=network.target mosquitto.service step-ca.service
+Description=HomePi Provisioning API (device surface, unix socket, nginx only)
+After=network.target mosquitto.service step-ca.service homepi-api.socket
 Wants=mosquitto.service
+Requires=homepi-api.socket
 
 [Service]
 Type=simple
@@ -9,8 +10,9 @@ User=homepi-api
 Group=homepi-api
 WorkingDirectory=/opt/homepi/api
 EnvironmentFile=-/etc/homepi/api.env
+Environment=HOMEPI_API_SURFACE=device
 ExecStart=
-ExecStart=/opt/homepi/api-venv/bin/uvicorn provisioning_api:app --host 127.0.0.1 --port 8090 --workers 1 --log-level info
+ExecStart=/opt/homepi/api-venv/bin/uvicorn provisioning_api:app --fd 3 --workers 1 --log-level info
 Restart=on-failure
 RestartSec=5
 

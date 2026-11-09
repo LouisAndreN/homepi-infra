@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""Check the HomePi API: each surface answers on its unix socket and refuses the other one, no
+OpenAPI document, nginx's user reaches both sockets and other users neither, no TCP listener left.
+Usage: homepi-api-check DEVICE_ID. Exits 1 on any failure."""
+import http.client
+import socket
+import subprocess
+import sys
+
+DEV = sys.argv[1]
+SOCK = {"device": "/run/homepi-api/device.sock", "admin": "/run/homepi-api/admin.sock"}
+res = []
+
+
+class UnixConnection(http.client.HTTPConnection):
+    def __init__(self, path):
+        super().__init__("localhost", timeout=15)
+        self.unix_path = path
+
+    def connect(self):
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(15)
+        s.connect(self.unix_path)
+        self.sock = s
+
+
+def get(surface, path):
+    try:
+        c = UnixConnection(SOCK[surface])
+        c.request("GET", path)
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status
+    except Exception as e:
+        return "error " + e.__class__.__name__
+
+
+def check(name, ok, detail):
+    print(("ok   " if ok else "FAIL ") + name + ": " + str(detail))
+    res.append(ok)
+
+
+st = get("device", "/api/devices/%s/status" % DEV)
+check("device surface answers", st == 200, st)
+st = get("admin", "/api/admin/devices")
+check("admin surface answers", st == 200, st)
+st = get("device", "/api/admin/devices")
+check("device surface refuses admin routes", st == 404, st)
+st = get("admin", "/api/devices/%s/status" % DEV)
+check("admin surface refuses device routes", st == 404, st)
+st = get("device", "/openapi.json")
+check("no OpenAPI document", st == 404, st)
+for user, want in (("www-data", True), ("nobody", False)):
+    for surface in ("device", "admin"):
+        r = subprocess.run(["runuser", "-u", user, "--", "curl", "-s", "-o", "/dev/null", "--unix-socket", SOCK[surface], "http://localhost/"],
+                           capture_output=True, text=True, cwd="/")
+        check("%s reaches the %s socket: %s" % (user, surface, "yes" if want else "no"), (r.returncode == 0) == want, "curl rc %d" % r.returncode)
+tcp = subprocess.run(["ss", "-Hltn", "( sport = :8090 or sport = :8091 )"], capture_output=True, text=True).stdout.strip()
+check("no TCP listener on 8090 or 8091", tcp == "", "none" if not tcp else tcp.splitlines()[0])
+sys.exit(0 if all(res) else 1)

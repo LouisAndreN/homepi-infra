@@ -31,7 +31,7 @@
       ansible.builtin.systemd_service:
         name: "{{ item }}"
         state: stopped
-      loop: [homepi-api-admin, homepi-api]
+      loop: [homepi-api-admin.socket, homepi-api.socket, homepi-api-admin, homepi-api]
 
     - name: Backup directory owned by the API user
       ansible.builtin.file:
@@ -112,28 +112,59 @@
       ansible.builtin.systemd_service:
         name: "{{ item }}"
         state: started
-      loop: [homepi-api, homepi-api-admin]
+      loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
 
-    - name: Both API ports answer
+    - name: Both API sockets answer (device and admin surfaces)
+
       ansible.builtin.uri:
-        url: "http://127.0.0.1:{{ item }}/api/devices/{{ api_health_device }}/status"
+
+        url: "{{ item.url }}"
+
+        unix_socket: "{{ item.socket }}"
+
         status_code: 200
-      loop: [8090, 8091]
+
+      loop:
+
+        - {socket: /run/homepi-api/device.sock, url: "http://localhost/api/devices/{{ api_health_device }}/status"}
+
+        - {socket: /run/homepi-api/admin.sock, url: "http://localhost/api/admin/devices"}
+
+      loop_control:
+
+        label: "{{ item.socket }}"
+
       register: api_health
+
       retries: 15
+
       delay: 2
+
       until: api_health.status == 200
+
       when: not ansible_check_mode
 
-    - name: Removed fallback routes answer 404
+
+    - name: Removed fallback routes answer 404 on the device surface
+
       ansible.builtin.uri:
-        url: "http://127.0.0.1:8090{{ item }}"
+
+        url: "http://localhost{{ item }}"
+
+        unix_socket: /run/homepi-api/device.sock
+
         method: POST
+
         body_format: json
+
         body: {}
+
         status_code: 404
+
       loop: [/api/devices/enroll, /api/devices/announce, "/api/devices/{{ api_health_device }}/renew", /api/admin/pairing/open]
+
       when: not ansible_check_mode
+
 
   rescue:
     - name: Restore the previous API code
@@ -158,7 +189,7 @@
       ansible.builtin.systemd_service:
         name: "{{ item }}"
         state: started
-      loop: [homepi-api, homepi-api-admin]
+      loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
 
     - name: Report the rollback
       ansible.builtin.fail:
@@ -246,3 +277,24 @@
     owner: root
     group: root
     mode: "0644"
+
+- name: API checker
+  ansible.builtin.copy:
+    src: homepi-api-check
+    dest: /usr/local/sbin/homepi-api-check
+    owner: root
+    group: root
+    mode: "0755"
+  register: api_checker
+
+- name: API reachable only through its sockets, one surface each
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/homepi-api-check, "{{ api_health_device }}"]
+    chdir: /
+  register: api_state
+  changed_when: false
+  check_mode: false
+  retries: 5
+  delay: 3
+  until: api_state.rc == 0
+  when: not (ansible_check_mode and (api_checker is changed or api_code_probe is changed))

@@ -153,3 +153,22 @@ iot-hot (`influx_dashboard_token` in `secrets/influx.sops.yaml`, rendered to
 `/influx/` path answers 403 before Authelia (health check). The dashboard
 bundle without the token ships with the dashboard role (v0.1.62); the old
 token is revoked after that.
+
+## Unix sockets and surfaces (v0.1.90)
+
+Until v0.1.90 both uvicorn instances listened on TCP 127.0.0.1 (8090, 8091) and both served every
+route: any local process could read and change the registry and upload and deploy firmware to
+every device (proved as `nobody`: HTTP 200 on /api/admin/deployments), and could send
+`X-SSL-Verify: SUCCESS` with any device DN to the device routes.
+
+| Instance | Socket (systemd socket unit) | Serves |
+|---|---|---|
+| homepi-api | /run/homepi-api/device.sock | /api/devices/*, /metrics/homepi |
+| homepi-api-admin | /run/homepi-api/admin.sock | /api/admin/* |
+
+Sockets are `homepi-api:www-data 0660`: nginx and root only. uvicorn receives them with `--fd 3`
+and creates nothing itself (it would make a 0666 socket). `HOMEPI_API_SURFACE` makes each
+instance answer 404 outside its surface, OpenAPI document included. nginx sets the X-SSL headers
+on /api/devices/ from the TLS session and clears them on /api/admin/. Prometheus scrapes
+`/metrics/homepi` through the loopback server 127.0.0.1:3001. `homepi-api-check` proves the
+split and the socket permissions on every apply and check.

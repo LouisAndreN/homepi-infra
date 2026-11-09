@@ -481,6 +481,21 @@ async def lifespan(app: FastAPI):
         _mqtt_client.disconnect()
 
 app = FastAPI(title="HomePi Provisioning API", lifespan=lifespan)
+
+# Surface split (v0.1.90): each uvicorn instance serves one surface. The device instance serves the
+# device routes and the Prometheus metrics; the admin instance serves the admin routes. Anything
+# else, including the OpenAPI document, answers 404. Unset means every route (development, tests).
+API_SURFACE = os.environ.get("HOMEPI_API_SURFACE", "")
+_SURFACE_PREFIXES = {"device": ("/api/devices/", "/metrics/homepi"), "admin": ("/api/admin/",)}
+
+
+@app.middleware("http")
+async def _surface_guard(request: Request, call_next):
+    allowed = _SURFACE_PREFIXES.get(API_SURFACE)
+    if allowed is not None and not request.url.path.startswith(allowed):
+        return PlainTextResponse("Not Found", status_code=404)
+    return await call_next(request)
+
 app.add_middleware(CORSMiddleware,
     allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 

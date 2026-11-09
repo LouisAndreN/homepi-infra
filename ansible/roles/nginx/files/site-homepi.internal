@@ -178,7 +178,11 @@ server {
 	auth_request     /authelia/api/verify;
 	error_page 401   =302 https://auth.homepi.internal/?rd=$scheme://$host$request_uri;
 
-	proxy_pass                 http://127.0.0.1:8091/api/admin/;
+	proxy_pass                 http://unix:/run/homepi-api/admin.sock:/api/admin/;
+
+	proxy_set_header           X-SSL-Verify    "";   # device identity headers never reach admin
+
+	proxy_set_header           X-SSL-Client-DN "";
 	proxy_set_header           Host      $host;
 	proxy_set_header           X-Real-IP $remote_addr;
 	proxy_buffering            off;
@@ -199,7 +203,7 @@ server {
         proxy_set_header X-SSL-Client-DN $ssl_client_s_dn;
         proxy_set_header X-SSL-Verify    $ssl_client_verify;
 
-	proxy_pass         http://127.0.0.1:8090/api/devices/;
+	proxy_pass         http://unix:/run/homepi-api/device.sock:/api/devices/;
 	proxy_set_header   Host      $host;
 	proxy_set_header   X-Real-IP $remote_addr;
 	proxy_read_timeout 30s;
@@ -339,6 +343,14 @@ server {
         proxy_set_header  Remote-Role    "";
         proxy_set_header  Host           $host;
         proxy_pass        http://unix:/run/grafana/grafana.sock:/grafana/;
+    }
+
+    location = /metrics/homepi {
+        allow 127.0.0.1;
+        deny  all;
+        proxy_set_header  X-SSL-Verify    "";
+        proxy_set_header  X-SSL-Client-DN "";
+        proxy_pass        http://unix:/run/homepi-api/device.sock:/metrics/homepi;
     }
 
     location / {

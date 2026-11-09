@@ -1,0 +1,13 @@
+[Unit]
+Description=HomePi API socket (admin surface): nginx (www-data) and root only
+
+[Socket]
+ListenStream=/run/homepi-api/admin.sock
+SocketUser=homepi-api
+SocketGroup=www-data
+SocketMode=0660
+DirectoryMode=0755
+Service=homepi-api-admin.service
+
+[Install]
+WantedBy=sockets.target

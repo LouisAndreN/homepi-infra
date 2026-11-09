@@ -1,7 +1,7 @@
 [Unit]
-Description=HomePi Admin API (loopback)
-After=homepi-api.service
-Requires=homepi-api.service
+Description=HomePi Admin API (admin surface, unix socket, nginx only)
+After=homepi-api.service homepi-api-admin.socket
+Requires=homepi-api.service homepi-api-admin.socket
 
 [Service]
 Type=simple
@@ -9,7 +9,8 @@ User=homepi-api
 Group=homepi-api
 WorkingDirectory=/opt/homepi/api
 EnvironmentFile=-/etc/homepi/api.env
-ExecStart=/opt/homepi/api-venv/bin/uvicorn provisioning_api:app --host 127.0.0.1 --port 8091 --workers 1 --log-level info
+Environment=HOMEPI_API_SURFACE=admin
+ExecStart=/opt/homepi/api-venv/bin/uvicorn provisioning_api:app --fd 3 --workers 1 --log-level info
 Restart=on-failure
 RestartSec=5
 

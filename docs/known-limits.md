@@ -89,7 +89,7 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
 - Logs are written three times: journal (1.2G), rsyslog (rotated weekly, about 500M) and Loki.
   Loki itself produces 56% of the syslog lines; `NFT-DROP-INPUT` is logged without a rate limit
   (about 81,000 kernel lines in 6.5 days).
-- `homepi_devices` is scraped every hour: an outage of the API on 127.0.0.1:8090 can stay unseen up
+- `homepi_devices` is scraped every hour: an outage of the API (unix socket since v0.1.90) can stay unseen up
   to an hour, and after each Prometheus restart the target stays `unknown` up to an hour.
 - Btrfs applies `compress` per filesystem: the archives subvolume gets zstd:3 like the others.
 
