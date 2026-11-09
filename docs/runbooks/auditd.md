@@ -23,3 +23,9 @@ present, no `connect` rule without an `auid` filter, `augenrules --check` clean.
 - Not done: `-e 2` (immutable rules). It needs a reboot for any rule change, which breaks GitOps.
 
 Logs reach Loki through Alloy (`job="auditd"`).
+
+## Rule file syntax
+
+auditctl accepts no comment after a rule on the same line. augenrules starts with `-D` and stops
+at the first bad line, so one trailing comment leaves the kernel with only the rules above it
+(v0.1.87). The release block lints `homepi.rules` for this before committing.
