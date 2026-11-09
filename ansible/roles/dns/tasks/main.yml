@@ -52,3 +52,45 @@
     group: root
     mode: "0644"
     backup: true
+
+- name: Unbound configuration (main file and drop-ins)
+  ansible.builtin.copy:
+    src: "unbound/{{ item }}"
+    dest: "/etc/unbound/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [unbound.conf, unbound.conf.d/pi-iot.conf, unbound.conf.d/remote-control.conf, unbound.conf.d/root-auto-trust-anchor-file.conf]
+  register: dns_unbound_files
+  notify: Restart unbound
+
+- name: Unbound configuration is valid (before any restart)
+  ansible.builtin.command:
+    argv: [unbound-checkconf]
+    chdir: /
+  changed_when: false
+  check_mode: false
+
+- name: Unbound restarted now if its configuration changed
+  ansible.builtin.meta: flush_handlers
+
+- name: DNS checker
+  ansible.builtin.copy:
+    src: homepi-dns-check
+    dest: /usr/local/sbin/homepi-dns-check
+    owner: root
+    group: root
+    mode: "0755"
+  register: dns_checker
+
+- name: DNS answers per view, IoT path and DNSSEC validation
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/homepi-dns-check, 192.168.0.151, 100.116.35.149, 192.168.200.1]
+    chdir: /
+  register: dns_state
+  changed_when: false
+  check_mode: false
+  retries: 3
+  delay: 3
+  until: dns_state.rc == 0
+  when: not (ansible_check_mode and (dns_checker is changed or dns_unbound_files is changed))

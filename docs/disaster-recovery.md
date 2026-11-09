@@ -55,3 +55,11 @@ archive only: the SQLite databases from `sqlite/`, and from `etc-and-state.tar` 
 `etc/nginx`, `etc/authelia`, `etc/grafana`, `etc/influxdb`, `etc/telegraf`, plus
 `etc/homepi-gitops/allowed_signers` (never an old Pi age key: create a new one, see above), then
 import the InfluxDB line-protocol export. This list is checked during the first game day (C3).
+
+## Added to the nightly archive (v0.1.87)
+
+- `var/lib/netbird` (WireGuard private key and peer state): restore it to keep the Pi's NetBird
+  identity instead of enrolling it again.
+- `sqlite-extra/db.sqlite3` (Authelia: TOTP registrations) and `sqlite-extra/grafana.db` (users
+  and roles; dashboards and data sources are recreated by Terraform). Both are `.backup` copies.
+  Restore with the service stopped, then fix owners (`authelia`, `grafana`).

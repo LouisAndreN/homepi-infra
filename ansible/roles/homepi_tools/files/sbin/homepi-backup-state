@@ -49,6 +49,12 @@ done
 if systemctl is-active --quiet step-ca; then systemctl stop step-ca; CA_STOPPED=1; fi
 # Pinned binaries are reinstalled by Ansible. Terraform keeps its state, not its provider cache or plans.
 rc=0
+# SQLite state outside /var/lib/homepi, copied consistently (v0.1.87): Authelia (TOTP
+# registrations) and Grafana (users and roles; dashboards and data sources come from Terraform).
+mkdir -p "$WORK/sqlite-extra"
+for db in /var/lib/authelia/db.sqlite3 /var/lib/grafana/grafana.db; do
+  sqlite3 "$db" ".backup '$WORK/sqlite-extra/$(basename "$db")'" || { echo "ERROR: sqlite backup of $db failed" >&2; exit 1; }
+done
 tar -C / -cf "$WORK/etc-and-state.tar" \
   --exclude='etc/homepi-gitops/age.key' --exclude='etc/shadow*' --exclude='etc/gshadow*' \
   --exclude='var/lib/homepi/*.db*' \
@@ -56,7 +62,7 @@ tar -C / -cf "$WORK/etc-and-state.tar" \
   --exclude='var/lib/homepi-terraform/data' --exclude='var/lib/homepi-terraform/review-data' \
   --exclude='var/lib/homepi-terraform/*.plan' --exclude='var/lib/homepi-terraform/*.bin' \
   --exclude='var/lib/homepi-terraform/*.json' \
-  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets var/lib/homepi-terraform || rc=$?
+  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets var/lib/netbird var/lib/homepi-terraform || rc=$?
 [ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
 if [ "$CA_STOPPED" = 1 ]; then systemctl start step-ca; CA_STOPPED=0; fi
 

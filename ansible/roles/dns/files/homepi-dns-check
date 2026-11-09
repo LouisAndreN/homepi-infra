@@ -1,0 +1,24 @@
+#!/bin/bash
+# Check the Pi's DNS: split horizon per Unbound view, the IoT path through dnsmasq, and DNSSEC
+# validation (positive and negative). External probes are skipped, not failed, when the root
+# servers are unreachable. Usage: homepi-dns-check LAN_IP NETBIRD_IP IOT_GATEWAY_IP
+set -u
+LAN=$1; NB=$2; IOT=$3; fail=0
+ok()  { echo "ok   $1"; }
+bad() { echo "FAIL $1"; fail=1; }
+a=$(dig @127.0.0.1 homepi.internal +short +time=2 +tries=1)
+[ "$a" = "$LAN" ] && ok "view lan: homepi.internal -> $a" || bad "view lan: homepi.internal -> '$a', expected $LAN"
+a=$(dig @"$LAN" -b "$NB" homepi.internal +short +time=2 +tries=1)
+[ "$a" = "$NB" ] && ok "view netbird: homepi.internal -> $a" || bad "view netbird: homepi.internal -> '$a', expected $NB"
+a=$(dig @"$IOT" homepi.internal +short +time=2 +tries=1)
+[ -n "$a" ] && ok "IoT path (dnsmasq -> Unbound): homepi.internal -> $a" || bad "IoT path: no answer from $IOT"
+if dig @127.0.0.1 . NS +time=3 +tries=1 | grep -q 'status: NOERROR'; then
+  r=$(dig @127.0.0.1 isc.org SOA +dnssec +time=3 +tries=1)
+  printf '%s\n' "$r" | grep -q 'status: NOERROR' && printf '%s\n' "$r" | grep -qE 'flags:[a-z ]* ad' \
+    && ok "DNSSEC positive: isc.org validated (ad)" || bad "DNSSEC positive: isc.org not validated"
+  r=$(dig @127.0.0.1 dnssec-failed.org A +time=3 +tries=1)
+  printf '%s\n' "$r" | grep -q 'status: SERVFAIL' && ok "DNSSEC negative: dnssec-failed.org rejected" || bad "DNSSEC negative: dnssec-failed.org not rejected"
+else
+  echo "skip DNSSEC probes: root servers unreachable"
+fi
+exit $fail

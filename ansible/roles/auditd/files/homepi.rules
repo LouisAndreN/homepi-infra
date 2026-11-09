@@ -15,7 +15,7 @@
 -w /etc/crowdsec/ -p wa -k crowdsec-config
 -w /etc/hostapd/hostapd.conf -p wa -k hostapd_config
 -w /etc/dnsmasq.conf -p wa -k dnsmasq_config
--w /etc/netbird/ -p rwa -k netbird_config
+-w /var/lib/netbird/ -p wa -k netbird_config   # holds the WireGuard private key
 -w /etc/unbound/ -p rwa -k unbound_config
 
 # PKI (the device trust anchor is in ca.json) and service secrets
