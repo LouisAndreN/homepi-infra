@@ -1,0 +1,41 @@
+#!/usr/bin/env python3
+"""Check CrowdSec: agent and bouncer active, bouncer pulled recently, nftables sets present,
+no log context sent to the console, expected collections installed. Exits 1 on failure."""
+import datetime
+import json
+import subprocess
+import sys
+
+WANT = sys.argv[1:]
+res = []
+
+
+def run(*a):
+    return subprocess.run(list(a), capture_output=True, text=True, cwd="/")
+
+
+def check(name, ok, detail):
+    print(("ok   " if ok else "FAIL ") + name + ": " + detail)
+    res.append(ok)
+
+
+for u in ("crowdsec", "crowdsec-firewall-bouncer"):
+    s = run("systemctl", "is-active", u).stdout.strip()
+    check(u, s == "active", s)
+try:
+    b = json.loads(run("cscli", "bouncers", "list", "-o", "json").stdout or "[]")
+    ages = []
+    for x in b:
+        t = datetime.datetime.fromisoformat(x["last_pull"].replace("Z", "+00:00"))
+        ages.append((datetime.datetime.now(datetime.timezone.utc) - t).total_seconds())
+    check("bouncer pulled decisions recently", bool(ages) and min(ages) < 300, "%s s ago" % (int(min(ages)) if ages else "never"))
+except Exception as e:
+    check("bouncer pulled decisions recently", False, "cannot read (%s)" % e.__class__.__name__)
+sets = run("nft", "list", "sets").stdout
+check("nftables sets", "crowdsec-blacklists" in sets and "crowdsec6-blacklists" in sets, "present" if "crowdsec-blacklists" in sets else "missing")
+console = open("/etc/crowdsec/console.yaml").read()
+check("no log context sent to the console", "share_context: false" in console, "share_context false" if "share_context: false" in console else "share_context not false")
+have = set(l.split(",")[0] for l in run("cscli", "collections", "list", "-o", "raw").stdout.splitlines()[1:])
+missing = [c for c in WANT if c not in have]
+check("collections", not missing, "all %d present" % len(WANT) if not missing else "missing " + ", ".join(missing))
+sys.exit(0 if all(res) else 1)

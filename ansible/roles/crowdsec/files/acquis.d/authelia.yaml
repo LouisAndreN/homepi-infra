@@ -1,0 +1,7 @@
+# Managed by Ansible (role crowdsec). Authelia logs (JSON) from the journal, for the
+# LePresidente/authelia collection (brute force on the login portal).
+source: journalctl
+journalctl_filter:
+  - "_SYSTEMD_UNIT=authelia.service"
+labels:
+  type: authelia

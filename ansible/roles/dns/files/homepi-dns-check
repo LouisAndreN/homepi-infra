@@ -16,8 +16,16 @@ if dig @127.0.0.1 . NS +time=3 +tries=1 | grep -q 'status: NOERROR'; then
   r=$(dig @127.0.0.1 isc.org SOA +dnssec +time=3 +tries=1)
   printf '%s\n' "$r" | grep -q 'status: NOERROR' && printf '%s\n' "$r" | grep -qE 'flags:[a-z ]* ad' \
     && ok "DNSSEC positive: isc.org validated (ad)" || bad "DNSSEC positive: isc.org not validated"
-  r=$(dig @127.0.0.1 dnssec-failed.org A +time=3 +tries=1)
-  printf '%s\n' "$r" | grep -q 'status: SERVFAIL' && ok "DNSSEC negative: dnssec-failed.org rejected" || bad "DNSSEC negative: dnssec-failed.org not rejected"
+  st=""
+  for n in 1 2 3; do
+    st=$(dig @127.0.0.1 dnssec-failed.org A +time=5 +tries=1 | grep -oE 'status: [A-Z]+' | cut -d' ' -f2)
+    [ -n "$st" ] && break
+  done
+  case "$st" in
+    SERVFAIL) ok "DNSSEC negative: dnssec-failed.org rejected (SERVFAIL)" ;;
+    "") bad "DNSSEC negative: no answer after 3 tries (inconclusive)" ;;
+    *) bad "DNSSEC negative: dnssec-failed.org answered $st: validation not enforced" ;;
+  esac
 else
   echo "skip DNSSEC probes: root servers unreachable"
 fi

@@ -1,0 +1,7 @@
+crowdsec_collections: [crowdsecurity/linux, crowdsecurity/sshd, crowdsecurity/whitelist-good-actors, LePresidente/authelia]
+# Secret files: presence and mode only, content never read (regenerable with cscli; /etc is backed up).
+crowdsec_secret_files:
+  - /etc/crowdsec/local_api_credentials.yaml
+  - /etc/crowdsec/online_api_credentials.yaml
+  - /etc/crowdsec/bouncers/crowdsec-firewall-bouncer.yaml
+  - /etc/crowdsec/config.yaml

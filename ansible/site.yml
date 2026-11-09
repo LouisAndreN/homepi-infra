@@ -28,6 +28,7 @@
     - nginx
     - grafana
     - authelia
+    - crowdsec
     # Verify only: provisioning API code, units and Python packages
     - provisioning_api
     # Applies: device identity activity for Prometheus (v0.1.57)

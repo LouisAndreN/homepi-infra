@@ -1,0 +1,83 @@
+# CrowdSec: console options, acquisition and collections from the repository; secret files only
+# checked. See docs/runbooks/crowdsec.md.
+- name: Console options (signals shared, no log context)
+  ansible.builtin.copy:
+    src: console.yaml
+    dest: /etc/crowdsec/console.yaml
+    owner: root
+    group: root
+    mode: "0644"
+  register: crowdsec_console
+
+- name: Acquisition files
+  ansible.builtin.copy:
+    src: "acquis.d/{{ item }}"
+    dest: "/etc/crowdsec/acquis.d/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [journald.yaml, setup.linux.yaml, authelia.yaml]
+  register: crowdsec_acquis
+
+- name: SSH read once (the journal), not also from auth.log
+  ansible.builtin.file:
+    path: /etc/crowdsec/acquis.d/setup.sshd.yaml
+    state: absent
+  register: crowdsec_sshd_file
+
+- name: Collections installed (decided from the installed list)
+  ansible.builtin.shell: |
+    if cscli collections list -o raw | awk -F, 'NR > 1 {print $1}' | grep -qx '{{ item }}'; then echo present; exit 0; fi
+    {% if ansible_check_mode %}echo "would install"{% else %}cscli collections install '{{ item }}' > /dev/null && echo installed{% endif %}
+  args:
+    chdir: /
+  loop: "{{ crowdsec_collections }}"
+  register: crowdsec_collections_state
+  changed_when: crowdsec_collections_state.stdout in ['would install', 'installed']
+  check_mode: false
+
+- name: CrowdSec reloaded when its configuration changed
+  ansible.builtin.systemd:
+    name: crowdsec
+    state: reloaded
+  when: crowdsec_console is changed or crowdsec_acquis is changed or crowdsec_sshd_file is changed or crowdsec_collections_state is changed
+
+- name: Secret files present, root only
+  ansible.builtin.stat:
+    path: "{{ item }}"
+    get_checksum: false
+  loop: "{{ crowdsec_secret_files }}"
+  register: crowdsec_secrets
+
+- name: Secret files have the expected owner and mode
+  ansible.builtin.assert:
+    that:
+      - item.stat.exists
+      - item.stat.pw_name == 'root'
+      - item.stat.mode == '0600'
+    quiet: true
+    fail_msg: "{{ item.item }} is missing or not root 0600"
+  loop: "{{ crowdsec_secrets.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+
+- name: CrowdSec checker
+  ansible.builtin.copy:
+    src: homepi-crowdsec-check
+    dest: /usr/local/sbin/homepi-crowdsec-check
+    owner: root
+    group: root
+    mode: "0755"
+  register: crowdsec_checker
+
+- name: CrowdSec agent, bouncer, console options and collections
+  ansible.builtin.command:
+    argv: "{{ ['/usr/local/sbin/homepi-crowdsec-check'] + crowdsec_collections }}"
+    chdir: /
+  register: crowdsec_state
+  changed_when: false
+  check_mode: false
+  retries: 4
+  delay: 15
+  until: crowdsec_state.rc == 0
+  when: not (ansible_check_mode and (crowdsec_checker is changed or crowdsec_console is changed or crowdsec_collections_state is changed))
