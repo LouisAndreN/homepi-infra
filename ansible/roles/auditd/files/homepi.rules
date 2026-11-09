@@ -1,0 +1,41 @@
+# Managed by Ansible (role auditd). Loaded by augenrules after rules.d/audit.rules (-D, buffers,
+# failure mode). See docs/runbooks/auditd.md for why each rule exists and what was removed.
+
+# Identity and privilege
+-w /etc/passwd -p wa -k identity
+-w /etc/shadow -p rwa -F auid!=4294967295 -k identity
+-w /etc/group -p wa -k identity
+-w /etc/sudoers -p wa -k sudoers
+-w /etc/sudoers.d/ -p wa -k sudoers
+-w /home/srvpi/.ssh/authorized_keys -p wa -k ssh-keys
+-w /etc/ssh/sshd_config -p wa -k ssh-config
+
+# Network and security services configuration
+-w /etc/nftables.conf -p wa -k firewall-rules
+-w /etc/crowdsec/ -p wa -k crowdsec-config
+-w /etc/hostapd/hostapd.conf -p wa -k hostapd_config
+-w /etc/dnsmasq.conf -p wa -k dnsmasq_config
+-w /etc/netbird/ -p rwa -k netbird_config
+-w /etc/unbound/ -p rwa -k unbound_config
+
+# PKI (the device trust anchor is in ca.json) and service secrets
+-w /etc/step-ca/config/ -p wa -k ca-config
+-w /etc/step-ca/secrets/ -p rwa -k ca-secrets
+-w /etc/step-ca/password.txt -p rwa -k ca-secrets
+-w /var/lib/secrets/ -p wa -k service-secrets
+-w /etc/mosquitto/passwd/ -p wa -k mqtt-auth
+-w /etc/mosquitto/acl/ -p wa -k mqtt-auth
+-w /etc/homepi/ -p wa -k homepi-config
+-w /etc/systemd/system/ -p wa -k systemd-units
+
+# Commands run as root from a login session, 64- and 32-bit ABIs (CONFIG_COMPAT=y)
+-a always,exit -F arch=b64 -S execve,execveat -F euid=0 -F auid>=1000 -F auid!=4294967295 -k exec
+-a always,exit -F arch=b32 -S execve,execveat -F euid=0 -F auid>=1000 -F auid!=4294967295 -k exec
+
+# Connections opened from a login session. Service traffic is the egress policy's job (nftables).
+-a always,exit -F arch=b64 -S connect -F auid>=1000 -F auid!=4294967295 -k network_connect
+-a always,exit -F arch=b32 -S connect -F auid>=1000 -F auid!=4294967295 -k network_connect
+
+# Mounts, any origin
+-a always,exit -F arch=b64 -S mount,umount2 -k mount_operations
+-a always,exit -F arch=b32 -S mount,umount2 -k mount_operations

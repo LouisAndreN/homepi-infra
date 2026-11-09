@@ -1,0 +1,5 @@
+auditd_keys: [identity, sudoers, ssh-keys, ssh-config, firewall-rules, crowdsec-config, hostapd_config,
+              dnsmasq_config, netbird_config, unbound_config, ca-config, ca-secrets, service-secrets,
+              mqtt-auth, homepi-config, systemd-units, exec, network_connect, mount_operations]
+auditd_max_log_file_mb: 50
+auditd_num_logs: 10

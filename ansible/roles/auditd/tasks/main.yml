@@ -1,0 +1,71 @@
+# auditd: rules from the repository, loaded when rules.d and the loaded rules differ (state, not
+# events), then checked in the kernel. See docs/runbooks/auditd.md.
+- name: auditd base settings (buffers, backlog wait, failure mode)
+  ansible.builtin.copy:
+    src: audit.rules
+    dest: /etc/audit/rules.d/audit.rules
+    owner: root
+    group: root
+    mode: "0640"
+  register: auditd_base
+
+- name: HomePi audit rules
+  ansible.builtin.copy:
+    src: homepi.rules
+    dest: /etc/audit/rules.d/homepi.rules
+    owner: root
+    group: root
+    mode: "0640"
+  register: auditd_rules
+
+- name: Former rule files, replaced by homepi.rules
+  ansible.builtin.file:
+    path: "/etc/audit/rules.d/{{ item }}"
+    state: absent
+  loop: [custom.rules, exec-audit.rules, pi5-iot.rules]
+  register: auditd_old
+
+- name: Loaded rules follow rules.d (load only when they differ)
+  ansible.builtin.shell: |
+    if augenrules --check 2>&1 | grep -q 'No change'; then echo "current"; exit 0; fi
+    {% if ansible_check_mode %}echo "would load"{% else %}augenrules --load > /dev/null && echo "loaded"{% endif %}
+  args:
+    chdir: /
+  register: auditd_load
+  changed_when: auditd_load.stdout in ['would load', 'loaded']
+  check_mode: false
+  when: not (ansible_check_mode and (auditd_base is changed or auditd_rules is changed or auditd_old is changed))
+
+- name: Local log rotation keeps several days
+  ansible.builtin.lineinfile:
+    path: /etc/audit/auditd.conf
+    regexp: "^{{ item.key }}\\s*="
+    line: "{{ item.key }} = {{ item.value }}"
+  loop:
+    - {key: max_log_file, value: "{{ auditd_max_log_file_mb }}"}
+    - {key: num_logs, value: "{{ auditd_num_logs }}"}
+  register: auditd_conf
+
+- name: auditd re-reads its configuration
+  ansible.builtin.command:
+    argv: [pkill, -HUP, -x, auditd]
+  when: auditd_conf is changed and not ansible_check_mode
+
+- name: Loaded audit rules match the repository
+  ansible.builtin.shell: |
+    set -eu
+    out=$(auditctl -l)
+    for k in {{ auditd_keys | join(' ') }}; do
+      printf '%s\n' "$out" | grep -qE "(key=| -k )$k\$" || { echo "missing key $k"; exit 1; }
+    done
+    n32=$(printf '%s\n' "$out" | grep -c 'arch=b32' || true)
+    [ "$n32" -ge 3 ] || { echo "only $n32 arch=b32 rules loaded"; exit 1; }
+    if printf '%s\n' "$out" | grep -E -- '-S connect' | grep -vq 'auid>=1000'; then echo "connect rule without auid filter"; exit 1; fi
+    augenrules --check 2>&1 | grep -q 'No change' || { echo "loaded rules differ from rules.d"; exit 1; }
+    echo "ok: $(printf '%s\n' "$out" | wc -l) rules, $n32 for the 32-bit ABI"
+  args:
+    chdir: /
+  register: auditd_state
+  changed_when: false
+  check_mode: false
+  when: not (ansible_check_mode and (auditd_base is changed or auditd_rules is changed or auditd_old is changed or auditd_load is changed))
