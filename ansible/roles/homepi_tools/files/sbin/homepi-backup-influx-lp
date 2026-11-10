@@ -48,7 +48,6 @@ trap cleanup EXIT
 influx bucket list --org "$ORG" --json > "$WORK/buckets.json"
 influx task   list --org "$ORG" --json > "$WORK/tasks.json"
 influx auth   list --json              > "$WORK/auth-metadata.json"
-if [ -f /tmp/downsample.flux ]; then cp /tmp/downsample.flux "$WORK/downsample.flux"; else echo "note: /tmp/downsample.flux missing" >&2; fi
 
 declare -A IDS
 for b in "${BUCKETS[@]}"; do

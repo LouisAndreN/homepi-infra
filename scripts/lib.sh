@@ -46,13 +46,19 @@ release() {
 # Load the homepi AWS profile for Terraform. Opens a new SSO session when the current one expired,
 # refuses the management account, and passes the account ID to Terraform without storing it in the repository.
 awsenv() {
-  local me mgmt
+  local me mgmt root
   export AWS_PROFILE=homepi-admin
   aws sts get-caller-identity > /dev/null 2>&1 || aws sso login --no-browser || return 1
   me=$(aws sts get-caller-identity --query Account --output text) || return 1
   mgmt=$(aws organizations describe-organization --query Organization.MasterAccountId --output text) || return 1
   [ "$me" != "$mgmt" ] || { echo "STOPPED: this profile points at the management account"; return 1; }
   export TF_VAR_homepi_account_id="$me"
+  # heartbeat.tf needs the alert address: it stays in SOPS and reaches Terraform through the
+  # environment only, never argv, never printed
+  root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  TF_VAR_alert_email=$(sops -d --extract '["alert_email"]' "$root/ansible/secrets/aws.sops.yaml") || { echo "STOPPED: could not decrypt alert_email from SOPS"; return 1; }
+  [ -n "$TF_VAR_alert_email" ] || { echo "STOPPED: alert_email is empty in SOPS"; return 1; }
+  export TF_VAR_alert_email
   echo "AWS profile homepi-admin ready (workload account, region $(aws configure get region))"
 }
 

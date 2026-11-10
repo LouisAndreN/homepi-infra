@@ -28,11 +28,20 @@ groups:
           summary: "No successful InfluxDB export for more than 8 days"
           description: "The weekly timer is stopped or every run fails."
 
+      - alert: BackupInfluxNativeTooOld
+        expr: time() - homepi_backup_last_success_timestamp_seconds{kind="influx-native"} > 36 * 3600
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No successful native InfluxDB backup for more than 36 hours"
+          description: "Nightly at 03:50. Read: systemctl status homepi-backup-influx-native.timer; journalctl -u homepi-backup@influx-native.service"
+
       - alert: BackupMetricsMissing
-        expr: absent(homepi_backup_last_success_timestamp_seconds{kind="state"})
+        expr: absent(homepi_backup_last_success_timestamp_seconds{kind="state"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-lp"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-native"})
         for: 2h
         labels:
           severity: warning
         annotations:
-          summary: "The backup wrapper exports no metrics"
-          description: "homepi-backup-run has never succeeded or node_exporter does not read its textfile."
+          summary: "No {{ $labels.kind }} backup metrics: the backup never ran or its metrics file is gone"
+          description: "Read: systemctl list-timers 'homepi-backup-*'; journalctl -u homepi-backup@{{ $labels.kind }}.service"
