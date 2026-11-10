@@ -10,6 +10,7 @@
   loop:
     - homepi-audit
     - homepi-backup-influx-lp
+    - homepi-backup-influx-native
     - homepi-backup-run
     - homepi-backup-state
     - homepi-triage

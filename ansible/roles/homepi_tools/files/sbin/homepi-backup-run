@@ -3,6 +3,7 @@
 #
 #   homepi-backup-run state       state backup (configuration, secrets, databases, Terraform state)
 #   homepi-backup-run influx-lp   portable InfluxDB export (stops influxdb for a few seconds)
+#   homepi-backup-run influx-native  native InfluxDB backup, online, keeps every token
 #
 # Old archives are pruned only after the new one exists and its checksum verifies.
 # The Pi cannot decrypt its own backups: restore tests are done on the laptop.
@@ -18,7 +19,8 @@ METRICS_DIR=/var/lib/node_exporter/textfile_collector
 case "$KIND" in
   state) SCRIPT=homepi-backup-state; PREFIX=homepi-state; KEEP=7 ;;
   influx-lp) SCRIPT=homepi-backup-influx-lp; PREFIX=influx-lp; KEEP=4 ;;
-  *) echo "usage: $0 state|influx-lp" >&2; exit 2 ;;
+  influx-native) SCRIPT=homepi-backup-influx-native; PREFIX=influx-native; KEEP=7 ;;
+  *) echo "usage: $0 state|influx-lp|influx-native" >&2; exit 2 ;;
 esac
 METRICS="$METRICS_DIR/homepi_backup_${KIND//-/_}.prom"
 # Archives are named to the second; older ones were named to the minute

@@ -54,6 +54,7 @@ data "aws_iam_policy_document" "edge_writer_permissions" {
     resources = [
       "${aws_s3_bucket.backups.arn}/state/*",
       "${aws_s3_bucket.backups.arn}/influx-lp/*",
+      "${aws_s3_bucket.backups.arn}/influx-native/*",
     ]
   }
 }

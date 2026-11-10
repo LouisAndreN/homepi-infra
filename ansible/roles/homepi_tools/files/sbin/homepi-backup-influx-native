@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+# homepi-backup-influx-native: native InfluxDB backup (metadata with buckets, tasks and authorizations,
+# plus shards), taken online, age-encrypted. `influx restore --full` keeps every token, so a rebuild
+# changes no credential. The weekly line-protocol export stays as the portable fallback.
+# Usage: sudo homepi-backup-influx-native AGE_RECIPIENT [AGE_RECIPIENT...]
+set -euo pipefail
+[ "$EUID" -eq 0 ] || { echo "run as root (sudo)" >&2; exit 1; }
+[ $# -ge 1 ] || { echo "usage: $0 AGE_RECIPIENT..." >&2; exit 1; }
+RECIPIENTS=()
+for r in "$@"; do
+  [[ "$r" == age1* ]] || { echo "ERROR: invalid age recipient" >&2; exit 1; }
+  RECIPIENTS+=(-r "$r")
+done
+for c in age influx tar sha256sum; do
+  command -v "$c" > /dev/null || { echo "missing command: $c" >&2; exit 1; }
+done
+TOKEN_FILE=/var/lib/secrets/influx-operator.token
+DEST=/mnt/data/backups/homepi
+[ -r "$TOKEN_FILE" ] || { echo "ERROR: $TOKEN_FILE is missing" >&2; exit 1; }
+mountpoint -q /mnt/data/backups || { echo "ERROR: /mnt/data/backups is not mounted" >&2; exit 1; }
+
+STAMP=$(date +%F-%H%M%S)
+WORK=$DEST/native-work-$STAMP
+install -d -m 0711 "$DEST"
+install -d -m 0700 "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+
+# The token goes through the environment, never argv: /proc/<pid>/cmdline is readable by every user.
+if ! INFLUX_TOKEN="$(cat "$TOKEN_FILE")" influx backup --host http://127.0.0.1:8086 "$WORK/backup" > "$WORK/backup.log" 2>&1; then
+  tail -3 "$WORK/backup.log" | sed -E 's/[A-Za-z0-9_-]{60,}={0,2}/<masked>/g' >&2
+  echo "ERROR: influx backup failed" >&2
+  exit 1
+fi
+ls "$WORK/backup"/*.manifest > /dev/null 2>&1 || { echo "ERROR: no manifest in the backup" >&2; exit 1; }
+ls "$WORK/backup"/*bolt* > /dev/null 2>&1 || { echo "ERROR: no metadata (bolt) in the backup: tokens would be lost" >&2; exit 1; }
+echo "native backup: $(du -sh "$WORK/backup" | cut -f1) in $(ls "$WORK/backup" | wc -l) files"
+
+OUT=$DEST/influx-native-$STAMP.tar.age
+[ ! -e "$OUT" ] || { echo "ERROR: $OUT already exists, refusing to overwrite it" >&2; exit 1; }
+tar -C "$WORK/backup" -cf - . | age "${RECIPIENTS[@]}" > "$OUT"
+[ -s "$OUT" ] || { echo "ERROR: empty backup file" >&2; exit 1; }
+chmod 0600 "$OUT"
+( cd "$DEST" && sha256sum "$(basename "$OUT")" > "$(basename "$OUT").sha256" )
+ls -l "$OUT"
+echo "DONE"

@@ -1,7 +1,7 @@
 #!/opt/homepi-aws/venv/bin/python3
 """Upload one verified backup archive off-site with the write-only edge-writer role.
 
-Usage: homepi-offsite-upload ARCHIVE state|influx-lp
+Usage: homepi-offsite-upload ARCHIVE state|influx-lp|influx-native
 
 The archive is checked against its .sha256 file, then sent with the same SHA-256 so that S3
 rejects any corruption in transit. The bucket default Object Lock retention applies.
@@ -20,7 +20,7 @@ import boto3  # noqa: E402  (imported after AWS_CONFIG_FILE is set)
 
 BUCKET_FILE = Path("/etc/homepi-aws/bucket")
 METRICS_DIR = Path("/var/lib/node_exporter/textfile_collector")
-KINDS = ("state", "influx-lp")
+KINDS = ("state", "influx-lp", "influx-native")
 
 
 def metrics_file(kind):
@@ -55,7 +55,7 @@ def fail(kind, message):
 
 def main():
     if len(sys.argv) != 3 or sys.argv[2] not in KINDS:
-        sys.exit("usage: homepi-offsite-upload ARCHIVE state|influx-lp")
+        sys.exit("usage: homepi-offsite-upload ARCHIVE state|influx-lp|influx-native")
     archive, kind = Path(sys.argv[1]), sys.argv[2]
 
     try:

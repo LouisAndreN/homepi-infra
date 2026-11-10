@@ -1,0 +1,10 @@
+[Unit]
+Description=Nightly native InfluxDB backup (online, keeps every token)
+
+[Timer]
+OnCalendar=*-*-* 03:50
+Persistent=true
+Unit=homepi-backup@influx-native.service
+
+[Install]
+WantedBy=timers.target

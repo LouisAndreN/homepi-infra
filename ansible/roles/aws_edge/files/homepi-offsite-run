@@ -10,9 +10,9 @@ umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 DEST=/mnt/data/backups/homepi
-declare -A PREFIX=([state]=homepi-state [influx-lp]=influx-lp)
+declare -A PREFIX=([state]=homepi-state [influx-lp]=influx-lp [influx-native]=influx-native)
 
-for kind in state influx-lp; do
+for kind in state influx-lp influx-native; do
   newest=$(find "$DEST" -maxdepth 1 -regextype posix-extended \
              -regex ".*/${PREFIX[$kind]}-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}([0-9]{2})?\.tar\.age" \
              -printf '%T@ %p\n' | sort -rn | sed -n '1p' | cut -d' ' -f2-)

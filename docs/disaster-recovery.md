@@ -63,3 +63,12 @@ import the InfluxDB line-protocol export. This list is checked during the first 
 - `sqlite-extra/db.sqlite3` (Authelia: TOTP registrations) and `sqlite-extra/grafana.db` (users
   and roles; dashboards and data sources are recreated by Terraform). Both are `.backup` copies.
   Restore with the service stopped, then fix owners (`authelia`, `grafana`).
+
+## InfluxDB: native backup (v0.1.94)
+
+Nightly at 03:50: `influx-native-<date>.tar.age` (about 235 MB), online, with the operator token from
+`/var/lib/secrets/influx-operator.token`; off-site under `influx-native/`, 35 days. It holds the
+metadata (bolt: buckets, tasks, authorizations) and the shards: `influx restore --full` brings every
+token back, so Telegraf, Grafana, the dashboard and the backups keep working without a SOPS change.
+Data RPO goes from 7 days (weekly line-protocol export, Sunday 04:15, kept as the portable fallback)
+to 24 hours.

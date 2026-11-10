@@ -98,6 +98,21 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     }
   }
 
+  # A native InfluxDB backup (metadata, tokens and shards) is about 235 MB: keep five weeks
+  rule {
+    id     = "influx-native-35-days"
+    status = "Enabled"
+    filter {
+      prefix = "influx-native/"
+    }
+    expiration {
+      days = 35
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
   rule {
     id     = "abort-incomplete-uploads"
     status = "Enabled"
