@@ -1,7 +1,7 @@
 ---
 # B2a: network files are verified only. This role never writes a file and never reloads a service:
-# a firewall or link mistake cuts SSH, and nftables.conf starts with `flush ruleset`, which wipes the
-# CrowdSec, NetBird, Docker and IoT NAT tables. Changes go through the guarded B2b tools.
+# a firewall or link mistake cuts SSH. Since v0.1.49 nftables.conf replaces only its own tables
+# (destroy table), never the CrowdSec, NetBird or iptables-nft ones. Changes go through the guarded B2b tools.
 network_files:
   - {src: nftables.conf, dest: /etc/nftables.conf, mode: "0755"}
   - {src: iptables-rules.v4, dest: /etc/iptables/rules.v4, mode: "0640"}
@@ -12,5 +12,6 @@ network_files:
   - {src: 20-wlx.network, dest: /etc/systemd/network/20-wlx.network, mode: "0644"}
   - {src: sysctl-99-ipforward.conf, dest: /etc/sysctl.d/99-ipforward.conf, mode: "0644"}
   - {src: sysctl-10-network-security.conf, dest: /etc/sysctl.d/10-network-security.conf, mode: "0644"}
+  - {src: sysctl-99-netbird-localnet.conf, dest: /etc/sysctl.d/99-netbird-localnet.conf, mode: "0644"}
   - {src: netplan-10-network.yaml, dest: /etc/netplan/10-network.yaml, mode: "0600"}
 network_services: [nftables, netfilter-persistent, hostapd, dnsmasq, systemd-networkd]

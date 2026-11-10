@@ -36,3 +36,14 @@ client is an IoT device: a phone on `Pi-IoT` would copy the shared WPA2 key to a
 and its cloud backup. v0.1.50 added a second NAT in nftables before that proof existed; v0.1.51 reverts
 it. The move will be done in one guarded step once the egress canary (an ESP32 that checks HTTPS egress
 and IoT-to-LAN isolation, and reports over MQTT) exists.
+
+## DNS DNAT for NetBird peers
+
+`rules.v4` (netfilter-persistent) holds `-d 100.116.35.149 --dport 53 -j DNAT --to 127.0.0.1`
+(UDP and TCP): a NetBird peer that asks the Pi's NetBird address for DNS is answered by Unbound,
+which sees the peer's 100.x source and serves the `netbird` view (homepi.internal ->
+100.116.35.149). It works only with `net.ipv4.conf.wt0.route_localnet=1`, set by
+`/etc/sysctl.d/99-netbird-localnet.conf` (applied by systemd when wt0 appears), verified by the
+network role since v0.1.92. In use: the UDP counter rose from 11 to 12 between two reads on
+2026-11-10 (an earlier note called it dead). It moves to nftables with the IoT NAT, in the same
+guarded step (`scripts/homepi-nft-apply`) once the egress canary exists.
