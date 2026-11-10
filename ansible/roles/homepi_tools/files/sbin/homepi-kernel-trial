@@ -1,0 +1,117 @@
+#!/bin/bash
+# homepi-kernel-trial: boot a new kernel once with the Raspberry Pi tryboot flag and keep it only if
+# the IoT access point comes back (first used for 6.8.0-1068-raspi on 2026-11-11).
+#   homepi-kernel-trial stage KERNEL   copy KERNEL (image, initrd, dtbs, overlays) to /boot/firmware/trial,
+#                                      write tryboot.txt (config.txt plus os_prefix=trial/), arm the decision
+#   homepi-kernel-trial reboot         wait until apt and dpkg are idle, then reboot once into the trial
+#   homepi-kernel-trial decide         run at boot by homepi-kernel-trial.service
+#   homepi-kernel-trial status
+# The normal configuration is not changed before the decision: any other reboot (power cut, panic,
+# watchdog) boots it again, because the tryboot flag applies to one boot only.
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+FW=/boot/firmware
+T=$FW/trial
+STATE=/var/lib/homepi/kernel-trial.env
+LOG=/var/lib/homepi/kernel-trial.log
+IFACE=wlx0013eff27090
+MODULE=88x2bu
+UNIT=homepi-kernel-trial.service
+log() { echo "$(date -Is) $*" | tee -a "$LOG"; }
+die() { echo "ERROR: $*" >&2; exit 1; }
+[ "$EUID" -eq 0 ] || die "run as root"
+default_kernel() { local n="" k; for k in /boot/vmlinuz-*; do cmp -s "$FW/vmlinuz" "$k" && n=${k#/boot/vmlinuz-}; done; echo "$n"; }
+has_module() {
+  local f
+  f=$(find "/lib/modules/$1" -name "$MODULE.ko*" -type f 2>/dev/null | head -1)
+  [ -n "$f" ] && [ "$(modinfo -F vermagic "$f" 2>/dev/null | cut -d' ' -f1)" = "$1" ]
+}
+finish() { mv "$STATE" "$STATE.done"; systemctl disable "$UNIT" > /dev/null 2>&1; }
+stations() { iw dev "$IFACE" station dump 2>/dev/null | grep -c '^Station'; }
+
+case "${1:-}" in
+  stage)
+    K=${2:-}
+    [ -n "$K" ] || die "usage: $0 stage KERNEL"
+    [ ! -e "$STATE" ] || die "a trial is already staged ($STATE)"
+    dpkg-query -W -f '${Status}' "linux-image-$K" 2>/dev/null | grep -q 'ok installed' || die "linux-image-$K is not installed"
+    [ -f "/boot/vmlinuz-$K" ] && [ -f "/boot/initrd.img-$K" ] || die "image or initrd of $K missing in /boot"
+    has_module "$K" || die "no $MODULE module built for $K: the IoT access point would not come up"
+    R=$(uname -r)
+    [ "$R" != "$K" ] || die "$K is already running"
+    D=$(default_kernel)
+    if [ "$D" != "$R" ]; then
+      flash-kernel --force "$R" > /dev/null 2>&1
+      [ "$(default_kernel)" = "$R" ] || die "could not set the normal boot back to the running kernel $R"
+      echo "normal boot set back to the running kernel $R (it was ${D:-unknown})"
+    fi
+    DT=$(dirname "$(find "/lib/firmware/$K/device-tree" -name bcm2712-rpi-5-b.dtb 2>/dev/null | head -1)")
+    OV=$(find "/lib/firmware/$K/device-tree" -maxdepth 1 -type d -name overlays 2>/dev/null | head -1)
+    [ -f "$DT/bcm2712-rpi-5-b.dtb" ] && [ -d "$OV" ] || die "device tree or overlays of $K not found"
+    rm -rf "$T"; mkdir -p "$T/overlays"
+    if ! { cp "/boot/vmlinuz-$K" "$T/vmlinuz" && cp "/boot/initrd.img-$K" "$T/initrd.img" && cp "$DT"/bcm2712*.dtb "$T/" \
+           && cp -r "$OV"/. "$T/overlays/" && cp "$FW/cmdline.txt" "$T/cmdline.txt"; }; then
+      rm -rf "$T"; die "copy to $T failed"
+    fi
+    cmp -s "$T/vmlinuz" "/boot/vmlinuz-$K" && cmp -s "$T/initrd.img" "/boot/initrd.img-$K" || { rm -rf "$T"; die "copy verification failed"; }
+    cp "$FW/config.txt" "$FW/tryboot.txt" && printf '\n[all]\nos_prefix=trial/\n' >> "$FW/tryboot.txt"
+    N=$(stations); MIN=$(( N > 2 ? N - 2 : 1 ))
+    install -d -m 0755 /var/lib/homepi
+    printf 'TRIAL=%s\nFALLBACK=%s\nMIN=%s\n' "$K" "$R" "$MIN" > "$STATE"
+    systemctl enable "$UNIT" > /dev/null 2>&1 || die "could not enable $UNIT"
+    log "staged $K (fallback $R; pass needs $MIN of $N stations); normal boot stays $R"
+    ;;
+  reboot)
+    [ -f "$STATE" ] || die "no trial staged"
+    [ -f "$FW/tryboot.txt" ] && [ -d "$T" ] || die "trial files missing"
+    systemctl stop apt-daily.timer apt-daily-upgrade.timer > /dev/null 2>&1
+    for i in $(seq 1 180); do
+      if ! systemctl is-active -q apt-daily.service apt-daily-upgrade.service && ! fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock > /dev/null 2>&1; then
+        break
+      fi
+      [ "$i" -eq 180 ] && die "apt or dpkg still busy after 30 minutes"
+      sleep 10
+    done
+    . "$STATE"
+    log "rebooting once into $TRIAL with tryboot"
+    systemctl reboot --reboot-argument="0 tryboot"
+    ;;
+  decide)
+    [ -f "$STATE" ] || exit 0
+    . "$STATE"
+    TB=$(od -An -tu4 --endian=big /proc/device-tree/chosen/bootloader/tryboot 2>/dev/null | tr -d ' ')
+    if [ "$(uname -r)" != "$TRIAL" ]; then
+      log "boot on $(uname -r) (tryboot flag ${TB:-absent}): $TRIAL is not running, trial over, files kept for review"
+      finish; exit 0
+    fi
+    log "running $TRIAL (tryboot flag ${TB:-absent}): waiting for hostapd and at least $MIN stations"
+    ok=0; n=0
+    for i in $(seq 1 60); do
+      if systemctl is-active -q hostapd; then
+        n=$(stations)
+        [ "$n" -ge "$MIN" ] && { ok=1; break; }
+      fi
+      sleep 10
+    done
+    if [ "$ok" = 1 ]; then
+      log "PASS: hostapd active, $n stations after $((i * 10)) s; making $TRIAL the default"
+      if flash-kernel "$TRIAL" >> "$LOG" 2>&1 && [ "$(default_kernel)" = "$TRIAL" ]; then
+        rm -f "$FW/tryboot.txt"; rm -rf "$T"
+        finish; log "DONE: default boot is now $TRIAL"
+      else
+        finish; log "ERROR: flash-kernel $TRIAL did not take; the next normal boot is still $FALLBACK"
+      fi
+    else
+      log "FAIL: hostapd $(systemctl is-active hostapd), $n stations after 10 minutes; rebooting into $FALLBACK"
+      finish; systemctl reboot
+    fi
+    ;;
+  status)
+    if [ -f "$STATE" ]; then sed 's/^/state: /' "$STATE"; else echo "no trial staged"; fi
+    echo "running: $(uname -r); normal boot: $(default_kernel); tryboot.txt: $([ -f "$FW/tryboot.txt" ] && echo present || echo absent)"
+    tail -5 "$LOG" 2>/dev/null
+    ;;
+  *)
+    die "usage: $0 stage KERNEL | reboot | decide | status"
+    ;;
+esac

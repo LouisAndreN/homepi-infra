@@ -26,3 +26,54 @@ groups:
         annotations:
           summary: "Boot chain metrics are not published"
           description: "homepi-boot-chain-metrics has not run for 2 hours: check systemctl status homepi-boot-chain-metrics.timer."
+
+  - name: homepi-wifi-and-apt
+    rules:
+      - alert: WifiDriverMissingForNextBoot
+        expr: homepi_wifi_driver_next_boot_ok == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Kernel {{ $labels.kernel }} (next boot) has no 88x2bu module: the IoT access point would not come up after a reboot"
+          description: "Do not reboot. Read docs/runbooks/wifi-driver.md (dkms status, make.log)."
+      - alert: IotAccessPointDown
+        expr: homepi_wifi_hostapd_active == 0 or homepi_wifi_ap_stations == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "IoT access point down: hostapd inactive or no station associated"
+          description: "Read: systemctl status hostapd; iw dev wlx0013eff27090 station dump; lsmod | grep 88x2bu"
+      - alert: WifiDriverMissingForInstalledKernel
+        expr: homepi_wifi_driver_kernels_missing > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} installed kernel(s) without the 88x2bu module"
+          description: "Read: dkms status rtl88x2bu; docs/runbooks/wifi-driver.md"
+      - alert: AptUpgradesFailing
+        expr: homepi_apt_unattended_last_run_ok == 0 or homepi_apt_dpkg_audit_packages > 0
+        for: 2h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unattended upgrades failing or dpkg half-configured: security updates are blocked"
+          description: "Read: dpkg --audit; /var/log/unattended-upgrades/unattended-upgrades-dpkg.log"
+      - alert: AptUpgradesNotRunning
+        expr: time() - homepi_apt_unattended_last_run_timestamp_seconds > 3 * 86400
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Unattended upgrades have not run for more than 3 days"
+          description: "Read: systemctl list-timers apt-daily-upgrade.timer"
+      - alert: WifiCheckStale
+        expr: absent(homepi_wifi_check_last_run_timestamp_seconds) or time() - homepi_wifi_check_last_run_timestamp_seconds > 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "homepi-wifi-check has not reported for more than an hour (a frozen metric looks green)"
+          description: "Read: systemctl status homepi-wifi-check.timer homepi-wifi-check.service"

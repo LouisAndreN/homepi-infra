@@ -13,7 +13,9 @@
     - homepi-backup-influx-native
     - homepi-backup-run
     - homepi-backup-state
+    - homepi-kernel-trial
     - homepi-triage
+    - homepi-wifi-check
 
 # Metric collectors that write node_exporter textfiles (certificate expiry, NetBird, zram)
 - name: Install the metric collector scripts

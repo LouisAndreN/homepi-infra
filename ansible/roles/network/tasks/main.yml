@@ -20,7 +20,7 @@
     dest: /etc/hostapd/hostapd.conf
     owner: root
     group: root
-    mode: "0644"
+    mode: "0600"
   vars:
     network_hostapd_wpa_passphrase: "{{ lookup('community.sops.sops', playbook_dir ~ '/secrets/network.sops.yaml', extract='[\"hostapd_wpa_passphrase\"]') }}"
   check_mode: true

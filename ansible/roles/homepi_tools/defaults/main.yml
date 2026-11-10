@@ -10,6 +10,9 @@ homepi_tools_units:
   - homepi-backup-state.timer
   - homepi-backup-influx-lp.timer
   - homepi-backup-influx-native.timer
+  - homepi-wifi-check.service
+  - homepi-wifi-check.timer
+  - homepi-kernel-trial.service
 
 homepi_tools_timers:
   - homepi-cert-expiry.timer
@@ -18,6 +21,7 @@ homepi_tools_timers:
   - homepi-backup-state.timer
   - homepi-backup-influx-lp.timer
   - homepi-backup-influx-native.timer
+  - homepi-wifi-check.timer
 
 # Backups are encrypted for the laptop key and the recovery key, never for the Pi itself
 homepi_backup_recipients:

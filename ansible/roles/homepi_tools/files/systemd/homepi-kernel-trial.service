@@ -1,0 +1,13 @@
+[Unit]
+Description=HomePi kernel trial: keep the new kernel only if the IoT access point comes back
+After=hostapd.service network-online.target
+Wants=network-online.target
+ConditionPathExists=/var/lib/homepi/kernel-trial.env
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-kernel-trial decide
+TimeoutStartSec=900
+
+[Install]
+WantedBy=multi-user.target
