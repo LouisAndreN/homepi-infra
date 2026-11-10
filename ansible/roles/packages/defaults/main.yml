@@ -1,6 +1,111 @@
-# Rebuild manifest (C1, phase R1). For now: services kept installed but disabled. The package and apt
-# source lists come next, from the inventory of 2026-11-10 minus what the platform does not need.
+---
+# Services kept installed but stopped and disabled (decision: keep Docker, disabled)
 packages_disabled_services:
   - docker.socket
   - docker.service
   - containerd.service
+
+# Masked units cannot start, even as a dependency. avahi-daemon (mDNS) listened on every
+# interface, the Pi-IoT Wi-Fi included, and nothing depends on it (ESP32s use 192.168.200.1).
+packages_masked_units:
+  - avahi-daemon.socket
+  - avahi-daemon.service
+  # lxd-installer is a dependency of ubuntu-server: kept installed, its on-demand socket masked
+  - lxd-installer.socket
+
+# Third-party apt keys, adopted at their current paths; fingerprints measured 2026-11-10 and
+# checked at release (laptop) and on the Pi. A changed key fails the run instead of being trusted.
+packages_apt_keys:
+  - {src: apt/keys/authelia.asc, dest: /usr/share/keyrings/authelia.asc, fingerprint: 192085915BD608A458AC58DCE461FA1531286EEA}
+  - {src: apt/keys/crowdsec_crowdsec-archive-keyring.gpg, dest: /etc/apt/keyrings/crowdsec_crowdsec-archive-keyring.gpg, fingerprint: 6A89E3C2303A901A889971D3376ED5326E93CD0C}
+  - {src: apt/keys/docker.gpg, dest: /etc/apt/keyrings/docker.gpg, fingerprint: 9DC858229FC7DD38854AE2D88D81803C0EBFCD88}
+  - {src: apt/keys/grafana.gpg, dest: /etc/apt/keyrings/grafana.gpg, fingerprint: B53AE77BADB630A683046005963FA27710458545}
+  - {src: apt/keys/influxdata-archive.gpg, dest: /etc/apt/keyrings/influxdata-archive.gpg, fingerprint: 24C975CBA61A024EE1B631787C3D57159FC2F927}
+  - {src: apt/keys/netbird-archive-keyring.gpg, dest: /usr/share/keyrings/netbird-archive-keyring.gpg, fingerprint: EFE37DF047DF7CCDF1FC54FA83F79AD029778355}
+  - {src: apt/keys/nodesource.gpg, dest: /usr/share/keyrings/nodesource.gpg, fingerprint: 6F71F525282841EEDAF851B42F59B5F99B1BE0B4}
+  - {src: apt/keys/smallstep.asc, dest: /etc/apt/keyrings/smallstep.asc, fingerprint: 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3}
+
+# Third-party sources, exact bytes. ubuntu.sources stays the image's own. influxdata.list is also
+# known to ucf (influxdata-archive-keyring, needed by influxdb2, influxdb2-cli and telegraf).
+packages_apt_sources:
+  - authelia.list
+  - crowdsec_crowdsec.list
+  - docker.list
+  - grafana.list
+  - influxdata.list
+  - netbird.list
+  - nodesource.sources
+  - smallstep.sources
+
+packages_apt_absent_files:
+  - /etc/apt/sources.list.d/influxdata.list.ucf-old
+
+# Added on top of the Ubuntu 24.04.5 preinstalled raspi image (its published manifest, 646 packages)
+packages_present:
+  # Platform services
+  - age
+  - alloy
+  - audispd-plugins
+  - auditd
+  - authelia
+  - chrony
+  - crowdsec
+  - crowdsec-firewall-bouncer-nftables
+  - dnsmasq
+  - geoipupdate
+  - grafana
+  - hostapd
+  - influxdata-archive-keyring
+  - influxdb2
+  - influxdb2-cli
+  - iptables-persistent
+  - mosquitto
+  - mosquitto-clients
+  - netbird
+  - nginx
+  - nodejs
+  - sqlite3
+  - step-ca
+  - step-cli
+  - telegraf
+  - unbound
+  - watchdog
+  # Docker (kept installed, disabled: packages_disabled_services)
+  - containerd.io
+  - docker-ce
+  - docker-ce-cli
+  - docker-compose-plugin
+  # IoT Wi-Fi driver build (DKMS 88x2bu, docs/runbooks/wifi-driver.md) and kernel
+  - dkms
+  - linux-headers-raspi
+  - linux-raspi
+  - iw
+  - wireless-tools
+  # pironman5 case (fan, OLED, GPIO)
+  - build-essential
+  - i2c-tools
+  - liblgpio-dev
+  - python3-dev
+  - python3-gpiozero
+  - python3-lgpio
+  # Tools
+  - dnsutils
+  - gnupg2
+  - mc
+  - python3-pip
+  - python3-venv
+  - smartmontools
+  - taskwarrior
+  - unzip
+
+# Removed: decided 2026-11-10 (unused) and purged without touching the ubuntu-server
+# metapackages, or already absent from the image
+packages_absent:
+  - apt-transport-https
+  - fio
+  - ftp
+  - isc-dhcp-server
+  - nmap
+  - snapd
+  - squashfs-tools
+  - stress

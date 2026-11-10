@@ -15,3 +15,77 @@
   check_mode: false
   failed_when: packages_disabled_state.stdout not in ['inactive', 'failed']
   when: not ansible_check_mode
+
+- name: Units masked (cannot start, even as a dependency)
+  ansible.builtin.file:
+    src: /dev/null
+    dest: "/etc/systemd/system/{{ item }}"
+    state: link
+    force: true
+  loop: "{{ packages_masked_units }}"
+
+- name: Masked units stay inactive
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ item }}"]
+  loop: "{{ packages_masked_units }}"
+  register: packages_masked_state
+  changed_when: false
+  check_mode: false
+  failed_when: packages_masked_state.stdout not in ['inactive', 'failed', 'unknown']
+
+- name: Third-party apt keys (exact bytes from the repository)
+  ansible.builtin.copy:
+    src: "{{ item.src }}"
+    dest: "{{ item.dest }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ packages_apt_keys }}"
+  register: packages_keys
+
+- name: Each apt key carries its pinned fingerprint
+  ansible.builtin.shell:
+    cmd: >-
+      set -o pipefail; h=$(mktemp -d); trap 'rm -rf "$h"' EXIT;
+      GNUPGHOME="$h" gpg --show-keys --with-colons "{{ item.dest }}" 2>/dev/null
+      | awk -F: '$1 == "pub" { w = 1; next } w && $1 == "fpr" { print $10; exit }'
+    executable: /bin/bash
+  loop: "{{ packages_apt_keys }}"
+  register: packages_key_fpr
+  changed_when: false
+  check_mode: false
+  failed_when: packages_key_fpr.stdout != item.fingerprint
+  when: not (ansible_check_mode and packages_keys is changed)
+
+- name: Third-party apt sources (exact bytes from the repository)
+  ansible.builtin.copy:
+    src: "apt/sources/{{ item }}"
+    dest: "/etc/apt/sources.list.d/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ packages_apt_sources }}"
+  register: packages_sources
+
+- name: Stale apt source files are absent
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop: "{{ packages_apt_absent_files }}"
+  register: packages_stale_sources
+
+- name: Refresh the apt cache when a key or a source changed
+  ansible.builtin.apt:
+    update_cache: true
+  when: packages_keys is changed or packages_sources is changed or packages_stale_sources is changed
+
+- name: Packages of the manifest are installed
+  ansible.builtin.apt:
+    name: "{{ packages_present }}"
+    state: present
+
+- name: Removed packages stay purged
+  ansible.builtin.apt:
+    name: "{{ packages_absent }}"
+    state: absent
+    purge: true
