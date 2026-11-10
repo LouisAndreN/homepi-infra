@@ -1,6 +1,8 @@
 influxdb_admin_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_admin_token\"]') }}"
 influxdb_check: /usr/local/sbin/homepi-influx-check
 influxdb_token_file: /var/lib/secrets/influx-admin.token
+influxdb_operator_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_operator_token\"]') }}"
+influxdb_operator_token_file: /var/lib/secrets/influx-operator.token
 # State inside InfluxDB that a rebuild must recreate; checked on every apply and check.
 influxdb_expected:
   org: iot-org
@@ -16,3 +18,4 @@ influxdb_expected:
     - cli-admin
     - downsample-task-v2
     - homepi-dashboard via nginx (read iot-hot)
+    - homepi-operator (backup)

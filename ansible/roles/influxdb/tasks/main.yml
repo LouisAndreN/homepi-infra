@@ -43,6 +43,15 @@
   no_log: true
   register: influxdb_token_file_task
 
+- name: InfluxDB operator token for native backups (root only)
+  ansible.builtin.copy:
+    content: "{{ influxdb_operator_token }}"
+    dest: "{{ influxdb_operator_token_file }}"
+    owner: root
+    group: root
+    mode: "0600"
+  no_log: true
+
 - name: InfluxDB state matches the repository (buckets, tasks, authorizations)
   ansible.builtin.command:
     argv: ["{{ influxdb_check }}"]

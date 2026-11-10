@@ -15,6 +15,7 @@ Organization `iot-org`.
 | Authorization | `downsample-task-v2` | read `iot-hot`, write `iot-archives` (the task) |
 | Authorization | `homepi-dashboard via nginx (read iot-hot)` | dashboard through nginx |
 | Authorization | `cli-admin` | all organization permissions; token in SOPS `influx_admin_token`, used by Ansible |
+| Authorization | `homepi-operator (backup)` | operator (instance-wide), created with `influxd recovery auth create-operator` on 2026-11-10; SOPS `influx_operator_token`, on the Pi only in `/var/lib/secrets/influx-operator.token` (root 0600), used by native backups |
 
 Measured 2026-11-08: every token found on the Pi was tested (read, write, authorizations seen).
 The two CLI `default` profiles and `INFLUX_TOKEN` in `api.env` are dead (401) and their
@@ -28,3 +29,10 @@ repository holds the live script.
 `influx setup` creates a new operator; then recreate the buckets, the task from the repository
 and one authorization per row above, put the new tokens into SOPS and apply. Data comes back from
 the line-protocol export.
+
+## Operator token (v0.1.93)
+
+No authorization had operator rights (the setup tokens were lost), so `influx backup` failed with
+`read:authorizations is unauthorized`. `influxd recovery auth create-operator` (influxd stopped,
+run as influxdb) created one. A native backup keeps buckets, tasks and authorizations, so a rebuild
+keeps every token; the line-protocol export stays as the portable fallback.
