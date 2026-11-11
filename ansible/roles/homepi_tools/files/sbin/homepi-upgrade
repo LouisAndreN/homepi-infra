@@ -2,12 +2,15 @@
 # homepi-upgrade: upgrade one family of third-party packages under a health check, with a rollback.
 # Unattended upgrades never install third-party packages (Authelia, CrowdSec...). This does, one
 # family at a time:
-#   1. the family's check must pass before anything changes
+#   1. the family's check must pass and dpkg must be clean before anything changes
 #   2. the installed versions are downloaded to /var/cache/homepi/rollback/<family>/<date>/ (public
 #      packages: kept out of the state backup, the two newest kept per family)
 #   3. a state backup is taken
-#   4. apt-get install --only-upgrade, existing configuration files kept
-#   5. the check runs again (3 tries); on failure the kept versions are reinstalled and checked
+#   4. one package at a time, in the family order, apt-get install --only-upgrade (existing
+#      configuration files kept). Order matters: on 2026-11-11 the CrowdSec bouncer, configured
+#      while its API server was still unpacked, could not start and dpkg stayed half-configured.
+#   5. dpkg must be clean and the check must pass (3 tries); otherwise the kept versions are
+#      reinstalled in the same order, and the rollback is verified by version, dpkg and the check
 # Usage: sudo homepi-upgrade FAMILY [--dry-run]
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -17,38 +20,51 @@ declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-ch
 F=${1:-}; DRY=${2:-}
 log() { echo "$(date -Is) [$F] $*" | tee -a "$LOG"; }
 die() { log "ERROR: $*"; exit 1; }
+audit() { dpkg --audit 2>/dev/null | grep -cE '^ [a-z]'; }
+# Finish a half-configured dpkg once; true when dpkg is clean afterwards
+settle() {
+  [ "$(audit)" = 0 ] && return 0
+  log "dpkg half-configured: running dpkg --configure -a"
+  DEBIAN_FRONTEND=noninteractive timeout 600 dpkg --configure -a >> "$LOG" 2>&1
+  [ "$(audit)" = 0 ]
+}
 [ "$EUID" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 if [ -z "$F" ] || [ -z "${PKGS[$F]:-}" ]; then echo "usage: $0 FAMILY [--dry-run]; families: ${!PKGS[*]}" >&2; exit 1; fi
 if systemctl is-active -q apt-daily.service apt-daily-upgrade.service || fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock > /dev/null 2>&1; then
   die "apt or dpkg is busy, try later"
 fi
-[ "$(dpkg --audit 2>/dev/null | grep -cE '^ [a-z]')" = 0 ] || die "dpkg --audit is not empty"
+[ "$(audit)" = 0 ] || die "dpkg --audit is not empty"
 C=${CHECK[$F]}
 command -v "$C" > /dev/null || die "check $C is not installed"
 PRE=$("$C" 2>&1) || { printf '%s\n' "$PRE" | tee -a "$LOG"; die "the check fails before the upgrade: nothing changed"; }
+declare -A OLD
 PLAN=""
 for p in ${PKGS[$F]}; do
   cur=$(dpkg-query -W -f '${Version}' "$p" 2>/dev/null)
   cand=$(apt-cache policy "$p" | awk '/Candidate:/ {print $2}')
+  OLD[$p]=$cur
   log "$p: installed $cur, candidate $cand"
   [ -n "$cand" ] && [ "$cand" != "$cur" ] && PLAN="$PLAN $p=$cand"
 done
 [ -n "$PLAN" ] || { log "nothing to upgrade"; exit 0; }
-if [ "$DRY" = "--dry-run" ]; then log "dry run: would install$PLAN"; exit 0; fi
+if [ "$DRY" = "--dry-run" ]; then log "dry run: would install, in this order:$PLAN"; exit 0; fi
 R=/var/cache/homepi/rollback/$F/$(date +%F-%H%M%S)
 install -d -m 0700 "$R"
 for p in ${PKGS[$F]}; do
-  v=$(dpkg-query -W -f '${Version}' "$p")
-  ( cd "$R" && timeout 300 apt-get download -q "$p=$v" > /dev/null 2>&1 ) || die "cannot download $p=$v for the rollback: nothing changed"
+  ( cd "$R" && timeout 300 apt-get download -q "$p=${OLD[$p]}" > /dev/null 2>&1 ) || die "cannot download $p=${OLD[$p]} for the rollback: nothing changed"
 done
 log "rollback packages kept in $R: $(ls "$R" | tr '\n' ' ')"
 ls -1dt /var/cache/homepi/rollback/"$F"/*/ 2> /dev/null | tail -n +3 | xargs -r rm -rf
 log "state backup before the upgrade"
 timeout 1200 systemctl start homepi-backup@state.service || die "state backup failed: nothing changed"
-log "installing$PLAN"
 ok=1
-DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confold $PLAN >> "$LOG" 2>&1 || { log "apt-get install failed"; ok=0; }
-pass=0
+for spec in $PLAN; do
+  log "installing $spec"
+  DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confold "$spec" >> "$LOG" 2>&1 || { log "apt-get install $spec failed"; ok=0; break; }
+  sleep 5
+done
+[ "$ok" = 1 ] && { settle || { log "dpkg still half-configured after the upgrade"; ok=0; }; }
+pass=0; OUT=""
 if [ "$ok" = 1 ]; then
   for i in 1 2 3; do
     sleep 10
@@ -60,9 +76,22 @@ if [ "$pass" = 1 ]; then
   systemctl start homepi-wifi-check.service > /dev/null 2>&1 || true
   exit 0
 fi
-log "FAIL: $(printf '%s' "${OUT:-}" | tr '\n' ';'); reinstalling the kept versions"
-DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --allow-downgrades -o Dpkg::Options::=--force-confold "$R"/*.deb >> "$LOG" 2>&1 || log "ERROR: the rollback install failed"
+log "FAIL: $(printf '%s' "$OUT" | tr '\n' ';'); reinstalling the kept versions in the family order"
+for p in ${PKGS[$F]}; do
+  d=$(ls "$R"/"${p}"_*.deb 2> /dev/null | head -1)
+  [ -n "$d" ] || { log "ERROR: no kept package for $p"; continue; }
+  [ "$(dpkg-query -W -f '${Version}' "$p" 2>/dev/null)" = "${OLD[$p]}" ] && continue
+  DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --allow-downgrades -o Dpkg::Options::=--force-confold "$d" >> "$LOG" 2>&1 || log "apt-get reported an error while reinstalling $p"
+  sleep 5
+done
+settle || true
 sleep 10
-if OUT=$("$C" 2>&1); then log "ROLLED BACK: the check passes on the previous versions"; else log "ERROR: the check still fails after the rollback: $(printf '%s' "$OUT" | tr '\n' ';')"; fi
+bad=""
+for p in ${PKGS[$F]}; do [ "$(dpkg-query -W -f '${Version}' "$p" 2>/dev/null)" = "${OLD[$p]}" ] || bad="$bad $p"; done
+if [ -z "$bad" ] && [ "$(audit)" = 0 ] && OUT=$("$C" 2>&1); then
+  log "ROLLED BACK: previous versions installed, dpkg clean, the check passes"
+else
+  log "ERROR: after the rollback: versions differ:${bad:- none}; dpkg --audit $(audit); check: $(printf '%s' "$OUT" | tr '\n' ';')"
+fi
 systemctl start homepi-wifi-check.service > /dev/null 2>&1 || true
 exit 2
