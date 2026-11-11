@@ -3,7 +3,8 @@
 # Unattended upgrades never install third-party packages (Authelia, CrowdSec...). This does, one
 # family at a time:
 #   1. the family's check must pass before anything changes
-#   2. the installed versions are downloaded to /var/lib/homepi/rollback/<family>/<date>/
+#   2. the installed versions are downloaded to /var/cache/homepi/rollback/<family>/<date>/ (public
+#      packages: kept out of the state backup, the two newest kept per family)
 #   3. a state backup is taken
 #   4. apt-get install --only-upgrade, existing configuration files kept
 #   5. the check runs again (3 tries); on failure the kept versions are reinstalled and checked
@@ -34,13 +35,14 @@ for p in ${PKGS[$F]}; do
 done
 [ -n "$PLAN" ] || { log "nothing to upgrade"; exit 0; }
 if [ "$DRY" = "--dry-run" ]; then log "dry run: would install$PLAN"; exit 0; fi
-R=/var/lib/homepi/rollback/$F/$(date +%F-%H%M%S)
+R=/var/cache/homepi/rollback/$F/$(date +%F-%H%M%S)
 install -d -m 0700 "$R"
 for p in ${PKGS[$F]}; do
   v=$(dpkg-query -W -f '${Version}' "$p")
   ( cd "$R" && timeout 300 apt-get download -q "$p=$v" > /dev/null 2>&1 ) || die "cannot download $p=$v for the rollback: nothing changed"
 done
 log "rollback packages kept in $R: $(ls "$R" | tr '\n' ' ')"
+ls -1dt /var/cache/homepi/rollback/"$F"/*/ 2> /dev/null | tail -n +3 | xargs -r rm -rf
 log "state backup before the upgrade"
 timeout 1200 systemctl start homepi-backup@state.service || die "state backup failed: nothing changed"
 log "installing$PLAN"
