@@ -1,8 +1,10 @@
 #!/bin/bash
-# homepi-wifi-check: health of the IoT access point and of what the next boot will run.
+# homepi-wifi-check: health of the IoT access point, of what the next boot will run, and of apt.
 # The access point (wlx0013eff27090) needs the out-of-tree 88x2bu driver, built by DKMS for every
 # kernel. On 2026-11-09 the build failed for a new kernel: unattended upgrades stopped on a dpkg
 # error, and a reboot would have left the ESP32s without network. Nothing reported it.
+# Third-party packages (Authelia, CrowdSec, NetBird, Grafana...) are never installed by unattended
+# upgrades: their pending upgrades are tracked here with the time each one was first seen.
 # Writes textfile metrics every 15 minutes; the alerts are in boot_chain.yml.
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -10,6 +12,8 @@ IFACE=wlx0013eff27090
 MODULE=88x2bu
 OUT=/var/lib/node_exporter/textfile_collector/homepi_wifi.prom
 UULOG=/var/log/unattended-upgrades/unattended-upgrades.log
+PEND=/var/lib/homepi/apt-pending.tsv
+NOW=$(date +%s)
 
 # True when a module built for kernel $1 exists (plain or compressed)
 has_module() {
@@ -35,9 +39,21 @@ audit=$(dpkg --audit 2>/dev/null | grep -cE '^ [a-z]')
 uu_ok=$(awk '/Starting unattended upgrades script/ { seen = 1; err = 0 } / ERROR / { err = 1 } END { print (seen && err) ? 0 : 1 }' "$UULOG" 2>/dev/null || echo 1)
 uu_start=$(grep -h 'Starting unattended upgrades script' "$UULOG" 2>/dev/null | tail -1 | cut -c1-19)
 uu_ts=0; [ -n "$uu_start" ] && uu_ts=$(date -d "$uu_start" +%s 2>/dev/null || echo 0)
+# APT writes update-success-stamp only when every source was refreshed
+succ=$(stat -c %Y /var/lib/apt/periodic/update-success-stamp 2>/dev/null || echo 0)
+
+# Pending upgrades from a simulation (no lock, no cache write), each with the time first seen
+SIM=$(apt-get -s -o Debug::NoLocking=1 -o Dir::Cache::pkgcache= -o Dir::Cache::srcpkgcache= dist-upgrade 2>/dev/null | awk '/^Inst / {
+  cand = ($3 ~ /^\[/) ? $4 : $3; sub(/^\(/, "", cand)
+  cls = ($0 ~ /Ubuntu:/) ? (($0 ~ /-security/) ? "ubuntu-security" : "ubuntu") : "third-party"
+  print $2, cand, cls }')
+touch "$PEND"
+printf '%s\n' "$SIM" | awk -v now="$NOW" 'FILENAME == ARGV[1] { if (NF == 4) first[$1 " " $2] = $4; next }
+  NF == 3 { k = $1 " " $2; print $1, $2, $3, ((k in first) ? first[k] : now) }' "$PEND" /dev/stdin > "$PEND.tmp" && mv "$PEND.tmp" "$PEND"
 
 TMP=$(mktemp "$OUT.XXXXXX")
-cat > "$TMP" << PROM
+{
+cat << PROM
 # HELP homepi_wifi_driver_next_boot_ok 1 if the kernel of the next boot has the $MODULE module.
 # TYPE homepi_wifi_driver_next_boot_ok gauge
 homepi_wifi_driver_next_boot_ok{kernel="$next"} $next_ok
@@ -65,9 +81,23 @@ homepi_apt_unattended_last_run_ok $uu_ok
 # HELP homepi_apt_unattended_last_run_timestamp_seconds Start of the last unattended-upgrades run.
 # TYPE homepi_apt_unattended_last_run_timestamp_seconds gauge
 homepi_apt_unattended_last_run_timestamp_seconds $uu_ts
+# HELP homepi_apt_update_success_timestamp_seconds Last apt list refresh in which every source succeeded.
+# TYPE homepi_apt_update_success_timestamp_seconds gauge
+homepi_apt_update_success_timestamp_seconds $succ
+# HELP homepi_apt_upgradable_packages Pending upgrades by class (ubuntu-security, ubuntu, third-party).
+# TYPE homepi_apt_upgradable_packages gauge
+# HELP homepi_apt_upgrade_pending_oldest_seconds Age of the oldest pending upgrade of the class, since first seen.
+# TYPE homepi_apt_upgrade_pending_oldest_seconds gauge
+PROM
+for c in ubuntu-security ubuntu third-party; do
+  echo "homepi_apt_upgradable_packages{class=\"$c\"} $(awk -v c="$c" '$3 == c' "$PEND" | wc -l)"
+  echo "homepi_apt_upgrade_pending_oldest_seconds{class=\"$c\"} $(awk -v c="$c" -v now="$NOW" '$3 == c { a = now - $4; if (a > m) m = a } END { print m + 0 }' "$PEND")"
+done
+cat << PROM
 # HELP homepi_wifi_check_last_run_timestamp_seconds Last run of homepi-wifi-check.
 # TYPE homepi_wifi_check_last_run_timestamp_seconds gauge
-homepi_wifi_check_last_run_timestamp_seconds $(date +%s)
+homepi_wifi_check_last_run_timestamp_seconds $NOW
 PROM
+} > "$TMP"
 chmod 0644 "$TMP"
 mv "$TMP" "$OUT"
