@@ -156,8 +156,8 @@ loki.process "nftables_geoip" {
     drop_counter_reason = "not_an_nft_drop"
   }
 
-  // GeoIP fields are extracted but not stored (structured metadata is disabled in Loki):
-  // known limit, see docs/known-limits.md
+  // GeoIP of dropped inbound sources, kept as structured metadata (not labels: no new streams).
+  // Country and city from GeoLite2-City, AS from GeoLite2-ASN (geoipupdate, account in SOPS).
   stage.match {
     selector = "{job=\"nftables\"} |= \"NFT-DROP-INPUT\""
 
@@ -169,6 +169,21 @@ loki.process "nftables_geoip" {
       source  = "src_ip"
       db      = "/var/lib/GeoIP/GeoLite2-City.mmdb"
       db_type = "city"
+    }
+
+    stage.geoip {
+      source  = "src_ip"
+      db      = "/var/lib/GeoIP/GeoLite2-ASN.mmdb"
+      db_type = "asn"
+    }
+
+    stage.structured_metadata {
+      values = {
+        geoip_country_name                   = "",
+        geoip_city_name                      = "",
+        geoip_autonomous_system_number       = "",
+        geoip_autonomous_system_organization = "",
+      }
     }
   }
 }

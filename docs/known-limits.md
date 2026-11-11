@@ -117,3 +117,5 @@ The SunFounder case controller (`/usr/local/bin/pironman5`, pip-installed, venv 
 `/opt/pironman5`) runs as root with no `User=`: third-party code with full privileges. Its
 files are pinned by the hardening role; running it unprivileged (GPIO and I2C groups) is not
 done yet.
+
+- GeoIP (resolved in v0.1.108): the country, city and AS of dropped inbound sources are stored in Loki as structured metadata.

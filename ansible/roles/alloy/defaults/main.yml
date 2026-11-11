@@ -1,0 +1,6 @@
+---
+# MaxMind GeoLite2 account used by geoipupdate for the Alloy nftables pipeline
+alloy_geoip_sops_file: "{{ playbook_dir }}/secrets/monitoring.sops.yaml"
+alloy_geoip_account_id: "{{ lookup('community.sops.sops', alloy_geoip_sops_file, extract='[\"geoip_account_id\"]') }}"
+alloy_geoip_license_key: "{{ lookup('community.sops.sops', alloy_geoip_sops_file, extract='[\"geoip_license_key\"]') }}"
+alloy_geoip_editions: GeoLite2-Country GeoLite2-City GeoLite2-ASN
