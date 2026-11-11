@@ -30,6 +30,28 @@ settle() {
   DEBIAN_FRONTEND=noninteractive timeout 600 dpkg --configure -a >> "$LOG" 2>&1
   [ "$(audit)" = 0 ]
 }
+# Run a homepi-gitops-sync mode and print its last line; wait while another run holds the lock
+gitops() {
+  local out i
+  for i in $(seq 1 60); do
+    out=$(timeout 1800 homepi-gitops-sync "$1" 2>&1)
+    if ! printf '%s\n' "$out" | grep -q 'another run is in progress'; then printf '%s\n' "$out" | tail -1; return 0; fi
+    sleep 30
+  done
+  echo "the GitOps lock was still held after 30 minutes"
+}
+# Packages may reset what the roles enforce (the grafana postinst sets every directory under
+# /etc/grafana to 755, the secrets one included): check the deployed release now and reconcile
+# a drift at once, instead of leaving it until the next release
+after_upgrade() {
+  local r n
+  r=$(gitops check); n=$(printf '%s' "$r" | grep -oE 'changed tasks: [0-9]+' | grep -oE '[0-9]+$')
+  if [ -z "$n" ]; then log "WARNING: the GitOps check after the upgrade did not finish: $r"; return; fi
+  if [ "$n" = 0 ]; then log "no drift after the upgrade"; return; fi
+  log "the upgrade left $n drifted task(s): reconciling with the deployed release"
+  log "reconcile: $(gitops reconcile)"
+  log "check after the reconcile: $(gitops check)"
+}
 [ "$EUID" -eq 0 ] || { echo "run as root" >&2; exit 1; }
 if [ -z "$F" ] || [ -z "${PKGS[$F]:-}" ]; then echo "usage: $0 FAMILY [--dry-run]; families: ${!PKGS[*]}" >&2; exit 1; fi
 if systemctl is-active -q apt-daily.service apt-daily-upgrade.service || fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock > /dev/null 2>&1; then
@@ -78,6 +100,7 @@ if [ "$ok" = 1 ]; then
 fi
 if [ "$pass" = 1 ]; then
   log "PASS: $(printf '%s' "$OUT" | tr '\n' ';')"
+  after_upgrade
   systemctl start homepi-wifi-check.service > /dev/null 2>&1 || true
   exit 0
 fi

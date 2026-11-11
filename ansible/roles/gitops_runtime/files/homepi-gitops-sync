@@ -3,6 +3,8 @@
 #
 #   homepi-gitops-sync apply   deploy the newest signed tag (never an older one)
 #   homepi-gitops-sync check   dry run of the deployed tag, to detect drift
+#   homepi-gitops-sync reconcile  apply the deployed tag again, its signature verified again, to
+#                                 undo a drift (a package upgrade resetting permissions, for example)
 #
 # The trust anchor is /etc/homepi-gitops/allowed_signers: created by hand and
 # deliberately outside the repository that this script deploys.
@@ -37,6 +39,8 @@ write_metrics() {
 
 # Record a failure for the given mode, then stop
 fail() {
+  # A failed reconcile is reported as a failed apply, so that GitopsApplyFailing covers it
+  [ "$1" = reconcile ] && set -- apply "$2"
   log "FAILED: $2"
   write_metrics "homepi_gitops_$1.prom" \
     "homepi_gitops_${1}_success 0" \
@@ -72,8 +76,8 @@ run_playbook() {
 select_tag() {
   local candidate
   UNTRUSTED=0
-  if [ "$1" = check ]; then
-    [ -n "$CUR_TAG" ] || { log "nothing deployed yet, nothing to check"; exit 0; }
+  if [ "$1" = check ] || [ "$1" = reconcile ]; then
+    [ -n "$CUR_TAG" ] || { log "nothing deployed yet, nothing to $1"; exit 0; }
     TAG="$CUR_TAG"
     verify_tag "$TAG" || fail "$1" "REFUSED: the deployed tag $TAG is no longer trusted"
     return 0
@@ -191,7 +195,7 @@ fetch_sources() {
 
 main() {
   local mode="${1:-}"
-  case "$mode" in apply | check) ;; *) echo "usage: $0 apply|check" >&2; exit 2 ;; esac
+  case "$mode" in apply | check | reconcile) ;; *) echo "usage: $0 apply|check|reconcile" >&2; exit 2 ;; esac
   exec 9> /run/homepi-gitops.lock
   flock -n 9 || { log "another run is in progress"; exit 0; }
 
@@ -219,6 +223,9 @@ main() {
 
   if [ "$mode" = apply ]; then
     printf '%s %s\n' "$TAG" "$COMMIT" > "$DEPLOYED"
+    record_apply
+  elif [ "$mode" = reconcile ]; then
+    # Same tag and commit: nothing new is deployed, the apply metrics cover the run
     record_apply
   else
     write_metrics homepi_gitops_check.prom \
