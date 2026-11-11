@@ -1,16 +1,18 @@
 #!/bin/bash
 # homepi-alloy-check: Alloy is shipping logs to Loki. A pipeline can run while a part of it is
-# dead, so this checks the flow: recent lines (2 minutes) for the always-busy jobs, and every
-# expected job present over the last 30 minutes.
+# dead, so this checks the flow: recent lines for the always-busy jobs (the last 2 minutes, or only
+# since HOMEPI_SINCE when homepi-upgrade sets it), and every expected job over the last 30 minutes.
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 L=http://127.0.0.1:3100
 BUSY="systemd-journal syslog auditd"
 ALL="auditd auditd_exec auth kernel nftables syslog systemd-journal"
+NOW=$(date +%s); SINCE=${HOMEPI_SINCE:-$((NOW - 120))}
+W=$((NOW - SINCE)); [ "$W" -gt 120 ] && W=120; [ "$W" -lt 10 ] && W=10
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
-if systemctl is-active -q alloy; then ok "service active ($(alloy --version 2>/dev/null | awk '{print $3}'))"; else bad "service $(systemctl is-active alloy)"; fi
+if systemctl is-active -q alloy; then ok "service active ($(alloy --version 2>/dev/null | head -1 | awk '{print $3}'))"; else bad "service $(systemctl is-active alloy)"; fi
 counts() {
   curl -s --max-time 20 -G "$L/loki/api/v1/query" --data-urlencode "query=sum by (job) (count_over_time({job=~\".+\"}[$1]))" \
     | python3 -I -c 'import json, sys
@@ -19,11 +21,11 @@ try:
 except Exception:
     pass'
 }
-R=$(counts 2m); A=$(counts 30m)
+R=$(counts "${W}s"); A=$(counts 30m)
 [ -n "$A" ] || bad "Loki did not answer the query"
 for j in $BUSY; do
   c=$(printf '%s\n' "$R" | awk -v j="$j" '$1 == j {print int($2)}')
-  if [ "${c:-0}" -gt 0 ]; then ok "$j: $c lines in the last 2 minutes"; else bad "$j: no line in the last 2 minutes"; fi
+  if [ "${c:-0}" -gt 0 ]; then ok "$j: $c lines in the last $W s"; else bad "$j: no line in the last $W s"; fi
 done
 miss=""
 for j in $ALL; do printf '%s\n' "$A" | awk -v j="$j" '$1 == j && $2 > 0 {f = 1} END {exit !f}' || miss="$miss $j"; done

@@ -65,6 +65,8 @@ for spec in $PLAN; do
   DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confold "$spec" >> "$LOG" 2>&1 || { log "apt-get install $spec failed"; ok=0; break; }
   sleep 5
 done
+# The checks count only data that arrived after the install (flow checks)
+export HOMEPI_SINCE=$(date +%s)
 [ "$ok" = 1 ] && { settle || { log "dpkg still half-configured after the upgrade"; ok=0; }; }
 [ "$ok" = 1 ] && sleep "${SETTLE[$F]:-0}"
 pass=0; OUT=""

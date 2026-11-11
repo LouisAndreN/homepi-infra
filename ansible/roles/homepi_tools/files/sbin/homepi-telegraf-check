@@ -1,21 +1,24 @@
 #!/bin/bash
 # homepi-telegraf-check: Telegraf is collecting. A broken collector keeps its unit active while data
-# stops arriving, so this checks the flow itself: no E! line in the last 2 minutes, and points
-# written to the iot-hot bucket in the last 2 minutes. The InfluxDB token goes through a 0600
-# header file, never argv (/proc/<pid>/cmdline is readable by every user).
+# stops arriving, so this checks the flow itself: no E! line and points written to the iot-hot
+# bucket in the window (the last 2 minutes, or only since HOMEPI_SINCE when homepi-upgrade sets it,
+# so that points written by the previous version do not count). The InfluxDB token goes through a
+# 0600 header file, never argv (/proc/<pid>/cmdline is readable by every user).
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+NOW=$(date +%s); SINCE=${HOMEPI_SINCE:-$((NOW - 120))}
+W=$((NOW - SINCE)); [ "$W" -gt 120 ] && W=120; [ "$W" -lt 10 ] && W=10
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
-if systemctl is-active -q telegraf; then ok "service active ($(telegraf --version 2>/dev/null | awk '{print $2}'))"; else bad "service $(systemctl is-active telegraf)"; fi
-e=$(journalctl -u telegraf --since -2min --no-pager -o cat 2>/dev/null | grep -c 'E!')
-if [ "$e" = 0 ]; then ok "no error line in the last 2 minutes"; else bad "$e error line(s) in the last 2 minutes"; fi
+if systemctl is-active -q telegraf; then ok "service active ($(telegraf --version 2>/dev/null | head -1 | awk '{print $2}'))"; else bad "service $(systemctl is-active telegraf)"; fi
+e=$(journalctl -u telegraf --since "@$((NOW - W))" --no-pager -o cat 2>/dev/null | grep -c 'E!')
+if [ "$e" = 0 ]; then ok "no error line in the last $W s"; else bad "$e error line(s) in the last $W s"; fi
 H=$(mktemp); chmod 0600 "$H"
 printf 'Authorization: Token %s\n' "$(cat /var/lib/secrets/influx-operator.token)" > "$H"
 n=$(curl -s --max-time 15 -H @"$H" -H 'Accept: application/csv' -H 'Content-Type: application/vnd.flux' \
-     --data 'from(bucket: "iot-hot") |> range(start: -2m) |> group() |> count()' \
+     --data "from(bucket: \"iot-hot\") |> range(start: -${W}s) |> group() |> count()" \
      "http://127.0.0.1:8086/api/v2/query?org=iot-org" | awk -F, 'NR > 1 && $NF ~ /^[0-9]+\r?$/ {s += $NF} END {print s + 0}')
 rm -f "$H"
-if [ "${n:-0}" -gt 0 ]; then ok "$n points written to iot-hot in the last 2 minutes"; else bad "no point written to iot-hot in the last 2 minutes"; fi
+if [ "${n:-0}" -gt 0 ]; then ok "$n points written to iot-hot in the last $W s"; else bad "no point written to iot-hot in the last $W s"; fi
 exit $fail
