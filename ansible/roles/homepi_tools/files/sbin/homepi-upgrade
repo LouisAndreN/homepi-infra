@@ -15,8 +15,10 @@
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LOG=/var/log/homepi-upgrade.log
-declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables")
-declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check)
+declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables" [netbird]="netbird")
+declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check [netbird]=homepi-netbird-check)
+# Seconds to wait after the install before the first check (NetBird reconnects to management)
+declare -A SETTLE=([netbird]=30)
 F=${1:-}; DRY=${2:-}
 log() { echo "$(date -Is) [$F] $*" | tee -a "$LOG"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -64,6 +66,7 @@ for spec in $PLAN; do
   sleep 5
 done
 [ "$ok" = 1 ] && { settle || { log "dpkg still half-configured after the upgrade"; ok=0; }; }
+[ "$ok" = 1 ] && sleep "${SETTLE[$F]:-0}"
 pass=0; OUT=""
 if [ "$ok" = 1 ]; then
   for i in 1 2 3; do

@@ -15,6 +15,7 @@
     - homepi-backup-run
     - homepi-backup-state
     - homepi-kernel-trial
+    - homepi-netbird-check
     - homepi-triage
     - homepi-upgrade
     - homepi-wifi-check

@@ -1,0 +1,33 @@
+#!/bin/bash
+# homepi-netbird-check: NetBird remote access is healthy and the NetBird DNS path is intact.
+# Exit 0 only if the service is active, management and signal are connected, at least one relay is
+# available, wt0 holds 100.116.35.149/16, route_localnet is 1 on wt0 (the DNS DNAT to Unbound on
+# 127.0.0.1 depends on it; it is per interface and reapplied by udev when NetBird recreates wt0),
+# the DNAT rules exist and Unbound answers homepi.internal locally.
+# The DNAT only applies to packets arriving on wt0: prove it end to end from a peer, for example
+# PowerShell: Resolve-DnsName homepi.internal -Server 100.116.35.149 -DnsOnly
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+IP=100.116.35.149
+fail=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fail=1; }
+if systemctl is-active -q netbird; then ok "service active ($(netbird version 2>/dev/null))"; else bad "service $(systemctl is-active netbird)"; fi
+st=$(timeout 15 netbird status 2>/dev/null)
+for k in Management Signal; do
+  v=$(printf '%s\n' "$st" | awk -F': ' -v k="$k" '$1 == k {print $2; exit}')
+  if [ "$v" = Connected ]; then ok "$k connected"; else bad "$k: ${v:-unknown}"; fi
+done
+rel=$(printf '%s\n' "$st" | awk -F': ' '$1 == "Relays" {print $2; exit}')
+n=${rel%%/*}
+if [ "${n:-0}" -ge 1 ] 2> /dev/null; then ok "relays $rel"; else bad "relays: ${rel:-unknown}"; fi
+a=$(ip -4 -o addr show wt0 2>/dev/null | awk '{print $4}')
+if [ "$a" = "$IP/16" ]; then ok "wt0 $a"; else bad "wt0: ${a:-absent}"; fi
+r=$(sysctl -n net.ipv4.conf.wt0.route_localnet 2>/dev/null)
+if [ "$r" = 1 ]; then ok "route_localnet on wt0"; else bad "route_localnet on wt0: ${r:-unknown}"; fi
+d=$(nft list ruleset 2>/dev/null | grep -cE "$IP.*dport 53|dport 53.*$IP")
+if [ "$d" -ge 2 ]; then ok "DNS DNAT rules ($d)"; else bad "DNS DNAT rules: $d"; fi
+u=$(dig +short +time=3 +tries=2 @127.0.0.1 homepi.internal 2>/dev/null | head -1)
+if [ -n "$u" ]; then ok "Unbound answers homepi.internal ($u)"; else bad "Unbound: no answer for homepi.internal"; fi
+echo "info peers $(printf '%s\n' "$st" | awk -F': ' '$1 == "Peers count" {print $2; exit}')"
+exit $fail
