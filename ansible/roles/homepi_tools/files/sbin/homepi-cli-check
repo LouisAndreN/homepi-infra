@@ -1,0 +1,16 @@
+#!/bin/bash
+# homepi-cli-check: the command-line tools that other services depend on still work.
+# step-cli renews the Mosquitto broker certificate (step-renew): it must still talk to the local CA.
+# influx (influxdb2-cli) is used by the backups and the checks: it must still reach InfluxDB.
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+fail=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fail=1; }
+v=$(step version 2>/dev/null | head -1)
+h=$(timeout 15 step ca health --ca-url https://127.0.0.1:8443 --root /etc/step-ca/certs/root_ca.crt 2>&1 | tail -1)
+if [ "$h" = ok ]; then ok "step ca health ok (${v:-version unknown})"; else bad "step ca health: ${h:-no answer} (${v:-version unknown})"; fi
+iv=$(influx version 2>/dev/null | awk '{print $2}')
+p=$(timeout 15 influx ping --host http://127.0.0.1:8086 2>&1 | tail -1)
+if [ "$p" = OK ]; then ok "influx ping OK (influx ${iv:-unknown})"; else bad "influx ping: ${p:-no answer} (influx ${iv:-unknown})"; fi
+exit $fail

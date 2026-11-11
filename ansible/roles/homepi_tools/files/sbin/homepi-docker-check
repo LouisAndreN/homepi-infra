@@ -1,0 +1,16 @@
+#!/bin/bash
+# homepi-docker-check: Docker stays installed but disabled (decision 2026-11-10). An upgrade must not
+# enable or start it: its units must be disabled or masked, and inactive.
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+fail=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fail=1; }
+for u in docker.socket docker.service containerd.service; do
+  e=$(systemctl is-enabled "$u" 2>/dev/null); a=$(systemctl is-active "$u" 2>/dev/null)
+  case "$e" in disabled|masked) ;; *) bad "$u enabled state: ${e:-unknown}"; continue ;; esac
+  if [ "$a" = active ] || [ "$a" = activating ]; then bad "$u is $a"; else ok "$u $e, $a"; fi
+done
+v=$(docker --version 2>/dev/null)
+if [ -n "$v" ]; then ok "client: $v"; else bad "docker client missing"; fi
+exit $fail

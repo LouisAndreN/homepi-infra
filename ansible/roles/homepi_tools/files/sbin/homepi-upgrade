@@ -15,8 +15,8 @@
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LOG=/var/log/homepi-upgrade.log
-declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables" [netbird]="netbird")
-declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check [netbird]=homepi-netbird-check)
+declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables" [netbird]="netbird" [tools]="step-cli influxdb2-cli" [docker]="containerd.io docker-ce-cli docker-ce docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin")
+declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check [netbird]=homepi-netbird-check [tools]=homepi-cli-check [docker]=homepi-docker-check)
 # Seconds to wait after the install before the first check (NetBird reconnects to management)
 declare -A SETTLE=([netbird]=30)
 F=${1:-}; DRY=${2:-}

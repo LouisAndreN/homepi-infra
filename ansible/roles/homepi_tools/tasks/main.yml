@@ -14,6 +14,8 @@
     - homepi-backup-influx-native
     - homepi-backup-run
     - homepi-backup-state
+    - homepi-cli-check
+    - homepi-docker-check
     - homepi-kernel-trial
     - homepi-netbird-check
     - homepi-triage
