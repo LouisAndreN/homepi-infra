@@ -17,9 +17,11 @@ case "$r" in
   *) bad "anonymous visit: $r" ;;
 esac
 ENVF=$(systemctl show authelia -p EnvironmentFiles --value | awk '{print $1}')
-v=$( ( set -a; [ -f "$ENVF" ] && . "$ENVF"; set +a; timeout 60 runuser -u authelia -- authelia validate-config --config "$CFG" 2>&1 ) | tail -1)
-case "$v" in
-  *"successfully without errors"*) ok "configuration valid" ;;
-  *) bad "configuration: $(printf '%s' "$v" | cut -c1-120)" ;;
-esac
+# The success message is not the last line (validate-config ends with an empty line): match it anywhere
+v=$( ( set -a; [ -f "$ENVF" ] && . "$ENVF"; set +a; timeout 60 runuser -u authelia -- authelia validate-config --config "$CFG" 2>&1 ) )
+if printf '%s\n' "$v" | grep -q "successfully without errors"; then
+  ok "configuration valid"
+else
+  bad "configuration: $(printf '%s\n' "$v" | grep -v '^\s*$' | head -1 | cut -c1-120)"
+fi
 exit $fail
