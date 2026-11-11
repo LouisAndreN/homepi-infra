@@ -56,6 +56,10 @@ run_playbook() {
   cd "$WORK/ansible"
   ANSIBLE_COLLECTIONS_PATH="$RUNTIME/collections" SOPS_AGE_KEY_FILE="$AGE_KEY" ANSIBLE_NOCOLOR=1 \
     "$RUNTIME/venv/bin/ansible-playbook" -i inventory/pi-local.yml site.yml "${check[@]}" > "$out" 2>&1 || rc=$?
+    # Keep the full playbook output (root only, 30 newest): a failed task is diagnosable afterwards
+    install -d -m 0700 /var/log/homepi-gitops 2> /dev/null || true
+    cp "$out" "/var/log/homepi-gitops/$(date +%F-%H%M%S)-${1:-run}.log" 2> /dev/null && chmod 0600 /var/log/homepi-gitops/*.log 2> /dev/null || true
+    ls -1t /var/log/homepi-gitops/*.log 2> /dev/null | tail -n +31 | xargs -r rm -f || true
   cat "$out"
   CHANGED=$(sed -nE 's/^homepi +: .*changed=([0-9]+).*/\1/p' "$out")
   rm -f "$out"

@@ -1,0 +1,66 @@
+#!/bin/bash
+# homepi-upgrade: upgrade one family of third-party packages under a health check, with a rollback.
+# Unattended upgrades never install third-party packages (Authelia, CrowdSec...). This does, one
+# family at a time:
+#   1. the family's check must pass before anything changes
+#   2. the installed versions are downloaded to /var/lib/homepi/rollback/<family>/<date>/
+#   3. a state backup is taken
+#   4. apt-get install --only-upgrade, existing configuration files kept
+#   5. the check runs again (3 tries); on failure the kept versions are reinstalled and checked
+# Usage: sudo homepi-upgrade FAMILY [--dry-run]
+set -u
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+LOG=/var/log/homepi-upgrade.log
+declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables")
+declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check)
+F=${1:-}; DRY=${2:-}
+log() { echo "$(date -Is) [$F] $*" | tee -a "$LOG"; }
+die() { log "ERROR: $*"; exit 1; }
+[ "$EUID" -eq 0 ] || { echo "run as root" >&2; exit 1; }
+if [ -z "$F" ] || [ -z "${PKGS[$F]:-}" ]; then echo "usage: $0 FAMILY [--dry-run]; families: ${!PKGS[*]}" >&2; exit 1; fi
+if systemctl is-active -q apt-daily.service apt-daily-upgrade.service || fuser /var/lib/dpkg/lock-frontend /var/lib/dpkg/lock > /dev/null 2>&1; then
+  die "apt or dpkg is busy, try later"
+fi
+[ "$(dpkg --audit 2>/dev/null | grep -cE '^ [a-z]')" = 0 ] || die "dpkg --audit is not empty"
+C=${CHECK[$F]}
+command -v "$C" > /dev/null || die "check $C is not installed"
+PRE=$("$C" 2>&1) || { printf '%s\n' "$PRE" | tee -a "$LOG"; die "the check fails before the upgrade: nothing changed"; }
+PLAN=""
+for p in ${PKGS[$F]}; do
+  cur=$(dpkg-query -W -f '${Version}' "$p" 2>/dev/null)
+  cand=$(apt-cache policy "$p" | awk '/Candidate:/ {print $2}')
+  log "$p: installed $cur, candidate $cand"
+  [ -n "$cand" ] && [ "$cand" != "$cur" ] && PLAN="$PLAN $p=$cand"
+done
+[ -n "$PLAN" ] || { log "nothing to upgrade"; exit 0; }
+if [ "$DRY" = "--dry-run" ]; then log "dry run: would install$PLAN"; exit 0; fi
+R=/var/lib/homepi/rollback/$F/$(date +%F-%H%M%S)
+install -d -m 0700 "$R"
+for p in ${PKGS[$F]}; do
+  v=$(dpkg-query -W -f '${Version}' "$p")
+  ( cd "$R" && timeout 300 apt-get download -q "$p=$v" > /dev/null 2>&1 ) || die "cannot download $p=$v for the rollback: nothing changed"
+done
+log "rollback packages kept in $R: $(ls "$R" | tr '\n' ' ')"
+log "state backup before the upgrade"
+timeout 1200 systemctl start homepi-backup@state.service || die "state backup failed: nothing changed"
+log "installing$PLAN"
+ok=1
+DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --only-upgrade -o Dpkg::Options::=--force-confold $PLAN >> "$LOG" 2>&1 || { log "apt-get install failed"; ok=0; }
+pass=0
+if [ "$ok" = 1 ]; then
+  for i in 1 2 3; do
+    sleep 10
+    if OUT=$("$C" 2>&1); then pass=1; break; fi
+  done
+fi
+if [ "$pass" = 1 ]; then
+  log "PASS: $(printf '%s' "$OUT" | tr '\n' ';')"
+  systemctl start homepi-wifi-check.service > /dev/null 2>&1 || true
+  exit 0
+fi
+log "FAIL: $(printf '%s' "${OUT:-}" | tr '\n' ';'); reinstalling the kept versions"
+DEBIAN_FRONTEND=noninteractive timeout 900 apt-get install -y -q --allow-downgrades -o Dpkg::Options::=--force-confold "$R"/*.deb >> "$LOG" 2>&1 || log "ERROR: the rollback install failed"
+sleep 10
+if OUT=$("$C" 2>&1); then log "ROLLED BACK: the check passes on the previous versions"; else log "ERROR: the check still fails after the rollback: $(printf '%s' "$OUT" | tr '\n' ';')"; fi
+systemctl start homepi-wifi-check.service > /dev/null 2>&1 || true
+exit 2
