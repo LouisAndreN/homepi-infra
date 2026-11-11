@@ -15,10 +15,10 @@
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 LOG=/var/log/homepi-upgrade.log
-declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables" [netbird]="netbird" [tools]="step-cli influxdb2-cli" [docker]="containerd.io docker-ce-cli docker-ce docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin")
-declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check [netbird]=homepi-netbird-check [tools]=homepi-cli-check [docker]=homepi-docker-check)
+declare -A PKGS=([authelia]="authelia" [crowdsec]="crowdsec crowdsec-firewall-bouncer-nftables" [netbird]="netbird" [tools]="step-cli influxdb2-cli" [docker]="containerd.io docker-ce-cli docker-ce docker-buildx-plugin docker-ce-rootless-extras docker-compose-plugin" [grafana]="grafana" [telegraf]="telegraf" [alloy]="alloy")
+declare -A CHECK=([authelia]=homepi-authelia-check [crowdsec]=homepi-crowdsec-check [netbird]=homepi-netbird-check [tools]=homepi-cli-check [docker]=homepi-docker-check [grafana]=homepi-grafana-check [telegraf]=homepi-telegraf-check [alloy]=homepi-alloy-check)
 # Seconds to wait after the install before the first check (NetBird reconnects to management)
-declare -A SETTLE=([netbird]=30)
+declare -A SETTLE=([netbird]=30 [grafana]=10 [telegraf]=60 [alloy]=60)
 F=${1:-}; DRY=${2:-}
 log() { echo "$(date -Is) [$F] $*" | tee -a "$LOG"; }
 die() { log "ERROR: $*"; exit 1; }

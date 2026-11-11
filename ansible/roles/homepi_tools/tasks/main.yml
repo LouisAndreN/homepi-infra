@@ -10,6 +10,7 @@
   loop:
     - homepi-audit
     - homepi-authelia-check
+    - homepi-alloy-check
     - homepi-backup-influx-lp
     - homepi-backup-influx-native
     - homepi-backup-run
@@ -18,6 +19,7 @@
     - homepi-docker-check
     - homepi-kernel-trial
     - homepi-netbird-check
+    - homepi-telegraf-check
     - homepi-triage
     - homepi-upgrade
     - homepi-wifi-check
