@@ -26,3 +26,22 @@ groups:
         annotations:
           summary: "Device identity metrics are stale or failing"
           description: "homepi-device-metrics.timer runs every 5 minutes. Check: systemctl status homepi-device-metrics.timer; journalctl -u homepi-device-metrics -n 20."
+      # v0.1.113: no alert fired while the registry was frozen (2026-11-09 to 11-12) nor during the
+      # 39 h collection gap of 2026-09-26. The LED controller (esp32-d45ca3e4) publishes only on
+      # (re)connection: excluded until its firmware sends a periodic heartbeat.
+      - alert: DeviceSilent
+        expr: (time() - homepi_device_last_seen_timestamp_seconds{status=~"active|approved|pre_announced",device_id!="esp32-d45ca3e4"}) > 600
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $labels.device_id }} has sent no telemetry for {{ $value | humanizeDuration }}"
+          description: "Sensors publish every 30 s, the NILM bridge several times a second. Check: iw dev wlx0013eff27090 station dump; journalctl -u homepi-api --since -15min; the device's power."
+      - alert: DevicesMetricsMissing
+        expr: up{job="homepi_devices"} == 0 or absent(homepi_device_last_seen_timestamp_seconds)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No device registry metrics: DeviceSilent cannot fire"
+          description: "Prometheus scrapes /metrics/homepi on the device API every minute. Check: systemctl status homepi-api homepi-api.socket; curl -s http://127.0.0.1:3001/metrics/homepi | head"

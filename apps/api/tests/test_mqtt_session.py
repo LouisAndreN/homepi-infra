@@ -24,7 +24,7 @@ class FakeClient:
         self.subscriptions = []
 
     def subscribe(self, topic, qos=0):
-        self.subscriptions.append(topic)
+        self.subscriptions += [x[0] for x in topic] if isinstance(topic, list) else [topic]
 
 
 def test_instances_use_distinct_client_ids(monkeypatch):
@@ -32,7 +32,8 @@ def test_instances_use_distinct_client_ids(monkeypatch):
     assert ids == {"homepi-api-device", "homepi-api-admin"}
 
 
-@pytest.mark.parametrize("surface,expected", [("device", ["iot/+/sensors"]), ("admin", [])])
+# TELEMETRY_KINDS (v0.1.113): every telemetry topic updates last_seen
+@pytest.mark.parametrize("surface,expected", [("device", ["iot/+/sensors", "iot/+/status", "iot/+/nilm"]), ("admin", [])])
 def test_subscription_made_on_every_connection(monkeypatch, surface, expected):
     api = _api(monkeypatch, surface)
     client = FakeClient()

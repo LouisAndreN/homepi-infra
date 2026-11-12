@@ -44,7 +44,8 @@ scrape_configs:
       - targets: ['127.0.0.1:6060']
 
   - job_name: 'homepi_devices'
-    scrape_interval: 1h
+    # 1 minute since v0.1.113 (was 1h): DeviceSilent needs a fresh last_seen
+    scrape_interval: 1m
     static_configs:
       - targets: ['127.0.0.1:3001']
     metrics_path: /metrics/homepi

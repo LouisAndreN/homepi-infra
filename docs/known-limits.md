@@ -91,8 +91,9 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
   Loki itself produces 56% of the syslog lines, including every query it serves (until v0.1.109 a
   query containing NFT-DROP was counted as a drop); `NFT-DROP-INPUT` is logged without a rate limit
   (about 81,000 kernel lines in 6.5 days).
-- `homepi_devices` is scraped every hour: an outage of the API (unix socket since v0.1.90) can stay unseen up
-  to an hour, and after each Prometheus restart the target stays `unknown` up to an hour.
+- Device liveness (v0.1.113): `DeviceSilent` fires after 10 minutes without telemetry, from the registry's
+  `last_seen` (scraped every minute). The LED controller publishes only on (re)connection and is excluded
+  until its firmware sends a periodic heartbeat.
 - Btrfs applies `compress` per filesystem: the archives subvolume gets zstd:3 like the others.
 
 ## SOPS history encrypted to a lost recipient (recorded 2026-11-08, v0.1.75)

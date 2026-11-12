@@ -9,3 +9,5 @@ user homepi-api
 topic write iot/+/commands
 topic write homepi/admin/alerts
 topic read  iot/+/sensors
+topic read  iot/+/status
+topic read  iot/+/nilm

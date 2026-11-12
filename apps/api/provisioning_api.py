@@ -156,22 +156,43 @@ def audit(device_id: str, event: str, detail: str = "", operator: str = "system"
 _mqtt_client: Optional[mqtt.Client] = None
 _mqtt_lock = threading.Lock()
 
+# Every telemetry topic proves the device is alive (v0.1.113): the registry read only iot/<id>/sensors,
+# so the NILM bridge (nilm) and the LED controller (status) looked silent since 2026-10-14.
+TELEMETRY_KINDS = ("sensors", "status", "nilm")
+LAST_SEEN_MIN_INTERVAL = 30  # seconds between registry writes per device (NILM publishes several per second)
+_last_write: dict[str, tuple[float, str | None]] = {}
+
+
 def on_sensor_message(client, userdata, msg):
     try:
-        parts = msg .topic.split("/")
-        if len(parts) != 3 or parts[0] != "iot" or parts[2] != "sensors":
+        parts = msg.topic.split("/")
+        if len(parts) != 3 or parts[0] != "iot" or parts[2] not in TELEMETRY_KINDS:
             return
         device_id = parts[1]
-        payload = json.loads(msg.payload)
-        fw = payload.get("fw")
-        if not fw:
+        fw = None
+        try:
+            payload = json.loads(msg.payload)
+            if isinstance(payload, dict):
+                fw = payload.get("fw") or None
+        except ValueError:
+            pass
+        now = time.monotonic()
+        last_t, last_fw = _last_write.get(device_id, (float("-inf"), None))
+        if now - last_t < LAST_SEEN_MIN_INTERVAL and (fw is None or fw == last_fw):
             return
         with db() as conn:
-            conn.execute("""
-                UPDATE devices
-                SET fw_version = ?, last_seen = strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                WHERE device_id = ?
-            """, (fw, device_id))
+            if fw:
+                conn.execute("""
+                    UPDATE devices
+                    SET fw_version = ?, last_seen = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                    WHERE device_id = ?
+                """, (fw, device_id))
+            else:
+                conn.execute("""
+                    UPDATE devices SET last_seen = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                    WHERE device_id = ?
+                """, (device_id,))
+        _last_write[device_id] = (now, fw or last_fw)
     except Exception as e:
         log.warning(f"on_sensor_message failed: {e}")
 
@@ -182,7 +203,7 @@ def on_mqtt_connect(client, userdata, flags, reason_code, properties):
         log.warning(f"MQTT connection refused: {reason_code}")
         return
     if _mqtt_subscribes():
-        client.subscribe("iot/+/sensors", qos=0)
+        client.subscribe([("iot/+/%s" % k, 0) for k in TELEMETRY_KINDS])
     log.info(f"MQTT connected as {_mqtt_client_id()}")
 
 
@@ -994,7 +1015,7 @@ async def reorder_led_presets(req: ReorderRequest):
 async def homepi_metrics():
     with db() as conn:
         devices = conn.execute(
-            "SELECT device_id, status, cert_expiry FROM devices"
+            "SELECT device_id, status, cert_expiry, last_seen FROM devices"
         ).fetchall()
 
     now = datetime.now(timezone.utc)
@@ -1008,6 +1029,16 @@ async def homepi_metrics():
             continue
         days = (exp - now).days
         lines.append(f'homepi_device_cert_expiry_days{{device_id="{d["device_id"]}",status="{d["status"]}"}} {days}')
+
+    lines += [
+        "# HELP homepi_device_last_seen_timestamp_seconds Last telemetry message (sensors, status or nilm) from the device",
+        "# TYPE homepi_device_last_seen_timestamp_seconds gauge",
+    ]
+    for d in devices:
+        seen = _parse_cert_expiry(d["last_seen"])
+        if seen is None:
+            continue
+        lines.append(f'homepi_device_last_seen_timestamp_seconds{{device_id="{d["device_id"]}",status="{d["status"]}"}} {int(seen.timestamp())}')
 
     from collections import Counter
     counts = Counter(d["status"] for d in devices)
