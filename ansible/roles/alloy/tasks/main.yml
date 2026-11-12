@@ -11,11 +11,45 @@
     validate: /usr/bin/alloy validate %s
   register: alloy_config
 
-- name: Restart Alloy when its configuration changed
-  ansible.builtin.systemd:
-    name: alloy
-    state: restarted
-  when: alloy_config is changed
+# alloy validate parses the file but does not build the components: a bad stage selector passed it and
+# stopped every log in v0.1.109. So restart, check that Alloy is still up 20 s later, and on failure
+# restore the previous file, restart on it and fail the run.
+- name: Restart Alloy on a new configuration, back to the previous one if it does not stay up
+  when: alloy_config is changed and not ansible_check_mode
+  block:
+    - name: Restart Alloy when its configuration changed
+      ansible.builtin.systemd:
+        name: alloy
+        state: restarted
+
+    - name: Give Alloy time to build its components (failures exit within a few seconds)
+      ansible.builtin.pause:
+        seconds: 20
+
+    - name: Alloy is still active
+      ansible.builtin.command: systemctl is-active alloy
+      changed_when: false
+  rescue:
+    - name: Restore the previous Alloy configuration
+      ansible.builtin.copy:
+        src: "{{ alloy_config.backup_file }}"
+        dest: /etc/alloy/config.alloy
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+      when: alloy_config.backup_file is defined
+
+    - name: Restart Alloy on the previous configuration
+      ansible.builtin.systemd:
+        name: alloy
+        state: restarted
+
+    - name: Stop the run
+      ansible.builtin.fail:
+        msg: >-
+          Alloy did not stay up on the new configuration; the previous file is restored and Alloy
+          restarted on it. Read: journalctl -u alloy --since -10min
 
 - name: Keep Alloy enabled and running
   ansible.builtin.systemd:

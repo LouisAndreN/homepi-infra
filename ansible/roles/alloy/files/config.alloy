@@ -152,8 +152,9 @@ loki.process "nftables_drops" {
 
   // Only kernel lines: Loki writes every query it serves to syslog, so a line that merely contains
   // the text NFT-DROP (a dashboard query) was stored and counted as a drop until v0.1.109.
+  // Double quotes and no backslash: the match stage parser refuses backtick strings (v0.1.109 outage).
   stage.match {
-    selector            = "{job=\"nftables\"} !~ `^\\S+ \\S+ kernel: .*NFT-DROP-[A-Z]+: IN=`"
+    selector            = "{job=\"nftables\"} !~ \"^[^ ]+ [^ ]+ kernel: .*NFT-DROP-[A-Z]+: IN=\""
     action              = "drop"
     drop_counter_reason = "not_a_kernel_nft_drop"
   }
