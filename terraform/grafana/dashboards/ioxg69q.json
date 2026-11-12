@@ -424,129 +424,6 @@
       "type": "table"
     },
     {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "efhfdmbjuoiyob"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "custom": {
-            "hideFrom": {
-              "legend": false,
-              "tooltip": false,
-              "viz": false
-            }
-          },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        }
-      },
-      "gridPos": {
-        "h": 13,
-        "w": 24,
-        "x": 0,
-        "y": 15
-      },
-      "id": 61,
-      "options": {
-        "controls": {
-          "mouseWheelZoom": true,
-          "showAttribution": true,
-          "showDebug": false,
-          "showMeasure": false,
-          "showScale": false,
-          "showZoom": true
-        },
-        "layers": [
-          {
-            "config": {
-              "showLegend": true,
-              "style": {
-                "color": {
-                  "fixed": "dark-green"
-                },
-                "opacity": 0.4,
-                "rotation": {
-                  "fixed": 0,
-                  "max": 360,
-                  "min": -360,
-                  "mode": "mod"
-                },
-                "size": {
-                  "fixed": 5,
-                  "max": 15,
-                  "min": 2
-                },
-                "symbol": {
-                  "fixed": "img/icons/marker/circle.svg",
-                  "mode": "fixed"
-                },
-                "symbolAlign": {
-                  "horizontal": "center",
-                  "vertical": "center"
-                },
-                "textConfig": {
-                  "fontSize": 12,
-                  "offsetX": 0,
-                  "offsetY": 0,
-                  "textAlign": "center",
-                  "textBaseline": "middle"
-                }
-              }
-            },
-            "location": {
-              "mode": "auto"
-            },
-            "name": "Layer 1",
-            "tooltip": true,
-            "type": "markers"
-          }
-        ],
-        "tooltip": {
-          "mode": "details"
-        },
-        "view": {
-          "allLayers": true,
-          "dashboardVariable": false,
-          "id": "zero",
-          "lat": 0,
-          "lon": 0,
-          "noRepeat": false,
-          "zoom": 1
-        }
-      },
-      "pluginVersion": "13.0.1+security-01",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "efhfdmbjuoiyob"
-          },
-          "editorMode": "code",
-          "expr": "sum by (geoip_country_name) (count_over_time({job=\"nftables\"} |= \"NFT-DROP-INPUT\" | geoip src_ip from \"/var/lib/GeoIP/GeoLite2-City.mmdb\"[24h]))",
-          "legendFormat": "__auto",
-          "range": true,
-          "refId": "A"
-        }
-      ],
-      "title": "Top Source Countries",
-      "type": "geomap"
-    },
-    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -779,7 +656,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(count_over_time(\r\n  {job=\"syslog\"}\r\n  |= \"NFT-DROP-FORWARD\"\r\n  [1m]\r\n))",
+          "expr": "sum(count_over_time(\r\n  {job=\"syslog\"}\r\n  |~ `^\\S+ \\S+ kernel: .*NFT-DROP-FORWARD: IN=`\r\n  [1m]\r\n))",
           "legendFormat": "IoT \u2192 LAN blocked",
           "queryType": "range",
           "refId": "A"
@@ -791,7 +668,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(count_over_time(\r\n  {job=\"syslog\"}\r\n  |= \"NFT-DROP-INPUT\"\r\n  [1m]\r\n))",
+          "expr": "sum(count_over_time(\r\n  {job=\"syslog\"}\r\n  |~ `^\\S+ \\S+ kernel: .*NFT-DROP-INPUT: IN=`\r\n  [1m]\r\n))",
           "legendFormat": "INPUT drops",
           "queryType": "range",
           "refId": "B"
@@ -803,7 +680,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(count_over_time(\r\n  {job=\"syslog\"}\r\n  |= \"NFT-DROP-INPUT\"\r\n  |= \"MACPROTO=86dd\"\r\n  [1m]\r\n))",
+          "expr": "sum(count_over_time(\r\n  {job=\"syslog\"}\r\n  |~ `^\\S+ \\S+ kernel: .*NFT-DROP-INPUT: IN=`\r\n  |= \"MACPROTO=86dd\"\r\n  [1m]\r\n))",
           "legendFormat": "IPv6 link-local drops",
           "queryType": "range",
           "refId": "C"
@@ -1153,7 +1030,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(count_over_time({job=\"syslog\"} |= \"NFT-DROP-FORWARD\" [24h]))",
+          "expr": "sum(count_over_time({job=\"syslog\"} |~ `^\\S+ \\S+ kernel: .*NFT-DROP-FORWARD: IN=` [24h]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -1217,7 +1094,7 @@
           },
           "direction": "backward",
           "editorMode": "code",
-          "expr": "sum(count_over_time({job=\"syslog\"} |= \"NFT-DROP-INPUT\" [24h]))",
+          "expr": "sum(count_over_time({job=\"syslog\"} |~ `^\\S+ \\S+ kernel: .*NFT-DROP-INPUT: IN=` [24h]))",
           "queryType": "range",
           "refId": "A"
         }
@@ -2343,7 +2220,8 @@
       "pluginVersion": "13.0.1+security-01",
       "targets": [
         {
-          "refId": "A"
+          "refId": "A",
+          "expr": ""
         }
       ],
       "title": "MQTT Connections/Disconnections",
@@ -2361,7 +2239,8 @@
       "pluginVersion": "13.0.1+security-01",
       "targets": [
         {
-          "refId": "A"
+          "refId": "A",
+          "expr": ""
         }
       ],
       "title": "OTA Deployment Status",

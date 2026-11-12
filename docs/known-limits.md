@@ -52,8 +52,9 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
   modified, "tainted"), Loki, Unbound, NetBird DNS settings. The Pi cannot be fully rebuilt from Git.
 - **InfluxDB downsampling task** is exported from `/tmp/downsample.flux`, which does not survive a
   reboot, so it is missing from every InfluxDB export. Fix planned with the InfluxDB role.
-- **GeoIP on nftables drops** is extracted by Alloy but never stored (structured metadata is disabled
-  in Loki and the fields are not labels). It currently does nothing.
+- **No GeoIP on nftables drops** (removed in v0.1.109). Measured over 24 h behind the home router:
+  0 public IPv4 source among the dropped inbound packets (all LAN broadcast, multicast and NetBIOS).
+  It comes back only if a port is ever exposed to the Internet.
 - **Prometheus restarts on a rule change** (handler in `monitoring_binaries`) instead of reloading:
   pending alerts restart their `for:` delay.
 - **Dashboard web manifest** was fixed by hand on the Pi (icon paths). The next dashboard deployment
@@ -87,7 +88,8 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
   18 s after a restart (it took 3 to 4 minutes after boot with memberlist).
 - Mosquitto loads `conf.d/99-debug.conf` in production (client identifiers and noise in the logs).
 - Logs are written three times: journal (1.2G), rsyslog (rotated weekly, about 500M) and Loki.
-  Loki itself produces 56% of the syslog lines; `NFT-DROP-INPUT` is logged without a rate limit
+  Loki itself produces 56% of the syslog lines, including every query it serves (until v0.1.109 a
+  query containing NFT-DROP was counted as a drop); `NFT-DROP-INPUT` is logged without a rate limit
   (about 81,000 kernel lines in 6.5 days).
 - `homepi_devices` is scraped every hour: an outage of the API (unix socket since v0.1.90) can stay unseen up
   to an hour, and after each Prometheus restart the target stays `unknown` up to an hour.
@@ -117,5 +119,3 @@ The SunFounder case controller (`/usr/local/bin/pironman5`, pip-installed, venv 
 `/opt/pironman5`) runs as root with no `User=`: third-party code with full privileges. Its
 files are pinned by the hardening role; running it unprivileged (GPIO and I2C groups) is not
 done yet.
-
-- GeoIP (resolved in v0.1.108): the country, city and AS of dropped inbound sources are stored in Loki as structured metadata.

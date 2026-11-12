@@ -52,7 +52,6 @@ packages_present:
   - crowdsec
   - crowdsec-firewall-bouncer-nftables
   - dnsmasq
-  - geoipupdate
   - grafana
   - hostapd
   - influxdata-archive-keyring
@@ -104,6 +103,7 @@ packages_absent:
   - apt-transport-https
   - fio
   - ftp
+  - geoipupdate  # v0.1.109: GeoIP removed (no public source behind NAT)
   - isc-dhcp-server
   - nmap
   - snapd

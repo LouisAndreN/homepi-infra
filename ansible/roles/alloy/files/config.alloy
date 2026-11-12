@@ -144,47 +144,18 @@ loki.source.file "nftables" {
     job         = "nftables",
     host        = "homepi",
   }]
-  forward_to = [loki.process.nftables_geoip.receiver]
+  forward_to = [loki.process.nftables_drops.receiver]
 }
 
-loki.process "nftables_geoip" {
+loki.process "nftables_drops" {
   forward_to = [loki.write.loki_local.receiver]
 
+  // Only kernel lines: Loki writes every query it serves to syslog, so a line that merely contains
+  // the text NFT-DROP (a dashboard query) was stored and counted as a drop until v0.1.109.
   stage.match {
-    selector            = "{job=\"nftables\"} !~ \"NFT-DROP\""
+    selector            = "{job=\"nftables\"} !~ `^\\S+ \\S+ kernel: .*NFT-DROP-[A-Z]+: IN=`"
     action              = "drop"
-    drop_counter_reason = "not_an_nft_drop"
-  }
-
-  // GeoIP of dropped inbound sources, kept as structured metadata (not labels: no new streams).
-  // Country and city from GeoLite2-City, AS from GeoLite2-ASN (geoipupdate, account in SOPS).
-  stage.match {
-    selector = "{job=\"nftables\"} |= \"NFT-DROP-INPUT\""
-
-    stage.regex {
-      expression = "SRC=(?P<src_ip>(?:\\d{1,3}\\.){3}\\d{1,3})"
-    }
-
-    stage.geoip {
-      source  = "src_ip"
-      db      = "/var/lib/GeoIP/GeoLite2-City.mmdb"
-      db_type = "city"
-    }
-
-    stage.geoip {
-      source  = "src_ip"
-      db      = "/var/lib/GeoIP/GeoLite2-ASN.mmdb"
-      db_type = "asn"
-    }
-
-    stage.structured_metadata {
-      values = {
-        geoip_country_name                   = "",
-        geoip_city_name                      = "",
-        geoip_autonomous_system_number       = "",
-        geoip_autonomous_system_organization = "",
-      }
-    }
+    drop_counter_reason = "not_a_kernel_nft_drop"
   }
 }
 

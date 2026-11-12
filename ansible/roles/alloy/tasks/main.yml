@@ -1,19 +1,5 @@
 ---
 # Alloy: log collection to Loki. The label rules are documented at the top of files/config.alloy.
-- name: MaxMind account for geoipupdate (account and license from SOPS, root only)
-  ansible.builtin.template:
-    src: GeoIP.conf.j2
-    dest: /etc/GeoIP.conf
-    owner: root
-    group: root
-    mode: "0600"
-  no_log: true
-
-- name: GeoIP databases present before Alloy reads them (first download on a rebuilt Pi)
-  ansible.builtin.command:
-    cmd: geoipupdate
-    creates: /var/lib/GeoIP/GeoLite2-ASN.mmdb
-
 - name: Install the Alloy configuration (rejected by alloy validate if it is broken)
   ansible.builtin.copy:
     src: config.alloy
@@ -36,3 +22,13 @@
     name: alloy
     enabled: true
     state: started
+
+# GeoIP removed in v0.1.109 (no public source reaches the Pi behind NAT): remove what v0.1.108 installed.
+# Runs after the restart, so Alloy no longer reads the databases.
+- name: GeoIP account file and databases are absent
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: absent
+  loop:
+    - /etc/GeoIP.conf
+    - /var/lib/GeoIP
