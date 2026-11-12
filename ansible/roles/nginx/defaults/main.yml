@@ -22,6 +22,7 @@ nginx_apply_files:
 # Status codes measured through nginx before the change (2026-11-08)
 nginx_health_checks:
   - {path: /step/roots, status: "201"}
+  - {path: /step/intermediates.pem, status: "200"}
   - {path: /api/devices/esp32-0a171a18/status, status: "200"}
   - {path: /, status: "302"}
   - {path: /influx/api/v2/buckets, status: "403"}
