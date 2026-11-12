@@ -47,6 +47,18 @@ MQTT_USER       = "homepi-api"
 MQTT_PASS       = os.environ.get("API_MQTT_PASS", "")
 
 
+# One MQTT session per API instance (v0.1.112). Both instances connected as "homepi-api": each
+# connection closed the other one (19,989 takeovers in 24 h, about one per second), and the sensor
+# subscription, made once outside on_connect, was lost: last_seen and fw_version stopped updating.
+def _mqtt_client_id() -> str:
+    return "homepi-api-" + (os.environ.get("HOMEPI_API_SURFACE", "") or "dev")
+
+
+def _mqtt_subscribes() -> bool:
+    """Only the device instance (or a development run) updates the registry from telemetry."""
+    return os.environ.get("HOMEPI_API_SURFACE", "") in ("device", "")
+
+
 LED_PRESETS_PATH = Path("/var/lib/homepi/led_presets.json")
 
 logging.basicConfig(level=logging.INFO,
@@ -164,6 +176,16 @@ def on_sensor_message(client, userdata, msg):
         log.warning(f"on_sensor_message failed: {e}")
 
 
+def on_mqtt_connect(client, userdata, flags, reason_code, properties):
+    """Runs on every (re)connection: a clean session has no subscription, so it is made here."""
+    if reason_code.is_failure:
+        log.warning(f"MQTT connection refused: {reason_code}")
+        return
+    if _mqtt_subscribes():
+        client.subscribe("iot/+/sensors", qos=0)
+    log.info(f"MQTT connected as {_mqtt_client_id()}")
+
+
 def get_mqtt() -> mqtt.Client:
     global _mqtt_client
     with _mqtt_lock:
@@ -175,15 +197,15 @@ def get_mqtt() -> mqtt.Client:
             _mqtt_client.disconnect()
         except Exception:
             pass
-    c = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="homepi-api", protocol=mqtt.MQTTv5, )
+    c = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id=_mqtt_client_id(), protocol=mqtt.MQTTv5)
     c.username_pw_set(MQTT_USER, MQTT_PASS)
     c.on_message = on_sensor_message
+    c.on_connect = on_mqtt_connect
 
     connect_properties = Properties(PacketTypes.CONNECT)
     connect_properties.SessionExpiryInterval = 0
 
     c.connect(MQTT_HOST, MQTT_PORT, keepalive=60, clean_start=True, properties=connect_properties)
-    c.subscribe("iot/+/sensors", qos=0)
     c.loop_start()
     _mqtt_client = c
     return c
@@ -472,7 +494,7 @@ async def lifespan(app: FastAPI):
     # Warm up MQTT
     try:
         get_mqtt()
-        log.info("MQTT connected")
+        log.info("MQTT client started")
     except Exception as e:
         log.warning(f"MQTT not available: {e}")
     yield

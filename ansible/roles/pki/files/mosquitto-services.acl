@@ -4,6 +4,8 @@ user telegraf-bridge
 topic read iot/#
 
 user homepi-api
-topic write iot/#
-topic write homepi/#
+# Commands to devices and the operator alert topic only (v0.1.112): with write iot/# the API
+# account could publish telemetry in the name of any sensor.
+topic write iot/+/commands
+topic write homepi/admin/alerts
 topic read  iot/+/sensors
