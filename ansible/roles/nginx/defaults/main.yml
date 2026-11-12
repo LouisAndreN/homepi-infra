@@ -5,7 +5,6 @@ nginx_files:
   - {src: nginx.conf, dest: /etc/nginx/nginx.conf, owner: root, group: root, mode: "0644"}
   - {src: site-auth.homepi.internal, dest: /etc/nginx/sites-available/auth.homepi.internal, owner: root, group: root, mode: "0644"}
   - {src: snippet-ssl-homepi.conf, dest: /etc/nginx/snippets/ssl-homepi.conf, owner: root, group: root, mode: "0644"}
-  - {src: snippet-homepi-freeze-device-registration.conf, dest: /etc/nginx/snippets/homepi-freeze-device-registration.conf, owner: root, group: root, mode: "0644"}
 nginx_links:
   - {path: /etc/nginx/sites-enabled/homepi.internal, src: /etc/nginx/sites-available/homepi.internal}
   - {path: /etc/nginx/sites-enabled/auth.homepi.internal, src: /etc/nginx/sites-available/auth.homepi.internal}

@@ -45,3 +45,12 @@ groups:
         annotations:
           summary: "No device registry metrics: DeviceSilent cannot fire"
           description: "Prometheus scrapes /metrics/homepi on the device API every minute. Check: systemctl status homepi-api homepi-api.socket; curl -s http://127.0.0.1:3001/metrics/homepi | head"
+      # v0.1.114: a device with a valid LDevID that is not in the registry is recorded as pending
+      - alert: DevicePendingApproval
+        expr: homepi_devices_by_status{status="pending"} > 0
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} device(s) registered without being pre-announced: waiting for an operator"
+          description: "An unknown device presented a valid LDevID. Approve it (POST /api/admin/devices/<id>/confirm) only if you flashed it; otherwise revoke its certificate (step ca revoke) and suspend it."

@@ -114,6 +114,12 @@
           nginx change failed and was rolled back:
           {{ ansible_failed_result.msg | default('see the failed task above') }}
 
+# v0.1.114: the site no longer includes it (applied and reloaded above), so it can go
+- name: Retired device registration freeze snippet is absent
+  ansible.builtin.file:
+    path: /etc/nginx/snippets/homepi-freeze-device-registration.conf
+    state: absent
+
 - name: Other nginx files match the repository (check mode only)
   ansible.builtin.copy:
     src: "{{ item.src }}"

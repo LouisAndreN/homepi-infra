@@ -1,11 +1,12 @@
 # Known limits (v1)
 
 Each entry states what was observed, where, and what is still unknown.
-Last updated: 2026-10-28.
+Last updated: 2026-11-13 (security section rewritten from measurements).
 
 ## Security
-- **Unauthenticated device routes.** `POST /api/devices/x5c-enrolled` and `POST /api/devices/{id}/renew` accept requests from the whole IoT VLAN without authenticating the caller (source review). They answer 403 by default since commit bf3d15a and are blocked in nginx on the production host. Planned fix: client certificate on the notification call (firmware change).
-- **Secrets in the device-facing process.** `provisioning_api.py` reads the HMAC master key and the step-ca provisioner password at import. Both API processes (ports 8090 and 8091) run the same code as the same user, so the process reachable from the IoT VLAN holds them (file modes checked: both files are 0640 root:homepi-api and the API runs as homepi-api). Planned fix: split by role, separate users.
+- **Device registration (v0.1.114).** `x5c-enrolled` requires the device's LDevID as TLS client certificate (verified by nginx, CN equal to the device id); fingerprint and expiry are read from that certificate, not from the request. The registry decides: pre-announced or operator-approved devices become active, unknown devices are recorded `pending` (alert `DevicePendingApproval`, no MQTT rights), suspended devices stay refused. Firmware up to v2.3.2 calls the route without a client certificate and is refused (403, harmless) until the fleet runs firmware v2.4.0 (planned). `pre_announced` devices still get MQTT rights (`homepi-acl-sync`); to be removed once every device has registered.
+- **No CA secret in the API** since v0.1.60 (`test_no_ca_secret.py`); `master.key` and `ca_password` left the Pi in v0.1.83. Both API instances run as the same user with the same MQTT account, limited since v0.1.112 to writing commands and alerts and reading telemetry.
+- **Device firmware up to v2.3.2** (fix planned in firmware v2.4.0, effective only once flashed): three MQTT disconnects clear the enrolled flag, so any broker outage re-issues certificates and a revoked device simply re-enrolls with its IDevID; renewal calls the API route removed in v0.1.60, so the seven certificates (expiring 2027-10-14 to 2027-10-18) have no working renewal; the sensor build has no OTA rollback (an inline comment in `sdkconfig.defaults` voids the option) and marks every new image valid before any check.
 - **CA keys on an unencrypted partition.** The step-ca keys and password file live under `/etc/step-ca`, on the unencrypted root filesystem. Planned fix: move them to the LUKS volume or rotate the CA.
 - **Laptop disk encryption not verified.** The Manufacturer CA key and `master.key` sit unencrypted in WSL; the BitLocker status was not checked.
 - **Passwordless sudo for the deployment account.** `srvpi` runs sudo without a password, so whoever holds its SSH key is root on the Pi; the only barrier is the key passphrase. Not addressed in v1.
@@ -14,8 +15,8 @@ Last updated: 2026-10-28.
 - **OTA integrity, not authenticity.** The OTA hash comes from the same API that serves the file; there is no firmware signature and no secure boot.
 
 ## Reliability
-- **Enrollment storms.** After a Pi reboot every device re-enrolls (92 enrollments for 7 devices on 2026-10-14; 1327 enrollment events since June). Cause from the firmware source, not reproduced: three MQTT disconnects clear the enrolled flag. Each enrollment issues a one-year certificate that is never revoked. Planned fix: firmware change.
-- **Spurious auto-OTA.** 264 auto-OTA commands were logged: 252 to devices already on that version (`v2.3.2` reported, `2.3.2` in the catalog) and 2 ordering a downgrade to 2.1.0 (latest firmware was picked by upload date). Fixed in commit e07dde1; production runs the old code until the Ansible role deploys it.
+- **Enrollment storms.** After a Pi reboot every device re-enrolls (92 enrollments for 7 devices on 2026-10-14; 1327 enrollment events since June; 8 on 2026-11-11). Cause confirmed in the firmware source (`mqtt_app.c`): three MQTT disconnects clear the enrolled flag and reboot. Each enrollment issues a one-year certificate that is never revoked. Fix planned in firmware v2.4.0.
+- **Spurious auto-OTA** (264 commands, 252 to devices already on that version): version comparison fixed in e07dde1, and the automatic OTA after enrollment removed in v0.1.114.
 - **Staged rollout never confirmed.** Three deployments of 2.1.0 (June to July) were all aborted; the confirmation path has not run on real hardware.
 - **Collection gap of about 39 hours** around 2026-09-26 for all devices. The services were active and the Wi-Fi interface carried traffic; the journals were already purged; cause undetermined. No alert fires when no data arrives.
 - **Timestamps.** Before commit 76a1469, `datetime('now','utc')` stored UTC minus 9 hours on a JST host. Existing rows are not migrated.

@@ -27,13 +27,9 @@ import uuid
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from versions import same_version, version_key
-from fastapi import Depends
+from urllib.parse import unquote
+from cryptography import x509
 
-
-def _self_enrollment_enabled():
-    """Secure by default: these routes accept unauthenticated requests from the IoT VLAN."""
-    if os.environ.get("API_ALLOW_DEVICE_SELF_ENROLLMENT", "0") != "1":
-        raise HTTPException(403, "Disabled: unauthenticated device enrollment")
 
 # --- Config -------------------
 DB_PATH         = "/var/lib/homepi/devices.db"
@@ -571,87 +567,72 @@ class X5CEnrolledRequest(BaseModel):
     fw_version:       str
     capabilities:     list[str]
     hw_model:         str = "" # scan I2C ESP32 - source of truth
-    cert_fingerprint: str   # SHA256 du LDevID emis par step-ca
-    cert_expiry:      str   # ISO datetime
+    cert_fingerprint: str = ""  # ignored since v0.1.114: read from the verified client certificate
+    cert_expiry:      str = ""  # ignored since v0.1.114: read from the verified client certificate
 
 
 
-@app.post("/api/devices/x5c-enrolled", dependencies=[Depends(_self_enrollment_enabled)])
+# Registration (v0.1.114). The device calls this route with its LDevID as the TLS client certificate,
+# after enrollment, after each renewal and at boot. nginx verifies the certificate and passes it
+# ($ssl_client_escaped_cert): fingerprint and expiry are read from it, never from the request body.
+# The registry decides: a pre-announced (or operator-approved) device becomes active; an unknown
+# device is recorded as pending and refused until an operator approves it; a suspended device stays
+# suspended. Only active, approved and pre_announced devices get MQTT rights (homepi-acl-sync).
+# The automatic OTA that followed every enrollment is gone: OTA goes through staged deployments only.
+REGISTRABLE = ("pre_announced", "approved", "active")
+
+
+def _client_certificate(request: Request) -> x509.Certificate:
+    pem = unquote(request.headers.get("X-SSL-Client-Cert", ""))
+    if not pem:
+        raise HTTPException(403, "Client certificate required")
+    try:
+        return x509.load_pem_x509_certificate(pem.encode())
+    except ValueError:
+        raise HTTPException(403, "Unreadable client certificate")
+
+
+@app.post("/api/devices/x5c-enrolled")
 async def x5c_enrolled(req: X5CEnrolledRequest, request: Request):
-    """
-    Called by ESP32 after enrollment X5C succedded.
-    Device has already its LDevID signed by step-ca - HMAC not needed.
-    We check only if device_id matches with expected format.
-    """
+    """Registration of a device that holds a valid LDevID (see the comment above)."""
     _require_client_identity(request, req.device_id)
-    if not req.device_id.startswith("esp32-"):
-        raise HTTPException(400, "Invalid device_id format")
-
-    hw_model    = req.hw_model or "unknown"
-    chip_target = req.chip_target
-
+    cert = _client_certificate(request)
+    fingerprint = cert.fingerprint(hashes.SHA256()).hex()
+    expiry = cert.not_valid_after_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+    hw_model = req.hw_model or "unknown"
+    fields = (req.chip_id, req.chip_target, hw_model, req.fw_version, json.dumps(req.capabilities),
+              fingerprint, expiry)
     with db() as conn:
-        conn.execute("""
-            INSERT INTO devices
-              (device_id, chip_id, chip_target, hw_model, fw_version, capabilities, status,
-               cert_fingerprint, cert_expiry, enrolled_at, last_seen,
-               confirmed_by)
-            VALUES (?, ?, ?, ?, ?, ?, 'active', ?, ?, strftime('%Y-%m-%dT%H:%M:%SZ','now'),
-                    strftime('%Y-%m-%dT%H:%M:%SZ','now'), 'zero-touch')
-            ON CONFLICT(device_id) DO UPDATE SET
-              chip_target      = excluded.chip_target,
-              hw_model         = excluded.hw_model,
-              fw_version       = excluded.fw_version,
-              capabilities     = excluded.capabilities,
-              status           = 'active',
-              cert_fingerprint = excluded.cert_fingerprint,
-              cert_expiry      = excluded.cert_expiry,
-              enrolled_at      = excluded.enrolled_at,
-              last_seen        = excluded.last_seen,
-              confirmed_by     = 'zero-touch'
-         """, (req.device_id, req.chip_id, chip_target, hw_model, req.fw_version,
-               json.dumps(req.capabilities),
-               req.cert_fingerprint, req.cert_expiry))
-
-    audit(req.device_id, "zero_touch_enrolled",
-          f"chip={req.chip_id} hw={hw_model} fw={req.fw_version}")
-
-
-
-    # --- OTA auto if most recent firmware available ----------------------
-    latest = get_latest_firmware(chip_target)
-    if latest and not same_version(latest["version"], req.fw_version):
-        log.info(
-            f"Auto-OTA: {req.device_id} "
-            f"{req.fw_version} -> {latest['version']}"
-        )
-        def _delayed_ota():
-            time.sleep(60)
-            payload = json.dumps({
-                "type":    "ota",
-                "version": latest["version"],
-                "url":     latest["url"],
-                "sha256":  latest["sha256"],
-            })
-            try:
-                get_mqtt().publish(
-                    f"iot/{req.device_id}/commands",
-                    payload, qos=1, retain=False)
-                audit(req.device_id, "auto_ota_sent",
-                      f"{req.fw_version}->{latest['version']}")
-            except Exception as e:
-                log.error(f"Auto-OTA failed: {e}")
-        threading.Thread(target=_delayed_ota, daemon=True).start()
-
-    # ---------------------------------------------------------------
-
+        row = conn.execute("SELECT status FROM devices WHERE device_id=?", (req.device_id,)).fetchone()
+        before = row["status"] if row else None
+        if before is None:
+            conn.execute("""
+                INSERT INTO devices (device_id, chip_id, chip_target, hw_model, fw_version, capabilities,
+                                     cert_fingerprint, cert_expiry, status, last_seen)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', strftime('%Y-%m-%dT%H:%M:%SZ','now'))
+            """, (req.device_id,) + fields)
+            after = "pending"
+        elif before in REGISTRABLE:
+            conn.execute("""
+                UPDATE devices SET chip_id=?, chip_target=?, hw_model=?, fw_version=?, capabilities=?,
+                       cert_fingerprint=?, cert_expiry=?, status='active',
+                       enrolled_at  = CASE WHEN status='active' THEN enrolled_at
+                                           ELSE strftime('%Y-%m-%dT%H:%M:%SZ','now') END,
+                       confirmed_by = CASE WHEN status='active' THEN confirmed_by
+                                           WHEN status='approved' THEN 'operator' ELSE 'zero-touch' END,
+                       last_seen    = strftime('%Y-%m-%dT%H:%M:%SZ','now')
+                WHERE device_id=?
+            """, fields + (req.device_id,))
+            after = "active"
+        else:
+            after = before
+    event = {None: "registration_refused_unknown", "active": "registration_refreshed"}.get(before, "registered")
+    if before is not None and before not in REGISTRABLE:
+        event = "registration_refused_" + before
+    audit(req.device_id, event, f"{before}->{after} fw={req.fw_version} hw={hw_model} cert={fingerprint[:16]} exp={expiry}")
+    if after != "active":
+        raise HTTPException(403, f"Device {after}: operator approval required")
     return {"status": "active", "device_id": req.device_id, "hw_model": hw_model}
-
-
-
-
-
-
 
 
 def _client_cn(dn: str) -> str:
