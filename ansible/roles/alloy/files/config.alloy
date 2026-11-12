@@ -55,9 +55,25 @@ local.file_match "varlog" {
   ]
 }
 
+// Every file line keeps the time it was written, not the time Alloy read it: after the 2026-11-12
+// Alloy outage the backlog of 19:30-20:02 was stored at 20:10 (catch-up time), which breaks any
+// timeline. rsyslog writes an RFC 3339 prefix with microseconds; auditd writes msg=audit(<unix>:<n>).
+loki.process "varlog_ts" {
+  forward_to = [loki.write.loki_local.receiver]
+
+  stage.regex {
+    expression = `^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}[+-]\d{2}:\d{2}) `
+  }
+
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
+  }
+}
+
 loki.source.file "varlog" {
   targets    = local.file_match.varlog.targets
-  forward_to = [loki.write.loki_local.receiver]
+  forward_to = [loki.process.varlog_ts.receiver]
 }
 
 // =============================
@@ -72,6 +88,15 @@ local.file_match "auditd" {
 // The full audit record is kept as the log line (it was replaced by the exe path before).
 loki.process "auditd_parser" {
   forward_to = [loki.write.loki_local.receiver]
+
+  stage.regex {
+    expression = `msg=audit\((?P<ts>\d+\.\d+):`
+  }
+
+  stage.timestamp {
+    source = "ts"
+    format = "Unix"
+  }
 
   stage.regex {
     expression = `key="(?P<key>[^"]+)"`
@@ -157,6 +182,15 @@ loki.process "nftables_drops" {
     selector            = "{job=\"nftables\"} !~ \"^[^ ]+ [^ ]+ kernel: .*NFT-DROP-[A-Z]+: IN=\""
     action              = "drop"
     drop_counter_reason = "not_a_kernel_nft_drop"
+  }
+
+  stage.regex {
+    expression = `^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}[+-]\d{2}:\d{2}) `
+  }
+
+  stage.timestamp {
+    source = "ts"
+    format = "RFC3339Nano"
   }
 }
 

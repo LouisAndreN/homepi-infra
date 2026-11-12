@@ -23,7 +23,10 @@
   register: dns_unbound_check
   changed_when: false
   check_mode: false
-  failed_when: dns_unbound_check.stdout | length == 0
+  # Three tries 5 s apart: one empty answer during a cache refresh stopped the v0.1.111 precheck
+  until: dns_unbound_check.stdout | length > 0
+  retries: 3
+  delay: 5
 
 - name: Find the NetBird client configuration
   ansible.builtin.stat:
