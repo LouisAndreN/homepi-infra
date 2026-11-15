@@ -129,6 +129,28 @@ Only new versions are replicated: the copy fills with the next nightly archives.
   no MFA device, no signing certificate left. Removal needs an explicit go.
 - Budget `homepi-monthly`: 10 USD, e-mail at 50 % actual and 100 % forecast (address from SOPS).
 
+## D2c: the Pi's security logs off the host
+
+Why: the C1 decision. Logs are not backed up (a rebuilt Pi starts with an empty Loki); the ones
+that matter for security leave the host as they are written, into an account the Pi cannot touch.
+
+- `homepi-log-ship` (role aws_edge), every 5 minutes: journal entries since the last shipped one
+  (cursor), from crowdsec, the bouncer, step-ca, the device API, Authelia, nginx, GitOps, NetBird,
+  and the identifiers sshd, sudo, su, systemd-logind; ten fields kept; gzipped JSON lines put with
+  their SHA-256 under `pi/YYYY/MM/DD/`. The cursor advances only after S3 accepted the object.
+  First run: the last hour. auditd is not shipped until its volume is reduced.
+- Role `homepi-edge-logs` (homepi, Roles Anywhere, same certificate): `s3:PutObject` on `pi/*` of the
+  log-archive bucket only.
+- Bucket `homepi-pi-logs-[log-archive]` (terraform/aws/logging): Object Lock GOVERNANCE 30 days, one
+  year expiry, written only by that role, every other homepi principal denied.
+- Alerts: `PiLogShipFailing` (30 min without a successful run), `PiLogShipStale` (timer stopped for
+  30 min: the first thing an intruder would do), `PiLogShipMetricsMissing`.
+
+Order: SOPS `log_archive_account_id`; homepi root (role, profile update); logging root (bucket); then
+the release that installs the shipper. What it proves and what it does not: a root attacker can stop
+the shipping (and is alerted on within about 35 minutes) but cannot change or delete what already
+left the host; entries written in the last 5 minutes before the stop may never leave.
+
 ## Next
 
 D2b organization trail into `log-archive` (Object Lock GOVERNANCE 7 days, then GOVERNANCE 90 days), D3 `backup-vault` replica with replication from `homepi`,

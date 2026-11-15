@@ -1,0 +1,130 @@
+#!/opt/homepi-aws/venv/bin/python3
+"""Ship the security journal entries of the Pi off the host (roadmap D2c), every 5 minutes.
+
+Reads the journal entries written since the last shipped one (journalctl cursor), keeps a small set
+of fields, gzips them as JSON lines and puts them into the log-archive bucket with the write-only
+role homepi-edge-logs. Object Lock keeps every shipped object for 30 days: a root attacker can stop
+this service, not erase what already left the host. The cursor advances only after S3 accepted the
+object (same SHA-256), so a failed run is retried from the same point. No entry: nothing is sent.
+Metrics go to node_exporter (homepi_logship_*); on failure the time of the last success is kept.
+"""
+import base64
+import gzip
+import hashlib
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+os.environ["AWS_CONFIG_FILE"] = "/etc/homepi-aws/config"
+import boto3  # noqa: E402  (imported after AWS_CONFIG_FILE is set)
+
+STATE_DIR = Path("/var/lib/homepi-log-ship")
+CURSOR = STATE_DIR / "cursor"
+BUCKET_FILE = Path("/etc/homepi-aws/logs-bucket")
+METRICS = Path("/var/lib/node_exporter/textfile_collector/homepi_logship.prom")
+
+# Security-relevant sources only (auditd is excluded until its volume is reduced)
+UNITS = [
+    "crowdsec.service", "crowdsec-firewall-bouncer.service", "step-ca.service",
+    "homepi-api.service", "homepi-api-admin.service", "authelia.service", "nginx.service",
+    "homepi-gitops@apply.service", "homepi-gitops@check.service", "netbird.service",
+]
+IDENTIFIERS = ["sshd", "sudo", "su", "systemd-logind"]
+FIELDS = [
+    "__REALTIME_TIMESTAMP", "__CURSOR", "_HOSTNAME", "_SYSTEMD_UNIT", "SYSLOG_IDENTIFIER",
+    "PRIORITY", "_PID", "_UID", "_COMM", "MESSAGE",
+]
+FIRST_RUN_SINCE = "-1h"
+MAX_ENTRIES = 200000
+
+
+def last_success():
+    try:
+        text = METRICS.read_text(encoding="utf-8")
+    except OSError:
+        return "0"
+    match = re.search(r"^homepi_logship_last_success_timestamp_seconds (\S+)$", text, re.M)
+    return match.group(1) if match else "0"
+
+
+def write_metrics(success, entries=0, size=0):
+    now = int(time.time())
+    lines = [
+        "homepi_logship_success %d" % success,
+        "homepi_logship_last_success_timestamp_seconds %s" % (now if success else last_success()),
+        "homepi_logship_last_run_timestamp_seconds %d" % now,
+        "homepi_logship_entries %d" % entries,
+        "homepi_logship_bytes %d" % size,
+    ]
+    tmp = METRICS.with_name(".tmp.logship.%d" % os.getpid())
+    tmp.write_text("".join(line + "\n" for line in lines), encoding="utf-8")
+    tmp.chmod(0o644)
+    tmp.replace(METRICS)
+
+
+def fail(message):
+    write_metrics(0)
+    sys.exit("homepi-log-ship: FAILED: %s" % message)
+
+
+def read_journal(cursor_file):
+    matches = ["_SYSTEMD_UNIT=%s" % u for u in UNITS] + ["+"] + ["SYSLOG_IDENTIFIER=%s" % i for i in IDENTIFIERS]
+    args = ["journalctl", "--no-pager", "--output=json", "--cursor-file=%s" % cursor_file]
+    if not CURSOR.exists():
+        args.append("--since=%s" % FIRST_RUN_SINCE)
+    proc = subprocess.run(args + matches, capture_output=True, text=True, timeout=120)
+    if proc.returncode != 0:
+        fail("journalctl: %s" % proc.stderr.strip()[:200])
+    entries = []
+    for line in proc.stdout.splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        entries.append({k: record[k] for k in FIELDS if k in record})
+        if len(entries) >= MAX_ENTRIES:
+            break
+    return entries
+
+
+def main():
+    STATE_DIR.mkdir(mode=0o700, exist_ok=True)
+    work = STATE_DIR / ("cursor.next.%d" % os.getpid())
+    if CURSOR.exists():
+        shutil.copy2(CURSOR, work)
+    try:
+        entries = read_journal(work)
+        if not entries:
+            work.unlink(missing_ok=True)
+            write_metrics(1)
+            print("homepi-log-ship: nothing new")
+            return
+        # With MAX_ENTRIES reached, resume after the last entry kept, not after the last one read
+        if len(entries) >= MAX_ENTRIES:
+            work.write_text(entries[-1]["__CURSOR"], encoding="utf-8")
+        body = gzip.compress("".join(json.dumps(e, ensure_ascii=False) + "\n" for e in entries).encode("utf-8"))
+        digest = hashlib.sha256(body).digest()
+        stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime())
+        key = "pi/%s/%s-%s.jsonl.gz" % (time.strftime("%Y/%m/%d", time.gmtime()), stamp, socket.gethostname())
+        try:
+            bucket = BUCKET_FILE.read_text(encoding="utf-8").strip()
+            s3 = boto3.Session(profile_name="edge-logs").client("s3")
+            s3.put_object(Bucket=bucket, Key=key, Body=body, ContentType="application/x-ndjson",
+                          ContentEncoding="gzip", ChecksumAlgorithm="SHA256",
+                          ChecksumSHA256=base64.b64encode(digest).decode())
+        except Exception as error:  # credentials, network and AWS errors are all reported the same way
+            fail("%s: %s" % (type(error).__name__, str(error)[:200]))
+        work.replace(CURSOR)
+        write_metrics(1, len(entries), len(body))
+        print("homepi-log-ship: shipped %d entries (%d bytes) as %s" % (len(entries), len(body), key))
+    finally:
+        work.unlink(missing_ok=True)
+
+
+if __name__ == "__main__":
+    main()

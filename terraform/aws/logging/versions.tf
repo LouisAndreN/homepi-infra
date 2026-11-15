@@ -32,6 +32,15 @@ variable "log_archive_account_id" {
   }
 }
 
+variable "homepi_account_id" {
+  type        = string
+  description = "Writer of the Pi logs bucket (role homepi-edge-logs); looked up by name by awsmgmt."
+  validation {
+    condition     = can(regex("^[0-9]{12}$", var.homepi_account_id))
+    error_message = "Run awsmgmt first."
+  }
+}
+
 locals {
   tags = {
     project    = "homepi"

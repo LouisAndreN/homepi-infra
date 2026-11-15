@@ -147,6 +147,54 @@
     daemon_reload: "{{ aws_edge_offsite_units is changed }}"
   when: not (ansible_check_mode and aws_edge_offsite_units is changed)
 
+# Security logs off the host (roadmap D2c): every 5 minutes into log-archive, write-only role
+- name: Install the name of the Pi logs bucket (holds the log-archive account ID)
+  vars:
+    aws_edge_secrets: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/aws.sops.yaml') | from_yaml }}"
+  no_log: true
+  ansible.builtin.copy:
+    content: "homepi-pi-logs-{{ aws_edge_secrets.log_archive_account_id }}\n"
+    dest: "{{ aws_edge_dir }}/logs-bucket"
+    owner: root
+    group: root
+    mode: "0600"
+
+- name: Create the log shipping state directory (journal cursor)
+  ansible.builtin.file:
+    path: /var/lib/homepi-log-ship
+    state: directory
+    owner: root
+    group: root
+    mode: "0700"
+
+- name: Install the log shipping script
+  ansible.builtin.copy:
+    src: homepi-log-ship
+    dest: /usr/local/sbin/homepi-log-ship
+    owner: root
+    group: root
+    mode: "0750"
+
+- name: Install the log shipping units
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop:
+    - homepi-log-ship.service
+    - homepi-log-ship.timer
+  register: aws_edge_logship_units
+
+- name: Enable the log shipping timer
+  ansible.builtin.systemd:
+    name: homepi-log-ship.timer
+    enabled: true
+    state: started
+    daemon_reload: "{{ aws_edge_logship_units is changed }}"
+  when: not (ansible_check_mode and aws_edge_logship_units is changed)
+
 - name: Install the dead man's switch relay
   ansible.builtin.copy:
     src: homepi-heartbeat-relay

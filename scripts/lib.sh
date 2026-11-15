@@ -64,6 +64,8 @@ awsenv() {
   # The backup-vault account ID (D3): optional, absent until the vault exists
   TF_VAR_backup_vault_account_id=$(sops -d --extract '["backup_vault_account_id"]' "$root/ansible/secrets/aws.sops.yaml" 2> /dev/null || true)
   export TF_VAR_backup_vault_account_id
+  TF_VAR_log_archive_account_id=$(sops -d --extract '["log_archive_account_id"]' "$root/ansible/secrets/aws.sops.yaml" 2> /dev/null || true)
+  export TF_VAR_log_archive_account_id
   # Hand Terraform the exact credentials the CLI just validated: its SDK refreshes the SSO token on its
   # own and failed with InvalidGrantException while the CLI cache still worked (2026-11-16)
   eval "$(aws configure export-credentials --format env)" || { echo "STOPPED: cannot export the session credentials"; return 1; }

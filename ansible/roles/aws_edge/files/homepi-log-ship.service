@@ -1,0 +1,10 @@
+# Managed by Ansible (role aws_edge)
+[Unit]
+Description=HomePi: ship the security journal entries to log-archive
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-log-ship
+TimeoutStartSec=5min

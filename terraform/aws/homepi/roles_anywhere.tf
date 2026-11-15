@@ -69,7 +69,7 @@ resource "aws_rolesanywhere_profile" "edge_writer" {
   name    = "homepi-edge-writer"
   enabled = true
   # One profile for the Pi's roles; named after the first one (renaming it would replace it)
-  role_arns        = [aws_iam_role.edge_writer.arn, aws_iam_role.edge_heartbeat.arn]
+  role_arns        = concat([aws_iam_role.edge_writer.arn, aws_iam_role.edge_heartbeat.arn], aws_iam_role.edge_logs[*].arn)
   duration_seconds = 3600
 }
 
