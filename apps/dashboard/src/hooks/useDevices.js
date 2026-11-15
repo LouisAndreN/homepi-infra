@@ -43,20 +43,12 @@ export function useDevices(refreshInterval = 15000) {
     await fetch_()
   }, [fetch_])
 
-  const sendOTA = useCallback(async (deviceId, { version, url, checksum }) => {
-    const r = await fetch(`${API_BASE}/api/admin/devices/${deviceId}/ota`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ version, url, checksum, rollback_version: 'auto' }),
-    })
-    if (!r.ok) throw new Error(`HTTP ${r.status}`)
-    return r.json()
-  }, [])
+  // v0.1.120: no manual OTA (unsigned): updates go through rollouts of signed images
 
   const counts = devices.reduce((a, d) => {
     a[d.status] = (a[d.status] || 0) + 1
     return a
   }, {})
 
-  return { devices, loading, error, lastSync, refresh, approve, suspend, sendOTA, counts }
+  return { devices, loading, error, lastSync, refresh, approve, suspend, counts }
 }

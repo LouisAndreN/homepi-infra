@@ -29,6 +29,29 @@ groups:
         annotations:
           summary: "The MQTT broker refused {{ $value }} client certificates in the last hour"
           description: "A device with a revoked, expired or foreign certificate is retrying, or the CRL rejects valid clients. Check: grep 'certificate verify failed' /var/log/mosquitto/mosquitto.log | tail; the DeviceSilent alerts tell which device; docs/runbooks/pki.md."
+      # v0.1.120: signed OTA rollouts (apps/api/rollout.py, docs/runbooks/ota.md)
+      - alert: OtaRolloutAborted
+        expr: homepi_rollouts_aborted{window="24h"} > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} OTA rollout(s) aborted in the last 24 hours"
+          description: "A device refused the image, rolled it back or went silent: the next phases were not sent. Check: the dashboard Fleet tab or GET /api/admin/rollouts (reason per device)."
+      - alert: OtaRolloutStuck
+        expr: time() - homepi_rollout_started_timestamp_seconds > 6 * 3600
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "OTA rollout of {{ $labels.project }} {{ $labels.version }} in progress for more than 6 hours (phase {{ $labels.phase }})"
+          description: "homepi-ota-rollout.timer moves rollouts every minute; a phase lasts at most the timeout plus the soak time. Check: systemctl status homepi-ota-rollout.timer; journalctl -u homepi-ota-rollout -n 20."
+      - alert: OtaCommandRefused
+        expr: homepi_ota_failed_reports{window="24h"} > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} OTA command(s) refused or failed on a device in the last 24 hours"
+          description: "Firmware v2.4.1+ refuses any OTA command that is not signed by the OTA key, not newer, or for another project or chip. Outside a rollout, someone or something published an OTA command. Check: SELECT * FROM ota_events ORDER BY id DESC LIMIT 5 (devices.db), and the audit log."
       - alert: DeviceMetricsStale
         expr: (time() - homepi_device_metrics_last_run_timestamp_seconds > 1800) or (homepi_device_metrics_success == 0) or absent(homepi_device_metrics_last_run_timestamp_seconds)
         for: 15m

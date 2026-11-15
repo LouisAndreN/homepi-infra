@@ -8,7 +8,7 @@ Routes :
   /api/admin/*     -> LAN (Dashboard), Authelia via Nginx
 """
 
-import hashlib, json, logging, os, sqlite3, time, threading, shutil
+import base64, hashlib, json, logging, os, re, sqlite3, time, threading, shutil
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Optional
@@ -26,7 +26,8 @@ import uuid
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from versions import same_version, version_key
+from versions import same_version
+import rollout
 from urllib.parse import unquote
 from cryptography import x509
 
@@ -174,6 +175,13 @@ def on_sensor_message(client, userdata, msg):
             payload = json.loads(msg.payload)
             if isinstance(payload, dict):
                 fw = payload.get("fw") or None
+                # v0.1.120: a refused or failed OTA (firmware v2.4.1+) stops the rollout of that device
+                if parts[2] == "status" and payload.get("type") == "ota_failed":
+                    with db() as conn:
+                        conn.execute("INSERT INTO ota_events (device_id, reason, version, detail) VALUES (?, ?, ?, ?)",
+                                     (device_id, str(payload.get("reason", "unknown"))[:40],
+                                      str(payload.get("version", ""))[:32], str(payload.get("detail", ""))[:96]))
+                    audit(device_id, "ota_failed", f"{payload.get('reason')} {payload.get('version', '')} running={payload.get('running', '')}")
         except ValueError:
             pass
         now = time.monotonic()
@@ -232,215 +240,6 @@ def get_mqtt() -> mqtt.Client:
     return c
 
 # --- step-ca helpers --------------------
-
-# --- Firmware helpers --------------------------
-def get_latest_firmware(chip_target: str) -> dict | None:
-    """
-    Direct lookup by chip_target.
-    Firmware is universal - only one binary by chip target.
-    hw_model is managed by ESP32 via I2C table dispatch.
-    """
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT version, chip_target, sha256, url, hw_model, notes
-            FROM firmware_catalog
-            WHERE chip_target = ?
-        """, (chip_target,)).fetchall()
-    return dict(max(rows, key=lambda r: version_key(r["version"]))) if rows else None
-
-# --- Staged Rollout ------------------------------
-
-def _send_ota_to_device(device_id: str, firmware: dict, deployment_id: int, phase: int):
-    payload = json.dumps({
-        "type":    "ota",
-        "version": firmware["version"],
-        "url":     firmware["url"],
-        "sha256":  firmware["sha256"],
-    })
-    try:
-        get_mqtt().publish(
-            f"iot/{device_id}/commands", payload, qos=1, retain=False)
-        with db() as conn:
-            conn.execute("""
-                UPDATE ota_deployment_devices
-                SET status='sent', sent_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
-                WHERE deployment_id=? AND device_id=?
-            """, (deployment_id, device_id))
-    except Exception as e:
-        log.error(f"OTA send failed for {device_id}: {e}")
-
-def _check_phase_and_advance(deployment_id: int, phase: int, version: str, chip_target:str):
-    """
-    Check every devices of phase are on same version.
-    If rollback detected -> abort. Otherwise -> next phase.
-    """
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT dd.device_id, dev.fw_version
-            FROM ota_deployment_devices dd
-            JOIN devices dev ON dd.device_id = dev.device_id
-            WHERE dd.deployment_id = ? AND dd.phase = ?
-        """, (deployment_id, phase)).fetchall()
-
-    rolled_back = [r for r in rows if not same_version(r["fw_version"], version)]
-    confirmed = [r for r in rows if same_version(r["fw_version"], version)]
-
-    if rolled_back:
-        log.error(
-            f"Deployment {deployment_id} phase {phase}: "
-            f"{len(rolled_back)} device(s) rolled back -> ABORT"
-        )
-        with db() as conn:
-            conn.execute(
-                "UPDATE ota_deployments SET status='aborted' WHERE id=?",
-                (deployment_id,)
-            )
-            conn.execute("""
-                UPDATE ota_deployment_devices SET status='rolled_back'
-                WHERE deployment_id=? AND phase=?
-            """, (deployment_id, phase))
-        try:
-            get_mqtt().publish("homepi/admin/alerts", json.dumps({
-                "type":              "ota_aborted",
-                "deployment_id":     deployment_id,
-                "phase":             phase,
-                "version":           version,
-                "rolled_back":       [r["device_id"] for r in rolled_back],
-             }), qos=1)
-        except Exception:
-            pass
-        audit("system", "ota_aborted",
-              f"dep={deployment_id} phase={phase} v={version} "
-              f"rolled_back={[r['device_id'] for r in rolled_back]}")
-        return
-
-    # Phase OK
-    with db() as conn:
-        conn.execute("""
-            UPDATE ota_deployment_devices
-            SET status='confirmed', confirmed_at=strftime('%Y-%m-%dT%H:%M:%SZ','now')
-            WHERE deployment_id=? AND phase=?
-        """, (deployment_id, phase))
-    log.info(
-        f"Deployment {deployment_id} phase {phase} OK"
-        f"({len(confirmed)} devices confirmed)"
-    )
-    audit("system", "ota_phase_confirmed",
-          f"dep={deployment_id} phase={phase} v={version}")
-
-    # Next phase ?
-    next_phase = phase + 1
-    with db() as conn:
-        has_next = conn.execute("""
-            SELECT COUNT(*) as n FROM ota_deployment_devices
-            WHERE deployment_id=? AND phase=?
-        """, (deployment_id, next_phase)).fetchone()["n"]
-
-    if has_next > 0:
-        _run_phase(deployment_id, next_phase, version, chip_target)
-    else:
-        with db() as conn:
-            conn.execute(
-                "UPDATE ota_deployments SET status='success' WHERE id=?",
-                (deployment_id,)
-            )
-        log.info(f"Deployment {deployment_id} complete OK all on v{version}")
-        audit("system", "ota_deployment_success",
-              f"dep={deployment_id} v={version}")
-
-
-def _run_phase(deployment_id: int, phase: int,
-               version: str, chip_target: str):
-    """Send OTA to all devices of this phase."""
-    firmware = get_latest_firmware(chip_target)
-    if not firmware:
-        log.error(f"Firmware not found for {chip_target}")
-        return
-
-    with db() as conn:
-        devices = conn.execute("""
-            SELECT device_id FROM ota_deployment_devices
-            WHERE deployment_id=? AND phase=?
-        """, (deployment_id, phase)).fetchall()
-
-    wait_minutes = {1: 30, 2: 60, 3: 0}[phase]
-
-    for row in devices:
-        _send_ota_to_device(row["device_id"], firmware, deployment_id, phase)
-
-    if wait_minutes > 0:
-        def check():
-            time.sleep(wait_minutes * 60)
-            _check_phase_and_advance(
-                deployment_id, phase, version, chip_target)
-        threading.Thread(
-            target=check, daemon=True,
-            name=f"ota-check-{deployment_id}-p{phase}"
-        ).start()
-        log.info(
-            f"Deployment {deployment_id} phase {phase}"
-            f"check in {wait_minutes}min"
-        )
-
-def start_staged_deployment(version: str, chip_target: str, created_by: str = "auto"):
-    """
-    Staged rollout AWS/Azure style :
-    Phase 1 : 1 canary (device le plus ancien = le plus stable)
-    Phase 2 : 25% de la flotte
-    Phase 3 : reste (100%)
-
-    Automatic rollback detected via fw_version MQTT -> abort if fail.
-    """
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT device_id, fw_version FROM devices
-            WHERE status='active' AND chip_target=?
-            ORDER BY enrolled_at ASC
-        """, (chip_target,)).fetchall()
-    rows = [r for r in rows if not same_version(r["fw_version"], version)]
-
-    if not rows:
-        log.info(f"All {chip_target} devices already on v{version}")
-        return None
-
-    device_ids = [r["device_id"] for r in rows]
-    n = len(device_ids)
-
-    # Repartition
-    canary  = device_ids[:1]
-    quarter = device_ids[1:max(2, n // 4)]
-    rest    = device_ids[max(2, n // 4):]
-    phases  = [(1, canary), (2, quarter), (3, rest)]
-
-    with db() as conn:
-        cur = conn.execute(
-            "INSERT INTO ota_deployments (version, chip_target, created_by) "
-            "VALUES (?,?,?)",
-            (version, chip_target, created_by)
-        )
-        dep_id = cur.lastrowid
-        for phase_num, phase_devices in phases:
-            for did in phase_devices:
-                conn.execute("""
-                    INSERT INTO ota_deployment_devices
-                      (deployment_id, device_id, phase)
-                    VALUES (?,?,?)
-                """, (dep_id, did, phase_num))
-
-    log.info(
-        f"Deployment {dep_id} started: v{version} "
-        f"canary={len(canary)} "
-        f"phase2={len(quarter)} "
-        f"phase3={len(rest)}"
-    )
-    audit("system", "ota_deployment_started",
-          f"dep={dep_id} v={version} "
-          f"n={n} canary={canary[0] if canary else 'none'}")
-
-    _run_phase(dep_id, 1, version, chip_target)
-    return dep_id
-
-
 
 # --- Pairing sessions (in-memory) ------------------
 # {session_id: {device_id, phase, remaining, queues[]}}
@@ -512,6 +311,8 @@ async def lifespan(app: FastAPI):
             CREATE INDEX IF NOT EXISTS idx_dep_devices
               ON ota_deployment_devices(deployment_id, phase, status);
         """)
+        # v0.1.120: signed images, rollouts and OTA failure reports (rollout.py); devices.project
+        rollout.ensure_schema(conn)
     # Warm up MQTT
     try:
         get_mqtt()
@@ -573,6 +374,7 @@ class X5CEnrolledRequest(BaseModel):
     hw_model:         str = "" # scan I2C ESP32 - source of truth
     cert_fingerprint: str = ""  # ignored since v0.1.114: read from the verified client certificate
     cert_expiry:      str = ""  # ignored since v0.1.114: read from the verified client certificate
+    project:          str = ""  # v2.4.1+: the image's project; a rollout targets devices by project
 
 
 
@@ -629,16 +431,18 @@ async def x5c_enrolled(req: X5CEnrolledRequest, request: Request):
     if cert.serial_number in _revoked_serials():
         audit(req.device_id, "registration_refused_revoked", f"cert={fingerprint[:16]} exp={expiry}")
         raise HTTPException(403, "Client certificate revoked")
+    # A device only ever moves to a newer certificate (renewal, re-enrollment). An older one is a
+    # leftover from before (v2.3.x re-enrolled at every broker outage): it must not replace the
+    # registered certificate, revoked or not.
     with db() as conn:
-        row = conn.execute("SELECT status, cert_expiry FROM devices WHERE device_id=?", (req.device_id,)).fetchone()
+        registered = conn.execute("SELECT cert_expiry FROM devices WHERE device_id=?", (req.device_id,)).fetchone()
+    if registered and registered["cert_expiry"] and expiry < registered["cert_expiry"]:
+        audit(req.device_id, "registration_refused_older_certificate",
+              f"cert={fingerprint[:16]} exp={expiry} registered_exp={registered['cert_expiry']}")
+        raise HTTPException(403, "Older certificate than the registered one")
+    with db() as conn:
+        row = conn.execute("SELECT status FROM devices WHERE device_id=?", (req.device_id,)).fetchone()
         before = row["status"] if row else None
-        # A device only ever moves to a newer certificate (renewal, re-enrollment). An older one is a
-        # leftover from before (v2.3.x re-enrolled at every broker outage): it must not replace the
-        # registered certificate, revoked or not.
-        if row and row["cert_expiry"] and expiry < row["cert_expiry"]:
-            audit(req.device_id, "registration_refused_older_certificate",
-                  f"cert={fingerprint[:16]} exp={expiry} registered_exp={row['cert_expiry']}")
-            raise HTTPException(403, "Older certificate than the registered one")
         if before is None:
             conn.execute("""
                 INSERT INTO devices (device_id, chip_id, chip_target, hw_model, fw_version, capabilities,
@@ -660,6 +464,14 @@ async def x5c_enrolled(req: X5CEnrolledRequest, request: Request):
             after = "active"
         else:
             after = before
+    if after == "active" and req.project in rollout.PROJECTS:
+        with db() as conn:
+            prev = conn.execute("SELECT project FROM devices WHERE device_id=?", (req.device_id,)).fetchone()["project"]
+            if prev != req.project:
+                conn.execute("UPDATE devices SET project=? WHERE device_id=?", (req.project, req.device_id))
+        # audit() opens its own connection: after the update is committed, or it waits on the lock
+        if prev != req.project:
+            audit(req.device_id, "project_set", f"{prev or '-'} -> {req.project} (reported by the device)")
     event = {None: "registration_refused_unknown", "active": "registration_refreshed"}.get(before, "registered")
     if before is not None and before not in REGISTRABLE:
         event = "registration_refused_" + before
@@ -716,7 +528,7 @@ async def list_devices():
         rows = conn.execute("""
             SELECT device_id, chip_id, chip_target, hw_model, fw_version, capabilities,
                    status, cert_fingerprint, cert_expiry,
-                   enrolled_at, last_seen, confirmed_by, label
+                   enrolled_at, last_seen, confirmed_by, label, project
             FROM devices ORDER BY last_seen DESC
         """).fetchall()
     def parse(r):
@@ -761,32 +573,29 @@ async def suspend_device(device_id: str):
 
 
 
-class OTARequest(BaseModel):
-    version:  str
-    url:      str
-    checksum: str
-
-    @field_validator("checksum")
-    @classmethod
-    def checksum_must_be_valid_sha256(cls, v):
-        if len(v) != 64 or not all(c in "0123456789abcdef" for c in v.lower()):
-            raise ValueError("checksum must be a valid 64-char hex SHA256")
-        return v
-
+# v0.1.120: an OTA command only comes from a rollout of a signed image (rollout.py). The manual
+# command with a URL and a checksum typed in the dashboard is gone: nothing unsigned reaches a device.
 @app.post("/api/admin/devices/{device_id}/ota")
-async def send_ota(device_id: str, req: OTARequest):
-    """Pousse une commande OTA via MQTT."""
-    payload = json.dumps({
-        "type":    "ota",
-        "version": req.version,
-        "url":     req.url,
-        "sha256":  req.checksum,
-    })
-    info = get_mqtt().publish(f"iot/{device_id}/commands", payload, qos=1, retain=False)
-    info.wait_for_publish(timeout=5)
-    audit(device_id, "ota_sent", f"v{req.version}", "operator")
-    return {"device_id": device_id, "ota_version": req.version}
+async def send_ota_gone(device_id: str):
+    raise HTTPException(410, "Manual OTA removed: upload a signed image, then start a rollout")
 
+
+class ProjectRequest(BaseModel):
+    project: str
+
+
+@app.post("/api/admin/devices/{device_id}/project")
+async def set_device_project(device_id: str, req: ProjectRequest):
+    """The image project of a device (from the fleet manifest, homepi-firmware fleet/devices.csv)."""
+    if req.project not in rollout.PROJECTS:
+        raise HTTPException(422, f"project must be one of {', '.join(rollout.PROJECTS)}")
+    with db() as conn:
+        row = conn.execute("SELECT project FROM devices WHERE device_id=?", (device_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Unknown device")
+        conn.execute("UPDATE devices SET project=? WHERE device_id=?", (req.project, device_id))
+    audit(device_id, "project_set", f"{row['project'] or '-'} -> {req.project}", "operator")
+    return {"device_id": device_id, "project": req.project}
 
 
 @app.post("/api/admin/devices/{device_id}/renew")
@@ -799,140 +608,132 @@ async def admin_renew_cert(device_id: str):
     return {"status": "renewal_command_sent", "device_id": device_id}
 
 
-# --- Firmware Catalog -----------------------
+# --- Signed firmware images and rollouts (v0.1.120) -------
+
+OTA_PUBKEY_PATH = "/etc/homepi/ota_signing_pub.pem"
+FIRMWARE_DIR = Path("/opt/homepi/firmware")
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+_VERSION = re.compile(r"^v\d+\.\d+\.\d+(-rc\d+)?$")
+
+
+def _verify_manifest(manifest: str, signature_b64: str) -> dict:
+    """The manifest must be signed by the OTA key (offline, laptop) and well formed. The API holds
+    only the public key: it can check a signature, never make one."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+    from cryptography.exceptions import InvalidSignature
+    try:
+        pub = serialization.load_pem_public_key(Path(OTA_PUBKEY_PATH).read_bytes())
+        pub.verify(base64.b64decode(signature_b64, validate=True), manifest.encode(), ec.ECDSA(hashes.SHA256()))
+    except (OSError, ValueError, InvalidSignature, TypeError):
+        raise HTTPException(422, "Manifest signature does not verify with the OTA signing key")
+    try:
+        m = json.loads(manifest)
+    except ValueError:
+        raise HTTPException(422, "Manifest is not JSON")
+    if not (isinstance(m, dict) and m.get("project") in rollout.PROJECTS and _VERSION.match(str(m.get("version", "")))
+            and m.get("chip_target") in ("esp32c3", "esp32s3") and _SHA256.match(str(m.get("sha256", "")))):
+        raise HTTPException(422, "Manifest fields are invalid")
+    return m
+
 
 @app.post("/api/admin/firmware/upload")
 async def upload_firmware(
-    file:        UploadFile = File(...),
-    version:     str        = Form(...),
-    chip_target: str        = Form(...),
-    hw_model:    str        = Form(""),
-    notes:       str        = Form(""),
+    file:      UploadFile = File(...),
+    manifest:  str        = Form(...),
+    signature: str        = Form(...),
+    notes:     str        = Form(""),
 ):
-    dest_dir = Path(f"/opt/homepi/firmware/{chip_target}")
-    dest_dir.mkdir(parents=True, exist_ok=True)
-    dest = dest_dir / f"v{version}.bin"
-    with open(dest, "wb") as f:
-        shutil.copyfileobj(file.file, f)
-
-    h = hashlib.sha256()
-    with open(dest, "rb") as f:
-        for chunk in iter(lambda: f.read(65536), b""):
-            h.update(chunk)
-    sha = h.hexdigest()
-    dest.parent.joinpath(f"v{version}.sha256").write_text(sha)
-
-    url = f"https://homepi.internal/fw/{chip_target}/v{version}.bin"
+    """A signed image from tools/ota-sign.sh: the file must be the one the signed manifest names."""
+    m = _verify_manifest(manifest.strip(), signature.strip())
+    data = await file.read()
+    sha = hashlib.sha256(data).hexdigest()
+    if sha != m["sha256"]:
+        raise HTTPException(422, "The file is not the image the manifest names (sha256 differs)")
     with db() as conn:
-        conn.execute("""
-            INSERT OR REPLACE INTO firmware_catalog
-              (version, chip_target, hw_model, sha256, url, notes)
-            VALUES (?, ?, ?, ?, ?, ?)
-        """, (version, chip_target, hw_model, sha, url, notes))
-
-    audit("system", "firmware_uploaded", f"{chip_target}/v{version}")
-    return {"version": version, "chip_target": chip_target, "sha256": sha, "url": url}
+        if conn.execute("SELECT 1 FROM firmware_images WHERE project=? AND version=?", (m["project"], m["version"])).fetchone():
+            raise HTTPException(409, f"{m['project']} {m['version']} is already in the catalog")
+    dest_dir = FIRMWARE_DIR / m["project"]
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{m['version']}.bin"
+    tmp = dest.with_suffix(".bin.tmp")
+    tmp.write_bytes(data)
+    tmp.replace(dest)
+    url = f"https://homepi.internal/fw/{m['project']}/{m['version']}.bin"
+    with db() as conn:
+        conn.execute("INSERT INTO firmware_images (project, version, chip_target, sha256, url, manifest, signature, notes) "
+                     "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                     (m["project"], m["version"], m["chip_target"], sha, url, manifest.strip(), signature.strip(), notes))
+    audit("system", "firmware_uploaded", f"{m['project']} {m['version']} {m['chip_target']} sha256={sha[:16]}")
+    return {"project": m["project"], "version": m["version"], "chip_target": m["chip_target"], "sha256": sha, "url": url}
 
 
 @app.get("/api/admin/firmware")
 async def list_firmware():
     with db() as conn:
-        rows = conn.execute("""
-            SELECT version, chip_target, hw_model, sha256,
-                   url, uploaded_at, notes
-            FROM firmware_catalog ORDER BY uploaded_at DESC
-        """).fetchall()
+        rows = conn.execute("SELECT project, version, chip_target, sha256, url, notes, uploaded_at "
+                            "FROM firmware_images ORDER BY uploaded_at DESC").fetchall()
     return {"firmware": [dict(r) for r in rows]}
 
 
+class RolloutRequest(BaseModel):
+    project:         str
+    version:         str
+    soak_minutes:    int = 30
+    timeout_minutes: int = 20
 
-# --- Staged Rollout endpoints ---------------------
+    @field_validator("soak_minutes", "timeout_minutes")
+    @classmethod
+    def bounded(cls, v):
+        if not 1 <= v <= 24 * 60:
+            raise ValueError("between 1 and 1440 minutes")
+        return v
 
+
+@app.post("/api/admin/rollouts")
+async def create_rollout(req: RolloutRequest):
+    """Staged rollout of a signed image: canary, a quarter, the rest (homepi-ota-rollout.timer moves it)."""
+    try:
+        with db() as conn:
+            rid = rollout.create(conn, req.project, req.version, "operator", req.soak_minutes, req.timeout_minutes)
+    except rollout.RolloutError as e:
+        raise HTTPException(409, str(e))
+    return {"rollout": rid}
+
+
+@app.get("/api/admin/rollouts")
+async def list_rollouts():
+    with db() as conn:
+        rows = conn.execute("SELECT * FROM rollouts ORDER BY id DESC LIMIT 50").fetchall()
+        out = []
+        for r in rows:
+            devs = conn.execute("SELECT device_id, phase, status, from_version, sent_at, confirmed_at, detail "
+                                "FROM rollout_devices WHERE rollout_id=? ORDER BY phase, device_id", (r["id"],)).fetchall()
+            out.append({**dict(r), "devices": [dict(d) for d in devs]})
+    return {"rollouts": out}
+
+
+@app.post("/api/admin/rollouts/{rollout_id}/abort")
+async def abort_rollout(rollout_id: int):
+    with db() as conn:
+        row = conn.execute("SELECT status FROM rollouts WHERE id=?", (rollout_id,)).fetchone()
+        if not row:
+            raise HTTPException(404, "Unknown rollout")
+        if row["status"] != "in_progress":
+            raise HTTPException(409, f"Rollout is {row['status']}")
+        rollout.abort(conn, rollout_id, "aborted by the operator")
+    return {"rollout": rollout_id, "status": "aborted"}
+
+
+# The unsigned catalog and the in-memory deployments of v0.1.119 and before (kept read-only in the database)
 @app.post("/api/admin/firmware/{version}/deploy")
-async def deploy_firmware(version: str, chip_target: str = "esp32c3"):
-    """Declenche un staged rollout : canary -> 25% -> 100%."""
-    with db() as conn:
-        fw = conn.execute(
-            "SELECT * FROM firmware_catalog "
-            "WHERE version=? AND chip_target=?",
-            (version, chip_target)).fetchone()
-    if not fw:
-        raise HTTPException(404, f"Firmware {version}/{chip_target} not found")
-
-    with db() as conn:
-        active = conn.execute("""
-            SELECT id FROM ota_deployments
-            WHERE status='in_progress' AND chip_target=?
-        """, (chip_target,)).fetchone()
-    if active:
-        raise HTTPException(409,
-            f"Deployment {active['id']} already in progress")
-
-    dep_id = None
-
-    def _start():
-        nonlocal dep_id
-        dep_id = start_staged_deployment(version, chip_target, "operator")
-
-    t = threading.Thread(target=_start, daemon=True)
-    t.start()
-    t.join(timeout=2)
-
-    return {"status": "deployment_started", "version": version, "chip_target": chip_target}
+async def deploy_firmware_gone(version: str):
+    raise HTTPException(410, "Replaced by POST /api/admin/rollouts (signed images only)")
 
 
 @app.get("/api/admin/deployments")
-async def list_deployments():
-    with db() as conn:
-        rows = conn.execute("""
-            SELECT d.id, d.version, d.chip_target, d.status,
-                   d.created_at, d.created_by,
-                   COUNT(dd.device_id)   as total,
-                   SUM(CASE WHEN dd.status='confirmed'    THEN 1 ELSE 0 END) as confirmed,
-                   SUM(CASE WHEN dd.status='sent'         THEN 1 ELSE 0 END) as sent,
-                   SUM(CASE WHEN dd.status='rolled_back'  THEN 1 ELSE 0 END) as rolled_back,
-                   SUM(CASE WHEN dd.status='pending'      THEN 1 ELSE 0 END) as pending
-            FROM ota_deployments d
-            LEFT JOIN ota_deployment_devices dd ON d.id = dd.deployment_id
-            GROUP BY d.id 
-            ORDER BY d.created_at DESC
-            LIMIT 20
-        """).fetchall()
-    return {"deployments": [dict(r) for r in rows]}
-
-
-@app.get("/api/admin/deployments/{deployment_id}")
-async def get_deployment(deployment_id: int):
-    with db() as conn:
-        dep = conn.execute(
-            "SELECT * FROM ota_deployments WHERE id=?",
-            (deployment_id,)).fetchone()
-        if not dep:
-            raise HTTPException(404, "Deployment not found")
-        devices = conn.execute("""
-            SELECT dd.*, dev.fw_version, dev.hw_model
-            FROM ota_deployment_devices dd
-            JOIN devices dev ON dd.device_id = dev.device_id
-            WHERE dd.deployment_id=?
-            ORDER BY dd.phase, dd.device_id
-        """, (deployment_id,)).fetchall()
-    return {
-        "deployment": dict(dep),
-        "devices":    [dict(r) for r in devices]
-    }
-
-
-
-@app.post("/api/admin/deployments/{deployment_id}/abort")
-async def abort_deployment(deployment_id: int):
-    with db() as conn:
-        conn.execute(
-            "UPDATE ota_deployments SET status='aborted' WHERE id=?",
-            (deployment_id,))
-    audit("system", "ota_aborted_manual",
-          f"dep={deployment_id}", "operator")
-    return {"deployment_id": deployment_id, "status": "aborted"}
-
+async def list_deployments_gone():
+    raise HTTPException(410, "Replaced by GET /api/admin/rollouts")
 
 
 # --- Floor plans -----------------------------
@@ -1064,4 +865,25 @@ async def homepi_metrics():
     for status, n in counts.items():
         lines.append(f'homepi_devices_by_status{{status="{status}"}} {n}')
 
+    # v0.1.120: rollouts (alerts OtaRolloutAborted, OtaRolloutStuck). Without the tables (a registry
+    # older than v0.1.120 that the API has not opened yet) the device metrics above are still served.
+    try:
+        with db() as conn:
+            active = conn.execute("SELECT project, version, phase, created_at FROM rollouts WHERE status='in_progress'").fetchall()
+            aborted = conn.execute("SELECT COUNT(*) FROM rollouts WHERE status='aborted' AND finished_at >= "
+                                   "strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')").fetchone()[0]
+            ota_failed = conn.execute("SELECT COUNT(*) FROM ota_events WHERE ts >= strftime('%Y-%m-%dT%H:%M:%SZ','now','-24 hours')").fetchone()[0]
+    except sqlite3.OperationalError as e:
+        log.warning(f"rollout metrics unavailable: {e}")
+        return PlainTextResponse("\n".join(lines) + "\n")
+    lines += ["# HELP homepi_rollout_started_timestamp_seconds Start of each rollout in progress",
+              "# TYPE homepi_rollout_started_timestamp_seconds gauge"]
+    for r in active:
+        t = _parse_cert_expiry(r["created_at"])
+        if t:
+            lines.append(f'homepi_rollout_started_timestamp_seconds{{project="{r["project"]}",version="{r["version"]}",phase="{r["phase"]}"}} {int(t.timestamp())}')
+    lines += ["# HELP homepi_rollouts_aborted Rollouts aborted in the last 24 hours",
+              "# TYPE homepi_rollouts_aborted gauge", f'homepi_rollouts_aborted{{window="24h"}} {aborted}',
+              "# HELP homepi_ota_failed_reports OTA failures reported by devices in the last 24 hours",
+              "# TYPE homepi_ota_failed_reports gauge", f'homepi_ota_failed_reports{{window="24h"}} {ota_failed}']
     return PlainTextResponse("\n".join(lines) + "\n")

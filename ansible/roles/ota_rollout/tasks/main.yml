@@ -1,0 +1,51 @@
+---
+# v0.1.120: signed OTA. The API checks uploaded images against the OTA signing public key (the private
+# key stays on the operator's laptop) and homepi-ota-rollout.timer moves the rollouts (apps/api/rollout.py).
+# docs/runbooks/ota.md
+
+- name: OTA signing public key (same key as homepi-firmware components/homepi_ota)
+  ansible.builtin.copy:
+    src: ota_signing_pub.pem
+    dest: /etc/homepi/ota_signing_pub.pem
+    owner: root
+    group: homepi-api
+    mode: "0644"
+
+- name: Signed images directory, written by the API, served by nginx under /fw/
+  ansible.builtin.file:
+    path: /opt/homepi/firmware
+    state: directory
+    owner: homepi-api
+    group: homepi-api
+    mode: "0755"
+
+- name: Rollout service and timer
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [homepi-ota-rollout.service, homepi-ota-rollout.timer]
+  register: ota_rollout_units
+
+- name: Reload systemd after a rollout unit change
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: ota_rollout_units is changed
+
+# Check mode does not install a new unit: skip only when the unit is about to be created, never ignore errors
+- name: Rollout timer enabled and running
+  ansible.builtin.systemd_service:
+    name: homepi-ota-rollout.timer
+    enabled: true
+    state: started
+  when: not (ansible_check_mode and ota_rollout_units is changed)
+
+- name: One rollout step now, after a change (fails the run if the step fails)
+  ansible.builtin.systemd_service:
+    name: homepi-ota-rollout.service
+    state: started
+  when:
+    - not (ansible_check_mode and ota_rollout_units is changed)
+    - ota_rollout_units is changed

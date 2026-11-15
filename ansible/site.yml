@@ -34,6 +34,8 @@
     - provisioning_api
     # Applies: device identity activity for Prometheus (v0.1.57)
     - device_metrics
+    # Applies: signed OTA, rollout timer and the signing public key (v0.1.120)
+    - ota_rollout
     - hardening
     - auditd
     # Verify only: the storage role fails on drift and never changes boot-critical files

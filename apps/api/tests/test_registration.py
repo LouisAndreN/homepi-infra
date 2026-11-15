@@ -190,3 +190,13 @@ def test_newer_certificate_replaces_the_registered_one(api):
     new, new_pem = _cert(serial=5, issued=datetime.datetime(2026, 11, 14, tzinfo=datetime.timezone.utc))
     assert client.post("/api/devices/x5c-enrolled", json=_body(), headers=_headers(new_pem)).status_code == 200
     assert _row(mod)["cert_fingerprint"] == new.fingerprint(hashes.SHA256()).hex()
+
+
+def test_registration_records_the_project_the_device_runs(api):
+    mod, client = api
+    _set(mod, "pre_announced")
+    r = client.post("/api/devices/x5c-enrolled", json=_body(project="homepi_sensor"), headers=_headers(_cert()[1]))
+    assert r.status_code == 200 and _row(mod)["project"] == "homepi_sensor"
+    client.post("/api/devices/x5c-enrolled", json=_body(project="homepi_bogus"), headers=_headers(_cert()[1]))
+    assert _row(mod)["project"] == "homepi_sensor"  # an unknown project is ignored
+    assert "project_set" in _audit_events(mod)

@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
 import { useDeviceLiveStatus } from '../hooks/useDeviceStatus.js'
 import { statusColorForValue } from '../hooks/thresholds.js'
@@ -77,83 +77,41 @@ function MetricPills({ readings, isLive }) {
   )
 }
 
-// ── OTA Panel (device individuel) ─────────────────────────────
-function OTAPanel({ deviceId }) {
-  const [ver,  setVer]  = useState('')
-  const [url,  setUrl]  = useState('')
-  const [sha,  setSha]  = useState('')
-  const [msg,  setMsg]  = useState('')
-  const [busy, setBusy] = useState(false)
-
-  async function send() {
-    if (!ver || !url || !sha) { setMsg('All fields required'); return }
-    setBusy(true); setMsg('')
-    try {
-      const r = await fetch(`${API}/api/admin/devices/${deviceId}/ota`, {
-        method:'POST',
-        headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({ version:ver, url, checksum:sha }),
-      })
-      setMsg(r.ok ? `✓ OTA sent → v${ver}` : `Error HTTP ${r.status}`)
-      if (r.ok) { setVer(''); setUrl(''); setSha('') }
-    } catch(e) { setMsg(`Network error: ${e.message}`) }
-    setBusy(false)
-  }
-
-  const inp = {
-    width:'100%', padding:'7px 10px', borderRadius:7,
-    border:'0.5px solid var(--border)', fontSize:12,
-    fontFamily:'monospace', background:'var(--bg2)',
-    color:'var(--text)', outline:'none'
-  }
-
+// ── OTA (v0.1.120) ────────────────────────────────────────────
+// An OTA command only comes from a rollout of a signed image: images are signed on the operator's
+// laptop (homepi-firmware tools/ota-sign.sh) and uploaded from there. The dashboard starts, follows
+// and aborts rollouts; it never sends a URL and a checksum to a device.
+function OTAInfo({ device }) {
   return (
-    <div style={{ borderTop:'0.5px solid var(--border)', paddingTop:14, marginTop:14 }}>
-      <div style={{
-        fontSize:9, color:'var(--text3)', textTransform:'uppercase',
-        letterSpacing:'.07em', marginBottom:10
-      }}>Manual OTA</div>
-      <div style={{ display:'flex', flexDirection:'column', gap:7 }}>
-        <input style={inp} placeholder="Version (e.g. 2.1.0)"
-          value={ver} onChange={e => setVer(e.target.value)}/>
-        <input style={inp} placeholder="HTTPS URL to .bin"
-          value={url} onChange={e => setUrl(e.target.value)}/>
-        <input style={inp} placeholder="SHA256 checksum"
-          value={sha} onChange={e => setSha(e.target.value)}/>
-        <button onClick={send} disabled={busy} style={{
-          padding:'8px 0', borderRadius:7, border:'none',
-          background:'var(--accent-vivid)', color:'#fff', fontSize:12,
-          fontWeight:500, cursor:busy?'not-allowed':'pointer',
-          opacity:busy?.7:1
-        }}>{busy ? 'Sending…' : 'Send OTA Command'}</button>
-        {msg && <div style={{
-          fontSize:11, color:msg.startsWith('✓')?'var(--ok)':'var(--danger)'
-        }}>{msg}</div>}
-      </div>
+    <div style={{ borderTop:'0.5px solid var(--border)', paddingTop:14, marginTop:14,
+                  fontSize:11, color:'var(--text3)' }}>
+      <div style={{ fontSize:9, textTransform:'uppercase', letterSpacing:'.07em', marginBottom:6 }}>OTA</div>
+      Project <span style={{ fontFamily:'monospace', color:'var(--text2)' }}>{device.project || 'unknown'}</span>
+      {' · '}firmware <span style={{ fontFamily:'monospace', color:'var(--text2)' }}>{device.fw_version || '?'}</span>
+      <div style={{ marginTop:4 }}>Updates go through a rollout of a signed image (Deployments).</div>
     </div>
   )
 }
 
-// ── Deployment Panel ──────────────────────────────────────────
-function DeploymentPanel({ onBack }) {
-  const [firmware,    setFirmware]  = useState([])
-  const [deployments, setDeps]      = useState([])
-  const [uploading,   setUploading] = useState(false)
-  const [deploying,   setDeploying] = useState(false)
-  const [msg,         setMsg]       = useState('')
-  const [form,        setForm]      = useState({
-    version:'', chip_target:'esp32c3', hw_model:'', notes:''
-  })
-  const fileRef = useRef(null)
+const ROLLOUT_COLOR = {
+  in_progress:'var(--warn)', success:'var(--ok)', aborted:'var(--danger)',
+  pending:'var(--text3)', sent:'var(--warn)', confirmed:'var(--ok)', failed:'var(--danger)',
+}
+
+function RolloutPanel({ onBack }) {
+  const [firmware, setFirmware] = useState([])
+  const [rollouts, setRollouts] = useState([])
+  const [busy,     setBusy]     = useState(false)
+  const [msg,      setMsg]      = useState('')
 
   const load = useCallback(async () => {
     try {
-      const [fw, deps] = await Promise.all([
+      const [fw, ro] = await Promise.all([
         fetch(`${API}/api/admin/firmware`).then(r => r.json()),
-        fetch(`${API}/api/admin/deployments`).then(r => r.json()),
+        fetch(`${API}/api/admin/rollouts`).then(r => r.json()),
       ])
       setFirmware(fw.firmware || [])
-      setDeps(deps.deployments || [])
+      setRollouts(ro.rollouts || [])
     } catch(e) { console.error('load error', e) }
   }, [])
 
@@ -163,272 +121,99 @@ function DeploymentPanel({ onBack }) {
     return () => clearInterval(t)
   }, [load])
 
-  async function upload() {
-    if (!fileRef.current?.files[0] || !form.version) {
-      setMsg('File and version required'); return
-    }
-    setUploading(true); setMsg('')
-    const fd = new FormData()
-    fd.append('file',        fileRef.current.files[0])
-    fd.append('version',     form.version)
-    fd.append('chip_target', form.chip_target)
-    fd.append('hw_model',    form.hw_model)
-    fd.append('notes',       form.notes)
+  async function start(fw) {
+    if (!window.confirm(`Start a staged rollout of ${fw.project} ${fw.version} (canary, then a quarter, then the rest)?`)) return
+    setBusy(true); setMsg('')
     try {
-      const r = await fetch(`${API}/api/admin/firmware/upload`,
-        { method:'POST', body:fd })
+      const r = await fetch(`${API}/api/admin/rollouts`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ project: fw.project, version: fw.version }),
+      })
       const d = await r.json()
-      setMsg(r.ok
-        ? `✓ v${d.version} uploaded — ${d.sha256?.slice(0,12)}…`
-        : `Error: ${d.detail}`)
-      if (r.ok) {
-        setForm(f => ({...f, version:'', notes:''}))
-        fileRef.current.value = ''
-        load()
-      }
-    } catch(e) { setMsg(`Network error: ${e.message}`) }
-    setUploading(false)
-  }
-
-  async function deploy(version) {
-    setDeploying(true); setMsg('')
-    try {
-      const r = await fetch(
-        `${API}/api/admin/firmware/${version}/deploy?chip_target=esp32c3`,
-        { method:'POST' })
-      const d = await r.json()
-      setMsg(r.ok
-        ? `✓ Deployment started → v${version}`
-        : `Error: ${d.detail}`)
+      setMsg(r.ok ? `✓ Rollout #${d.rollout} started: ${fw.project} ${fw.version}` : `Error: ${d.detail}`)
       if (r.ok) load()
     } catch(e) { setMsg(`Network error: ${e.message}`) }
-    setDeploying(false)
+    setBusy(false)
   }
 
   async function abort(id) {
-    try {
-      await fetch(`${API}/api/admin/deployments/${id}/abort`,
-        { method:'POST' })
-      load()
-    } catch(e) { console.error(e) }
+    try { await fetch(`${API}/api/admin/rollouts/${id}/abort`, { method:'POST' }); load() }
+    catch(e) { console.error(e) }
   }
 
-  const STATUS_COLOR = {
-    in_progress: 'var(--warn)', success:  'var(--ok)',
-    aborted:     'var(--danger)', pending:  'var(--text3)'
-  }
-
-  const inp = {
-    padding:'6px 9px', borderRadius:5,
-    border:'0.5px solid var(--border)',
-    background:'var(--bg2)', color:'var(--text)',
-    fontSize:12, fontFamily:'monospace', outline:'none'
-  }
+  const box = { background:'var(--bg2)', borderRadius:10, border:'0.5px solid var(--border)',
+                marginBottom:16, overflow:'hidden' }
+  const head = { padding:'10px 14px', borderBottom:'0.5px solid var(--border)', fontSize:11,
+                 fontWeight:600, color:'var(--text2)' }
+  const row = (i, n) => ({ padding:'10px 14px', borderBottom: i < n - 1 ? '0.5px solid var(--border)' : 'none' })
 
   return (
     <div style={{ height:'100%', overflow:'auto', padding:'16px 20px' }}>
-      <button onClick={onBack} style={{
-        background:'none', border:'none', color:'var(--text2)',
-        fontSize:12, cursor:'pointer', marginBottom:16, padding:0
-      }}>← Back to fleet</button>
+      <button onClick={onBack} style={{ background:'none', border:'none', color:'var(--text2)',
+        fontSize:12, cursor:'pointer', marginBottom:16, padding:0 }}>← Back to fleet</button>
 
-      <div style={{
-        background:'var(--bg2)', borderRadius:10,
-        border:'0.5px solid var(--border)',
-        padding:'14px 16px', marginBottom:16
-      }}>
-        <div style={{
-          fontSize:11, color:'var(--text3)', textTransform:'uppercase',
-          letterSpacing:'.07em', marginBottom:12
-        }}>Upload Firmware</div>
-        <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:8, marginBottom:8 }}>
-          <div>
-            <div style={{ fontSize:10, color:'var(--text3)', marginBottom:3 }}>Version</div>
-            <input style={{...inp, width:'100%'}} placeholder="2.2.0"
-              value={form.version}
-              onChange={e => setForm(f => ({...f, version:e.target.value}))}/>
-          </div>
-          <div>
-            <div style={{ fontSize:10, color:'var(--text3)', marginBottom:3 }}>Chip target</div>
-            <select style={{...inp, width:'100%'}} value={form.chip_target}
-              onChange={e => setForm(f => ({...f, chip_target:e.target.value}))}>
-              <option value="esp32c3">esp32c3</option>
-              <option value="esp32s3">esp32s3</option>
-              <option value="esp32">esp32</option>
-            </select>
-          </div>
-          <div>
-            <div style={{ fontSize:10, color:'var(--text3)', marginBottom:3 }}>
-              hw_model (info)
-            </div>
-            <input style={{...inp, width:'100%'}} placeholder="bh1750+scd41"
-              value={form.hw_model}
-              onChange={e => setForm(f => ({...f, hw_model:e.target.value}))}/>
-          </div>
-          <div>
-            <div style={{ fontSize:10, color:'var(--text3)', marginBottom:3 }}>Notes</div>
-            <input style={{...inp, width:'100%'}} placeholder="Optional"
-              value={form.notes}
-              onChange={e => setForm(f => ({...f, notes:e.target.value}))}/>
-          </div>
-        </div>
-        <input ref={fileRef} type="file" accept=".bin"
-          style={{ fontSize:12, color:'var(--text2)', marginBottom:8, display:'block' }}/>
-        <button onClick={upload} disabled={uploading} style={{
-          padding:'8px 16px', borderRadius:7, border:'none',
-          background:'var(--accent)', color:'#fff', fontSize:12,
-          fontWeight:500, cursor:uploading?'not-allowed':'pointer',
-          opacity:uploading?.7:1
-        }}>{uploading ? 'Uploading…' : 'Upload .bin'}</button>
-        {msg && <div style={{
-          fontSize:11, marginTop:8,
-          color:msg.startsWith('✓')?'var(--ok)':'var(--danger)'
-        }}>{msg}</div>}
-      </div>
+      {msg && <div style={{ fontSize:11, marginBottom:12,
+        color: msg.startsWith('✓') ? 'var(--ok)' : 'var(--danger)' }}>{msg}</div>}
 
-      <div style={{
-        background:'var(--bg2)', borderRadius:10,
-        border:'0.5px solid var(--border)',
-        marginBottom:16, overflow:'hidden'
-      }}>
-        <div style={{
-          padding:'10px 14px', borderBottom:'0.5px solid var(--border)',
-          fontSize:11, fontWeight:600, color:'var(--text2)'
-        }}>Firmware Catalog</div>
+      <div style={box}>
+        <div style={head}>Signed images</div>
         {firmware.length === 0
-          ? <div style={{
-              padding:20, color:'var(--text3)',
-              fontSize:12, textAlign:'center'
-            }}>No firmware uploaded yet</div>
+          ? <div style={{ padding:20, color:'var(--text3)', fontSize:12, textAlign:'center' }}>
+              No signed image yet: sign and upload from the laptop (tools/ota-sign.sh)</div>
           : firmware.map((fw, i) => (
-            <div key={i} style={{
-              padding:'10px 14px',
-              borderBottom: i < firmware.length-1
-                ? '0.5px solid var(--border)' : 'none',
-              display:'flex', justifyContent:'space-between',
-              alignItems:'center', gap:12
-            }}>
+            <div key={`${fw.project}-${fw.version}`} style={{ ...row(i, firmware.length), display:'flex',
+              justifyContent:'space-between', alignItems:'center', gap:12 }}>
               <div style={{ minWidth:0, flex:1 }}>
-                <div style={{ display:'flex', alignItems:'baseline', gap:8 }}>
-                  <span style={{
-                    fontFamily:'monospace', fontSize:13,
-                    fontWeight:600, color:'var(--text)'
-                  }}>v{fw.version}</span>
-                  <span style={{ fontSize:11, color:'var(--text3)' }}>
-                    {fw.chip_target}
-                  </span>
-                  {fw.hw_model && (
-                    <span style={{ fontSize:10, color:'var(--text3)' }}>
-                      · {fw.hw_model}
-                    </span>
-                  )}
-                </div>
-                <div style={{
-                  fontSize:10, color:'var(--text3)', marginTop:2,
-                  overflow:'hidden', textOverflow:'ellipsis', whiteSpace:'nowrap'
-                }}>
-                  {fw.notes && `${fw.notes} · `}
-                  SHA256: {fw.sha256?.slice(0,16)}…
-                </div>
-                <div style={{ fontSize:9, color:'var(--text3)', marginTop:1 }}>
-                  {new Date(fw.uploaded_at).toLocaleDateString()}
+                <span style={{ fontFamily:'monospace', fontSize:13, fontWeight:600, color:'var(--text)' }}>{fw.version}</span>
+                <span style={{ marginLeft:8, fontSize:11, color:'var(--text2)' }}>{fw.project}</span>
+                <span style={{ marginLeft:8, fontSize:11, color:'var(--text3)' }}>{fw.chip_target}</span>
+                <div style={{ fontSize:10, color:'var(--text3)', marginTop:2 }}>
+                  sha256 {fw.sha256?.slice(0,16)}… · signed · {new Date(fw.uploaded_at).toLocaleDateString()}
+                  {fw.notes && ` · ${fw.notes}`}
                 </div>
               </div>
-              <button onClick={() => deploy(fw.version)} disabled={deploying}
-                style={{
-                  padding:'6px 14px', borderRadius:7, border:'none',
-                  background:'var(--accent)', color:'#fff', fontSize:12,
-                  cursor:deploying?'not-allowed':'pointer',
-                  opacity:deploying?.7:1, flexShrink:0
-                }}>
-                {deploying ? '…' : '▶ Deploy'}
-              </button>
+              <button onClick={() => start(fw)} disabled={busy} style={{ padding:'6px 14px', borderRadius:7,
+                border:'none', background:'var(--accent)', color:'#fff', fontSize:12,
+                cursor: busy ? 'not-allowed' : 'pointer', opacity: busy ? .7 : 1, flexShrink:0 }}>▶ Roll out</button>
             </div>
-          ))
-        }
+          ))}
       </div>
 
-      <div style={{
-        background:'var(--bg2)', borderRadius:10,
-        border:'0.5px solid var(--border)', overflow:'hidden'
-      }}>
-        <div style={{
-          padding:'10px 14px', borderBottom:'0.5px solid var(--border)',
-          fontSize:11, fontWeight:600, color:'var(--text2)'
-        }}>Deployment History</div>
-        {deployments.length === 0
-          ? <div style={{
-              padding:20, color:'var(--text3)',
-              fontSize:12, textAlign:'center'
-            }}>No deployments yet</div>
-          : deployments.map(dep => (
-            <div key={dep.id} style={{
-              padding:'10px 14px',
-              borderBottom:'0.5px solid var(--border)'
-            }}>
-              <div style={{
-                display:'flex', justifyContent:'space-between',
-                alignItems:'center', marginBottom:6
-              }}>
+      <div style={box}>
+        <div style={head}>Rollouts</div>
+        {rollouts.length === 0
+          ? <div style={{ padding:20, color:'var(--text3)', fontSize:12, textAlign:'center' }}>No rollout yet</div>
+          : rollouts.map((ro, i) => (
+            <div key={ro.id} style={row(i, rollouts.length)}>
+              <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', marginBottom:6 }}>
                 <div>
-                  <span style={{
-                    fontFamily:'monospace', fontSize:13, fontWeight:600
-                  }}>v{dep.version}</span>
-                  <span style={{
-                    marginLeft:8, fontSize:11, color:'var(--text3)'
-                  }}>{dep.chip_target}</span>
-                  <span style={{
-                    marginLeft:8, fontSize:10, color:'var(--text3)'
-                  }}>#{dep.id}</span>
+                  <span style={{ fontFamily:'monospace', fontSize:13, fontWeight:600 }}>{ro.version}</span>
+                  <span style={{ marginLeft:8, fontSize:11, color:'var(--text2)' }}>{ro.project}</span>
+                  <span style={{ marginLeft:8, fontSize:10, color:'var(--text3)' }}>#{ro.id} · phase {ro.phase}</span>
                 </div>
                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
-                  <span style={{
-                    fontSize:11, fontWeight:600,
-                    color:STATUS_COLOR[dep.status]||'var(--text3)'
-                  }}>
-                    {dep.status?.replace('_',' ').toUpperCase()}
-                  </span>
-                  {dep.status === 'in_progress' && (
-                    <button onClick={() => abort(dep.id)} style={{
-                      padding:'3px 8px', borderRadius:5, fontSize:10,
-                      border:'0.5px solid var(--danger)', background:'transparent',
-                      color:'var(--danger)', cursor:'pointer'
-                    }}>Abort</button>
-                  )}
+                  <span style={{ fontSize:11, fontWeight:600, color: ROLLOUT_COLOR[ro.status] || 'var(--text3)' }}>
+                    {ro.status?.replace('_',' ').toUpperCase()}</span>
+                  {ro.status === 'in_progress' && (
+                    <button onClick={() => abort(ro.id)} style={{ padding:'3px 8px', borderRadius:5, fontSize:10,
+                      border:'0.5px solid var(--danger)', background:'transparent', color:'var(--danger)',
+                      cursor:'pointer' }}>Abort</button>)}
                 </div>
               </div>
-
-              <div style={{
-                display:'flex', gap:12, fontSize:10,
-                color:'var(--text3)', marginBottom:5
-              }}>
-                <span style={{ color:'var(--ok)' }}>✓ {dep.confirmed ?? 0}</span>
-                <span style={{ color:'var(--warn)' }}>⟳ {dep.sent ?? 0}</span>
-                <span style={{ color:'var(--danger)' }}>✕ {dep.rolled_back ?? 0}</span>
-                <span>· {dep.total ?? 0} total</span>
+              {ro.reason && <div style={{ fontSize:10, color:'var(--danger)', marginBottom:5 }}>{ro.reason}</div>}
+              <div style={{ display:'flex', flexWrap:'wrap', gap:6 }}>
+                {(ro.devices || []).map(d => (
+                  <span key={d.device_id} title={d.detail || d.status} style={{ fontSize:10, fontFamily:'monospace',
+                    padding:'2px 6px', borderRadius:4, border:`0.5px solid ${ROLLOUT_COLOR[d.status] || 'var(--border)'}`,
+                    color: ROLLOUT_COLOR[d.status] || 'var(--text3)' }}>
+                    P{d.phase} {d.device_id.replace('esp32-','')} {d.status}</span>
+                ))}
               </div>
-
-              {(dep.total ?? 0) > 0 && (
-                <div style={{
-                  height:5, background:'var(--bg3)',
-                  borderRadius:3, overflow:'hidden', marginBottom:4
-                }}>
-                  <div style={{
-                    height:'100%', borderRadius:3,
-                    background: dep.status === 'aborted' ? 'var(--danger)' : 'var(--ok)',
-                    width:`${((dep.confirmed ?? 0) / dep.total) * 100}%`,
-                    transition:'width .5s ease'
-                  }}/>
-                </div>
-              )}
-
-              <div style={{ fontSize:9, color:'var(--text3)' }}>
-                {new Date(dep.created_at).toLocaleString()}
-                {dep.created_by && ` · by ${dep.created_by}`}
+              <div style={{ fontSize:9, color:'var(--text3)', marginTop:5 }}>
+                {new Date(ro.created_at).toLocaleString()} · soak {ro.soak_minutes} min · timeout {ro.timeout_minutes} min
               </div>
             </div>
-          ))
-        }
+          ))}
       </div>
     </div>
   )
@@ -489,7 +274,7 @@ export function FleetTab() {
 
   if (showDeployments) return (
     <div style={{ height:'100%', overflow:'hidden' }}>
-      <DeploymentPanel onBack={() => setShowDeployments(false)}/>
+      <RolloutPanel onBack={() => setShowDeployments(false)}/>
     </div>
   )
 
@@ -736,7 +521,7 @@ export function FleetTab() {
                     )}
                   </div>
 
-                  {d.status === 'active' && <OTAPanel deviceId={d.device_id}/>}
+                  {d.status === 'active' && <OTAInfo device={d}/>}
                 </div>
               )}
             </div>

@@ -22,10 +22,12 @@ class ApiVersionComparisonTests(unittest.TestCase):
         self.assertIsNone(re.search(r'latest\["version"\]\s*!=\s*req\.fw_version', SOURCE))
         self.assertNotIn("AND fw_version != ?", SOURCE)
 
-    def test_latest_firmware_is_not_chosen_by_upload_date(self):
-        body = _function_text("get_latest_firmware")
-        self.assertIn("get_latest_firmware", body)
-        self.assertNotIn("ORDER BY uploaded_at DESC", body)
+    def test_rollout_sends_the_exact_image_not_the_latest(self):
+        # v0.1.120: get_latest_firmware picked the newest image of a chip at every phase, so an upload
+        # during a deployment changed the image half-way. A rollout reads its own (project, version).
+        self.assertNotIn("get_latest_firmware", SOURCE)
+        rollout_src = (Path(__file__).resolve().parents[1] / "rollout.py").read_text(encoding="utf-8")
+        self.assertIn('SELECT * FROM firmware_images WHERE project=? AND version=?', rollout_src)
 
     def test_audit_detail_does_not_double_the_v_prefix(self):
         self.assertNotIn('f"v{req.fw_version}->', SOURCE)

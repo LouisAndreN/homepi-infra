@@ -1,0 +1,268 @@
+"""Staged OTA rollout for HomePi devices (v0.1.120).
+
+A rollout sends one signed image (project, version) to the active devices of that project in three
+phases: one canary, then about a quarter, then the rest. Its whole state lives in the registry
+database, and step() moves it forward; homepi-ota-rollout.timer runs step() every minute. Nothing
+waits in memory: an API or Pi restart in the middle of a rollout loses nothing (until v0.1.119 the
+waits were time.sleep threads inside the API, which every deployment restarts).
+
+For each device of the current phase:
+  pending    -> the command is published               -> sent
+  sent       -> the registry shows the new version     -> confirmed
+             -> the device reported ota_failed         -> failed (bad signature, wrong project, ...)
+             -> still on the old version after timeout -> failed (bootloader rollback, or offline)
+Any failed device aborts the rollout: the devices of the next phases are never sent anything.
+A phase whose devices all confirmed moves on after the soak time, if they all still publish.
+
+Usage: rollout.py step   (homepi-ota-rollout.service)
+"""
+import json
+import os
+import sqlite3
+import sys
+from datetime import datetime, timedelta, timezone
+
+from versions import same_version
+
+DB_PATH = "/var/lib/homepi/devices.db"
+PROJECTS = ("homepi_sensor", "homepi_led", "homepi_nilm")
+SILENT_AFTER = timedelta(minutes=10)     # DeviceSilent's threshold
+ISO = "%Y-%m-%dT%H:%M:%SZ"
+
+SCHEMA = """
+CREATE TABLE IF NOT EXISTS firmware_images (
+  project      TEXT NOT NULL,
+  version      TEXT NOT NULL,
+  chip_target  TEXT NOT NULL,
+  sha256       TEXT NOT NULL,
+  url          TEXT NOT NULL,
+  manifest     TEXT NOT NULL,
+  signature    TEXT NOT NULL,
+  notes        TEXT DEFAULT '',
+  uploaded_at  TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  PRIMARY KEY (project, version)
+);
+CREATE TABLE IF NOT EXISTS rollouts (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  project          TEXT NOT NULL,
+  version          TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'in_progress',
+  phase            INTEGER NOT NULL DEFAULT 1,
+  soak_minutes     INTEGER NOT NULL,
+  timeout_minutes  INTEGER NOT NULL,
+  reason           TEXT DEFAULT '',
+  created_by       TEXT DEFAULT 'operator',
+  created_at       TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  finished_at      TEXT
+);
+CREATE TABLE IF NOT EXISTS rollout_devices (
+  rollout_id    INTEGER NOT NULL REFERENCES rollouts(id),
+  device_id     TEXT NOT NULL,
+  phase         INTEGER NOT NULL,
+  status        TEXT NOT NULL DEFAULT 'pending',
+  from_version  TEXT,
+  sent_at       TEXT,
+  confirmed_at  TEXT,
+  detail        TEXT DEFAULT '',
+  PRIMARY KEY (rollout_id, device_id)
+);
+CREATE TABLE IF NOT EXISTS ota_events (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  ts         TEXT DEFAULT (strftime('%Y-%m-%dT%H:%M:%SZ','now')),
+  device_id  TEXT NOT NULL,
+  reason     TEXT NOT NULL,
+  version    TEXT DEFAULT '',
+  detail     TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_rollouts_status ON rollouts(status, project);
+CREATE INDEX IF NOT EXISTS idx_ota_events_device ON ota_events(device_id, ts);
+"""
+
+
+class RolloutError(Exception):
+    """A rollout cannot be created (HTTP 409 or 404 at the API)."""
+
+
+def ensure_schema(conn):
+    conn.executescript(SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
+    if "project" not in cols:
+        conn.execute("ALTER TABLE devices ADD COLUMN project TEXT DEFAULT ''")
+
+
+def _ts(dt):
+    return dt.strftime(ISO)
+
+
+def _parse(ts):
+    return datetime.strptime(ts, ISO).replace(tzinfo=timezone.utc) if ts else None
+
+
+def _audit(conn, device_id, event, detail):
+    conn.execute("INSERT INTO audit_log (device_id, event, detail, operator) VALUES (?, ?, ?, 'system')",
+                 (device_id, event, detail))
+
+
+def create(conn, project, version, created_by="operator", soak_minutes=30, timeout_minutes=20):
+    """Creates a rollout and its phases; the first step() sends the canary its command."""
+    if project not in PROJECTS:
+        raise RolloutError(f"unknown project {project}")
+    if not conn.execute("SELECT 1 FROM firmware_images WHERE project=? AND version=?", (project, version)).fetchone():
+        raise RolloutError(f"no signed image {project} {version}")
+    busy = conn.execute("SELECT id FROM rollouts WHERE project=? AND status='in_progress'", (project,)).fetchone()
+    if busy:
+        raise RolloutError(f"rollout {busy[0]} already in progress for {project}")
+    rows = conn.execute("SELECT device_id, fw_version FROM devices WHERE status='active' AND project=? "
+                        "ORDER BY enrolled_at ASC, device_id ASC", (project,)).fetchall()
+    targets = [(r[0], r[1]) for r in rows if not same_version(r[1], version)]
+    if not targets:
+        raise RolloutError(f"every active {project} device already runs {version}")
+    n = len(targets)
+    split = max(2, n // 4)
+    phases = [(1, targets[:1]), (2, targets[1:split]), (3, targets[split:])]
+    cur = conn.execute("INSERT INTO rollouts (project, version, soak_minutes, timeout_minutes, created_by) "
+                       "VALUES (?, ?, ?, ?, ?)", (project, version, soak_minutes, timeout_minutes, created_by))
+    rid = cur.lastrowid
+    for phase, devices in phases:
+        for device_id, fw in devices:
+            conn.execute("INSERT INTO rollout_devices (rollout_id, device_id, phase, from_version) VALUES (?, ?, ?, ?)",
+                         (rid, device_id, phase, fw))
+    _audit(conn, "system", "rollout_created",
+           f"rollout={rid} {project} {version} devices={n} canary={targets[0][0]} soak={soak_minutes}m timeout={timeout_minutes}m")
+    return rid
+
+
+def command(image):
+    """OTA command: the signed manifest for firmware v2.4.1+, url and sha256 for v2.4.0 (first hop)."""
+    return json.dumps({"type": "ota", "version": image["version"], "url": image["url"], "sha256": image["sha256"],
+                       "manifest": image["manifest"], "signature": image["signature"]})
+
+
+def abort(conn, rollout_id, reason, publish=None):
+    conn.execute("UPDATE rollouts SET status='aborted', reason=?, finished_at=? WHERE id=? AND status='in_progress'",
+                 (reason, _ts(datetime.now(timezone.utc)), rollout_id))
+    _audit(conn, "system", "rollout_aborted", f"rollout={rollout_id} {reason}")
+    if publish:
+        publish("homepi/admin/alerts", json.dumps({"type": "rollout_aborted", "rollout": rollout_id, "reason": reason}))
+
+
+def step(conn, publish, now=None):
+    """Moves every rollout in progress one step forward. publish(topic, payload) -> bool."""
+    now = now or datetime.now(timezone.utc)
+    done = []
+    for r in conn.execute("SELECT * FROM rollouts WHERE status='in_progress' ORDER BY id").fetchall():
+        done.append(_step_one(conn, r, publish, now))
+    return done
+
+
+def _step_one(conn, r, publish, now):
+    rid, phase = r["id"], r["phase"]
+    image = conn.execute("SELECT * FROM firmware_images WHERE project=? AND version=?", (r["project"], r["version"])).fetchone()
+    if image is None:
+        abort(conn, rid, f"image {r['project']} {r['version']} is no longer in the catalog", publish)
+        return f"rollout {rid}: aborted (image gone)"
+    devices = conn.execute("SELECT d.*, v.fw_version, v.last_seen, v.status AS reg_status FROM rollout_devices d "
+                           "LEFT JOIN devices v ON v.device_id = d.device_id "
+                           "WHERE d.rollout_id=? AND d.phase=? ORDER BY d.device_id", (rid, phase)).fetchall()
+    timeout = timedelta(minutes=r["timeout_minutes"])
+    failed = []
+    for d in devices:
+        did = d["device_id"]
+        if d["status"] == "pending":
+            if d["reg_status"] != "active":
+                conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
+                             (f"device is {d['reg_status']}", rid, did))
+                failed.append(f"{did} is {d['reg_status']}")
+            elif publish(f"iot/{did}/commands", command(image)):
+                conn.execute("UPDATE rollout_devices SET status='sent', sent_at=? WHERE rollout_id=? AND device_id=?",
+                             (_ts(now), rid, did))
+                _audit(conn, did, "rollout_command_sent", f"rollout={rid} {r['version']}")
+            continue
+        if d["status"] != "sent":
+            continue
+        sent = _parse(d["sent_at"])
+        ev = conn.execute("SELECT reason, detail FROM ota_events WHERE device_id=? AND ts >= ? ORDER BY id DESC LIMIT 1",
+                          (did, d["sent_at"])).fetchone()
+        if ev:
+            detail = f"ota_failed: {ev['reason']}" + (f" ({ev['detail']})" if ev["detail"] else "")
+            conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
+                         (detail, rid, did))
+            failed.append(f"{did} {detail}")
+        elif same_version(d["fw_version"], r["version"]):
+            conn.execute("UPDATE rollout_devices SET status='confirmed', confirmed_at=? WHERE rollout_id=? AND device_id=?",
+                         (_ts(now), rid, did))
+            _audit(conn, did, "rollout_confirmed", f"rollout={rid} {r['version']}")
+        elif now - sent > timeout:
+            detail = (f"still on {d['fw_version']} {r['timeout_minutes']} min after the command "
+                      f"(rolled back by the bootloader, or offline)")
+            conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
+                         (detail, rid, did))
+            failed.append(f"{did} {detail}")
+    if failed:
+        abort(conn, rid, f"phase {phase}: " + "; ".join(failed), publish)
+        return f"rollout {rid}: aborted in phase {phase}"
+
+    rows = conn.execute("SELECT d.status, d.confirmed_at, v.last_seen, d.device_id FROM rollout_devices d "
+                        "LEFT JOIN devices v ON v.device_id = d.device_id "
+                        "WHERE d.rollout_id=? AND d.phase=?", (rid, phase)).fetchall()
+    if any(x["status"] != "confirmed" for x in rows):
+        return f"rollout {rid}: phase {phase} waiting"
+    silent = [x["device_id"] for x in rows if not x["last_seen"] or now - _parse(x["last_seen"]) > SILENT_AFTER]
+    if silent:
+        abort(conn, rid, f"phase {phase}: silent after the update: {', '.join(silent)}", publish)
+        return f"rollout {rid}: aborted in phase {phase} (silent)"
+    if now - max(_parse(x["confirmed_at"]) for x in rows) < timedelta(minutes=r["soak_minutes"]):
+        return f"rollout {rid}: phase {phase} soaking"
+    nxt = conn.execute("SELECT MIN(phase) FROM rollout_devices WHERE rollout_id=? AND phase > ?", (rid, phase)).fetchone()[0]
+    if nxt is None:
+        conn.execute("UPDATE rollouts SET status='success', finished_at=? WHERE id=?", (_ts(now), rid))
+        _audit(conn, "system", "rollout_success", f"rollout={rid} {r['project']} {r['version']}")
+        return f"rollout {rid}: success"
+    conn.execute("UPDATE rollouts SET phase=? WHERE id=?", (nxt, rid))
+    _audit(conn, "system", "rollout_phase", f"rollout={rid} phase {phase} confirmed, phase {nxt} starts")
+    return f"rollout {rid}: phase {nxt} starts"
+
+
+def _mqtt_publisher():
+    """One MQTT session for this run, client id of its own (no takeover of the API sessions)."""
+    import paho.mqtt.client as mqtt
+    c = mqtt.Client(callback_api_version=mqtt.CallbackAPIVersion.VERSION2, client_id="homepi-ota-rollout",
+                    protocol=mqtt.MQTTv5)
+    c.username_pw_set("homepi-api", os.environ.get("API_MQTT_PASS", ""))
+    c.connect("127.0.0.1", 1883, keepalive=30)
+    c.loop_start()
+
+    def publish(topic, payload):
+        try:
+            info = c.publish(topic, payload, qos=1, retain=False)
+            info.wait_for_publish(timeout=10)
+            return info.is_published()
+        except Exception as e:  # the device stays pending and is retried next minute
+            print(f"publish to {topic} failed: {e}", file=sys.stderr)
+            return False
+    return c, publish
+
+
+def main(argv):
+    if argv[1:] != ["step"]:
+        print(__doc__.strip().splitlines()[-1], file=sys.stderr)
+        return 2
+    conn = sqlite3.connect(DB_PATH, timeout=30)
+    conn.row_factory = sqlite3.Row
+    with conn:
+        ensure_schema(conn)
+        if not conn.execute("SELECT 1 FROM rollouts WHERE status='in_progress' LIMIT 1").fetchone():
+            return 0
+    client, publish = _mqtt_publisher()
+    try:
+        with conn:
+            for line in step(conn, publish):
+                print(line)
+    finally:
+        client.loop_stop()
+        client.disconnect()
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

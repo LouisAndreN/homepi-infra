@@ -1,0 +1,15 @@
+[Unit]
+Description=HomePi staged OTA rollout: one step of every rollout in progress (rollout.py, v0.1.120)
+After=mosquitto.service homepi-api.service
+
+[Service]
+Type=oneshot
+User=homepi-api
+Group=homepi-api
+WorkingDirectory=/opt/homepi/api
+EnvironmentFile=/etc/homepi/api.env
+ExecStart=/opt/homepi/api-venv/bin/python /opt/homepi/api/rollout.py step
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+TimeoutStartSec=120
