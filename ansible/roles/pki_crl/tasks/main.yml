@@ -1,6 +1,6 @@
 ---
 # B3.2a: keep the CRL fresh for the broker, re-signed without the IDP extension (v0.1.116).
-# The broker does not read it yet: B3.2b adds crlfile once the re-signed CRL is proven on the Pi.
+# The broker enforces it on 8883 since v0.1.117 (B3.2b): a revocation reaches the broker at the next sync.
 
 - name: python3-cryptography for homepi-crl-resign
   ansible.builtin.apt:

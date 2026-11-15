@@ -13,10 +13,9 @@
 
 ## Known flaws (open)
 
-1. Revocation is not enforced: the broker has no `crlfile` (B3.2b). Since v0.1.53 the CRL itself is
-   kept fresh and monitored (see "CRL sync"); the cron `crl_sync.sh` it replaces had failed since
-   2026-05-23 (it verified a CRL signed by the intermediate against the root alone) and nothing alerted.
-   A first attempt on 2026-11-15 rejected every device: see "Incident 2026-11-15" below.
+1. Closed in v0.1.117: the broker enforces the CRL on 8883 (see "Revocation enforced"). Before that
+   the CRL was kept fresh from v0.1.53 but not read; a first attempt on 2026-11-15 rejected every
+   device (see "Incident 2026-11-15").
    `revoked.acl` is not referenced and its syntax is invalid.
 2. One password opens the root key, the intermediate key and probably the `admin` provisioner. Until
    2026-11-08 it was readable by the group `iot-platform` (member: `srvpi`).
@@ -211,3 +210,28 @@ done with `step ca token <serial> --revoke` written to a 0600 file and a POST of
 `{"serial", "ott", "passive": true, "reasonCode"}` to `/1.0/revoke` (without `passive` step-ca
 answers 501); a token cannot be replayed (401). step-ca regenerates the CRL at start and every
 `renewPeriod` (1 h), not at revocation.
+
+## Revocation enforced on the broker (B3.2b, v0.1.117)
+
+`crlfile /etc/mosquitto/crl/crl.pem` on the 8883 listener, enabled on the Pi on 2026-11-15, then
+pinned here. Proof, each check first seen able to fail:
+
+| step                                              | result                                   |
+|---------------------------------------------------|------------------------------------------|
+| MQTT CONNECT without a certificate                | refused (the probe can fail)             |
+| canary `crl-canary.homepi.internal` (admin, 15 min) | CONNACK 0 before enforcement           |
+| crlfile on, broker restart                        | canary CONNACK 0, 0 verify failures, the 6 frequent devices writing to InfluxDB after 10 s, the LED at its next publication |
+| canary revoked, step-ca restarted, `homepi-crl-sync` (reload) | canary refused, 1 verify failure (the canary), devices still writing |
+
+Limits:
+- A revocation does not close sessions that are already open: the CRL is checked at connection.
+  Suspending a device also needs its session closed (broker restart, or a kick).
+- step-ca regenerates its CRL at start and every `renewPeriod` (1 h), and the sync runs every 15
+  minutes: without a step-ca restart a revocation reaches the broker within about 75 minutes.
+  `crl.generateOnRevoke` (present in step-ca 0.30.2) is to be tested off the Pi first.
+- The broker logs a revoked client as `certificate verify failed`, not `certificate revoked`.
+- nginx does not check the CRL yet: a revoked certificate still reaches the registration API.
+
+The `admin` password was not lost: it is `step_admin_password` in `secrets/pki.sops.yaml`
+(v0.1.66). A JWK provisioner `ops` added on 2026-11-15 while it was believed lost was removed the
+same day (ca.json restored from the backup matching the pin).
