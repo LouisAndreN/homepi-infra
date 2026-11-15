@@ -3,11 +3,13 @@
 
 - sign and renew requests served by step-ca in the last hour and the last day (step-ca journal);
 - requests from IoT devices to the device API and the step-ca proxy in the last hour, by status class
-  (nginx access log; the Pi's own address 192.168.200.1 is left out).
+  (nginx access log; the Pi's own address 192.168.200.1 is left out);
+- client certificates refused by the MQTT broker in the last hour (mosquitto.log, v0.1.119).
 A re-enrollment loop (2026-11-07: 232 signatures in a day) or a wall of refusals becomes visible.
 
 Usage: homepi-device-metrics [--stdout]
 """
+import gzip
 import ipaddress
 import re
 import subprocess
@@ -18,6 +20,8 @@ from pathlib import Path
 
 PROM = Path("/var/lib/node_exporter/textfile_collector/homepi_devices.prom")
 NGINX_LOGS = [Path("/var/log/nginx/access.log.1"), Path("/var/log/nginx/access.log")]
+MOSQUITTO_LOGS = [Path("/var/log/mosquitto/mosquitto.log.1"), Path("/var/log/mosquitto/mosquitto.log")]
+REFUSED = "certificate verify failed"
 IOT = ipaddress.ip_network("192.168.200.0/24")
 PI_IOT_ADDRESS = ipaddress.ip_address("192.168.200.1")
 WINDOW = 3600
@@ -56,6 +60,24 @@ def device_requests(lines, now):
     return counts
 
 
+def broker_refusals(lines, now):
+    """Lines '<unix time>: OpenSSL Error[0]: ... certificate verify failed' in the window."""
+    n = 0
+    for line in lines:
+        head, _, rest = line.partition(":")
+        if REFUSED in rest and head.isdigit() and now - int(head) <= WINDOW:
+            n += 1
+    return n
+
+
+def mosquitto_lines():
+    for path in MOSQUITTO_LOGS:
+        if path.exists():
+            opener = gzip.open if path.read_bytes()[:2] == b"\x1f\x8b" else open
+            with opener(path, "rt", errors="replace") as handle:
+                yield from handle
+
+
 def nginx_lines():
     for path in NGINX_LOGS:
         if path.exists():
@@ -63,7 +85,7 @@ def nginx_lines():
                 yield from handle
 
 
-def render(success, signed, renewed, requests, now):
+def render(success, signed, renewed, requests, refusals, now):
     out = [
         "# HELP homepi_device_metrics_success 1 if the last run read the step-ca journal and the nginx log.",
         "# TYPE homepi_device_metrics_success gauge",
@@ -79,20 +101,25 @@ def render(success, signed, renewed, requests, now):
     out += ["# HELP homepi_device_requests Requests from IoT devices in the last hour, by route and status class.",
             "# TYPE homepi_device_requests gauge"]
     out += [f'homepi_device_requests{{route="{r}",status_class="{c}"}} {n}' for (r, c), n in sorted(requests.items())]
+    if refusals is not None:
+        out += ["# HELP homepi_broker_tls_refusals Client certificates refused by the MQTT broker in the window.",
+                "# TYPE homepi_broker_tls_refusals gauge",
+                f'homepi_broker_tls_refusals{{window="1h"}} {refusals}']
     return "\n".join(out) + "\n"
 
 
 def main():
     now = time.time()
-    signed, renewed, requests, success = {}, {}, {(r, c): 0 for r in ROUTES for c in CLASSES}, 1
+    signed, renewed, requests, success, refusals = {}, {}, {(r, c): 0 for r in ROUTES for c in CLASSES}, 1, None
     try:
         for window, since in (("1h", "-1h"), ("24h", "-24h")):
             signed[window], renewed[window] = stepca_counts(since)
         requests = device_requests(nginx_lines(), now)
+        refusals = broker_refusals(mosquitto_lines(), now)
     except Exception as error:  # publish the failure instead of stale numbers
         print(f"homepi-device-metrics: {error}", file=sys.stderr)
-        signed, renewed, success = {}, {}, 0
-    text = render(success, signed, renewed, requests, now)
+        signed, renewed, success, refusals = {}, {}, 0, None
+    text = render(success, signed, renewed, requests, refusals, now)
     if "--stdout" in sys.argv[1:]:
         sys.stdout.write(text)
     else:

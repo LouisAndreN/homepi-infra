@@ -35,7 +35,7 @@ loki.relabel "journal" {
 }
 
 loki.source.journal "systemd" {
-  forward_to    = [loki.write.loki_local.receiver]
+  forward_to    = [loki.process.mask_secrets.receiver]
   relabel_rules = loki.relabel.journal.rules
   labels        = {
     job  = "systemd-journal",
@@ -59,7 +59,7 @@ local.file_match "varlog" {
 // Alloy outage the backlog of 19:30-20:02 was stored at 20:10 (catch-up time), which breaks any
 // timeline. rsyslog writes an RFC 3339 prefix with microseconds; auditd writes msg=audit(<unix>:<n>).
 loki.process "varlog_ts" {
-  forward_to = [loki.write.loki_local.receiver]
+  forward_to = [loki.process.mask_secrets.receiver]
 
   stage.regex {
     expression = `^(?P<ts>\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}[+-]\d{2}:\d{2}) `
@@ -87,7 +87,7 @@ local.file_match "auditd" {
 
 // The full audit record is kept as the log line (it was replaced by the exe path before).
 loki.process "auditd_parser" {
-  forward_to = [loki.write.loki_local.receiver]
+  forward_to = [loki.process.mask_secrets.receiver]
 
   stage.regex {
     expression = `msg=audit\((?P<ts>\d+\.\d+):`
@@ -134,7 +134,7 @@ loki.source.file "auditd_exec" {
 }
 
 loki.process "auditd_exec" {
-  forward_to = [loki.write.loki_local.receiver]
+  forward_to = [loki.process.mask_secrets.receiver]
 
   stage.json {
     expressions = {
@@ -173,7 +173,7 @@ loki.source.file "nftables" {
 }
 
 loki.process "nftables_drops" {
-  forward_to = [loki.write.loki_local.receiver]
+  forward_to = [loki.process.mask_secrets.receiver]
 
   // Only kernel lines: Loki writes every query it serves to syslog, so a line that merely contains
   // the text NFT-DROP (a dashboard query) was stored and counted as a drop until v0.1.109.
@@ -191,6 +191,18 @@ loki.process "nftables_drops" {
   stage.timestamp {
     source = "ts"
     format = "RFC3339Nano"
+  }
+}
+
+// step-ca logs the one-time token (ott) of every request, through the journal and syslog. A renewal
+// token stays valid for 5 minutes: it must not be readable in Loki (v0.1.119). Every pipeline ends here. Tested with Alloy
+// 1.21.3 (quoted and unquoted values, nothing else on the line changed).
+loki.process "mask_secrets" {
+  forward_to = [loki.write.loki_local.receiver]
+
+  stage.replace {
+    expression = `\bott=("[^"]*"|[^ ]+)`
+    replace    = "\"<masked>\""
   }
 }
 
