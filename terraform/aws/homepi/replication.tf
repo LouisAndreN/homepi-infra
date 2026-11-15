@@ -10,9 +10,10 @@ variable "backup_vault_account_id" {
   description = "From SOPS (backup_vault_account_id), exported by awsenv. Empty: no replication resource."
 }
 
+# true since 2026-11-16 (vault applied): a plan without it would destroy the replication rule
 variable "vault_replication_enabled" {
   type    = bool
-  default = false
+  default = true
 }
 
 locals {

@@ -47,6 +47,8 @@ release() {
 # refuses the management account, and passes the account ID to Terraform without storing it in the repository.
 awsenv() {
   local me mgmt root
+  # Credentials exported by an earlier awsenv/awsmgmt would override the profile: drop them first
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION
   export AWS_PROFILE=homepi-admin
   aws sts get-caller-identity > /dev/null 2>&1 || aws sso login --no-browser || return 1
   me=$(aws sts get-caller-identity --query Account --output text) || return 1
@@ -62,6 +64,9 @@ awsenv() {
   # The backup-vault account ID (D3): optional, absent until the vault exists
   TF_VAR_backup_vault_account_id=$(sops -d --extract '["backup_vault_account_id"]' "$root/ansible/secrets/aws.sops.yaml" 2> /dev/null || true)
   export TF_VAR_backup_vault_account_id
+  # Hand Terraform the exact credentials the CLI just validated: its SDK refreshes the SSO token on its
+  # own and failed with InvalidGrantException while the CLI cache still worked (2026-11-16)
+  eval "$(aws configure export-credentials --format env)" || { echo "STOPPED: cannot export the session credentials"; return 1; }
   echo "AWS profile homepi-admin ready (workload account, region $(aws configure get region))"
 }
 
@@ -70,6 +75,7 @@ awsenv() {
 # the member accounts stay in SOPS and reach Terraform through the environment only.
 awsmgmt() {
   local me mgmt root
+  unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_CREDENTIAL_EXPIRATION
   export AWS_PROFILE=homepi-mgmt
   aws sts get-caller-identity > /dev/null 2>&1 || aws sso login --no-browser || return 1
   me=$(aws sts get-caller-identity --query Account --output text) || return 1
@@ -86,6 +92,9 @@ awsmgmt() {
   TF_VAR_backup_vault_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='backup-vault'].Id" --output text)
   TF_VAR_homepi_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='homepi'].Id" --output text)
   export TF_VAR_log_archive_account_id TF_VAR_backup_vault_account_id TF_VAR_homepi_account_id
+  # Hand Terraform the exact credentials the CLI just validated: its SDK refreshes the SSO token on its
+  # own and failed with InvalidGrantException while the CLI cache still worked (2026-11-16)
+  eval "$(aws configure export-credentials --format env)" || { echo "STOPPED: cannot export the session credentials"; return 1; }
   echo "AWS profile homepi-mgmt ready (management account, region $(aws configure get region))"
 }
 
