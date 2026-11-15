@@ -36,11 +36,11 @@ required etc/modprobe.d/blacklist-rtw88.conf
 required etc/systemd/system/hostapd.service.d/override.conf
 required etc/hostapd/hostapd.conf
 
-# Nginx: verified files, the wildcard certificate and key, the enabled-site links
+# Nginx: verified files (nginx_files), the wildcard certificate and key, the enabled-site links.
+# Not the device registration freeze snippet: retired in v0.1.114, the role removes it.
 required etc/nginx/nginx.conf
 required etc/nginx/sites-available/auth.homepi.internal
 required etc/nginx/snippets/ssl-homepi.conf
-required etc/nginx/snippets/homepi-freeze-device-registration.conf
 required etc/nginx/ssl
 required etc/nginx/sites-enabled/homepi.internal
 required etc/nginx/sites-enabled/auth.homepi.internal
