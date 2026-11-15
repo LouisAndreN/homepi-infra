@@ -32,10 +32,14 @@ awsenv || die "no AWS session (awsenv failed)"
 BUCKET="homepi-backups-${TF_VAR_homepi_account_id}"
 
 # Newest key of a prefix, optionally restricted to one day (names carry the date)
+# (The day pattern is built apart: inside ${day:-...} the first "}" of {4} would end the expansion.)
 pick() {
-  local prefix="$1" day="$2"
-  aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$prefix/" --query 'Contents[].Key' --output text 2> /dev/null \
-    | tr '\t' '\n' | grep -E "^$prefix/[a-z-]+-${day:-[0-9]{4}-[0-9]{2}-[0-9]{2}}-[0-9]{4,6}\.tar\.age$" | sort | tail -n 1
+  local prefix="$1" day="$2" keys
+  [ -n "$day" ] || day='[0-9]{4}-[0-9]{2}-[0-9]{2}'
+  # Errors stay visible: a refused listing must not look like an empty bucket
+  keys=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$prefix/" --query 'Contents[].[Key]' --output text) \
+    || die "cannot list s3://$BUCKET/$prefix/"
+  printf '%s\n' "$keys" | grep -E "^$prefix/[a-z-]+-$day-[0-9]{4,6}\.tar\.age$" | sort | tail -n 1
 }
 
 STATE_KEY=$(pick state "$DAY")
