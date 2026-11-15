@@ -1,13 +1,20 @@
 ---
-# B3.2a: keep the CRL fresh for the broker. The broker does not read it yet (B3.2b adds crlfile).
+# B3.2a: keep the CRL fresh for the broker, re-signed without the IDP extension (v0.1.116).
+# The broker does not read it yet: B3.2b adds crlfile once the re-signed CRL is proven on the Pi.
 
-- name: CRL sync script
+- name: python3-cryptography for homepi-crl-resign
+  ansible.builtin.apt:
+    name: python3-cryptography
+    state: present
+
+- name: CRL sync scripts (homepi-crl-resign drops the IDP step-ca adds, v0.1.116)
   ansible.builtin.copy:
-    src: homepi-crl-sync
-    dest: /usr/local/sbin/homepi-crl-sync
+    src: "{{ item }}"
+    dest: "/usr/local/sbin/{{ item }}"
     owner: root
     group: root
     mode: "0755"
+  loop: [homepi-crl-sync, homepi-crl-resign]
   register: pki_crl_script
 
 - name: CRL sync service and timer

@@ -164,6 +164,10 @@ def on_sensor_message(client, userdata, msg):
         parts = msg.topic.split("/")
         if len(parts) != 3 or parts[0] != "iot" or parts[2] not in TELEMETRY_KINDS:
             return
+        # A retained message is replayed by the broker at every (re)subscription: it says nothing about
+        # the device being alive (after a broker restart it refreshed last_seen of every device at once)
+        if getattr(msg, "retain", False):
+            return
         device_id = parts[1]
         fw = None
         try:

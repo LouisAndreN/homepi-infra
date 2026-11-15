@@ -1,12 +1,18 @@
 #!/bin/bash
-# homepi-crl-sync: fetch the CRL from step-ca, verify it, install it for the MQTT broker, publish metrics.
+# homepi-crl-sync: fetch the CRL from step-ca, verify it, re-sign it without its Issuing Distribution Point
+# (homepi-crl-resign), install it for the MQTT broker, publish metrics.
 # It never installs a CRL that fails verification, is not issued by the intermediate, expires within an
-# hour or is older than the installed one: once the broker enforces the CRL, an expired CRL rejects every device.
+# hour, is older than the installed one, or with which the broker's own certificate fails a CRL check:
+# once the broker enforces the CRL, a bad CRL rejects every device (incident 2026-11-15).
 set -uo pipefail
 CA_URL="https://127.0.0.1:8443"
 ROOT="/etc/step-ca/certs/root_ca.crt"
 CHAIN="/etc/mosquitto/certs/ca_chain.crt"
 ISSUER_CERT="/etc/step-ca/certs/intermediate_ca.crt"
+ISSUER_KEY="/etc/step-ca/secrets/intermediate_ca_key"
+CA_PASSWORD="/etc/step-ca/password.txt"
+# A certificate issued by the intermediate and not revoked: the installed CRL must let it through
+PROBE_CERT="/etc/mosquitto/certs/broker_chain.crt"
 DEST="/etc/mosquitto/crl/crl.pem"
 PROM="/var/lib/node_exporter/textfile_collector/homepi_crl.prom"
 MIN_VALID=3600
@@ -56,8 +62,16 @@ now=$(date +%s); next=$(crl_time "$T/crl.pem" nextupdate) || fail "no nextUpdate
 if [ -s "$DEST" ] && old_last=$(crl_time "$DEST" lastupdate) && [ "$(crl_time "$T/crl.pem" lastupdate)" -lt "$old_last" ]; then
   fail "the new CRL is older than the installed one"
 fi
-if ! cmp -s "$T/crl.pem" "$DEST"; then
-  { install -o mosquitto -g mosquitto -m 0644 "$T/crl.pem" "$DEST.new" && mv -f "$DEST.new" "$DEST"; } || fail "install failed"
+/usr/local/sbin/homepi-crl-resign "$T/crl.pem" "$ISSUER_CERT" "$ISSUER_KEY" "$CA_PASSWORD" "$T/out.pem" || fail "re-signing failed"
+openssl crl -in "$T/out.pem" -CAfile "$CHAIN" -noout 2>&1 | grep -qx 'verify OK' || fail "the re-signed CRL does not verify against $CHAIN"
+openssl crl -in "$T/out.pem" -noout -text | grep -q 'Issuing Distribution Point' && fail "the re-signed CRL still has an IDP"
+openssl x509 -in "$PROBE_CERT" -out "$T/probe.pem" || fail "cannot read $PROBE_CERT"
+openssl verify -crl_check -CAfile "$CHAIN" -CRLfile "$T/out.pem" "$T/probe.pem" > /dev/null 2>&1 \
+  || fail "the broker certificate fails a CRL check with the new CRL: not installed"
+# ECDSA signatures differ at every run: compare what the CRL says, not its bytes
+summary() { openssl crl -in "$1" -noout -lastupdate -crlnumber 2>/dev/null; openssl crl -in "$1" -noout -text 2>/dev/null | grep 'Serial Number' | sort; }
+if [ ! -s "$DEST" ] || [ "$(summary "$T/out.pem")" != "$(summary "$DEST")" ]; then
+  { install -o mosquitto -g mosquitto -m 0644 "$T/out.pem" "$DEST.new" && mv -f "$DEST.new" "$DEST"; } || fail "install failed"
   if grep -qs '^crlfile' /etc/mosquitto/conf.d/*.conf && systemctl is-active --quiet mosquitto; then
     systemctl reload mosquitto || fail "mosquitto reload failed"
   fi

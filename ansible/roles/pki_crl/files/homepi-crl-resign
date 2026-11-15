@@ -1,0 +1,59 @@
+#!/usr/bin/python3
+"""homepi-crl-resign SRC.pem ISSUER.crt KEY PASSWORD_FILE OUT.pem
+
+Re-signs the step-ca CRL without its Issuing Distribution Point (IDP) extension.
+
+step-ca always adds a critical IDP naming its CRL URL. OpenSSL then accepts the CRL only for
+certificates that carry a matching CRL Distribution Point, and HomePi certificates carry none: the
+broker rejected every client with "different CRL scope" (incident 2026-11-15, docs/runbooks/pki.md).
+Entries, reasons, dates, CRL number and issuer are kept; only the IDP is dropped. The issuer key is the
+one step-ca signs with, read with the password step-ca itself reads.
+"""
+import sys
+
+from cryptography import x509
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.x509.oid import ExtensionOID
+
+DER, SPKI = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+
+
+def utc(obj, name):
+    """The *_utc attributes exist from cryptography 42; the Pi's apt package may be older (naive UTC)."""
+    return getattr(obj, name + "_utc", None) or getattr(obj, name)
+
+
+def main(src, issuer_path, key_path, pw_path, out):
+    with open(src, "rb") as f:
+        crl = x509.load_pem_x509_crl(f.read())
+    with open(issuer_path, "rb") as f:
+        issuer = x509.load_pem_x509_certificate(f.read())
+    if crl.issuer != issuer.subject or not crl.is_signature_valid(issuer.public_key()):
+        sys.exit("source CRL is not signed by the issuer")
+    with open(pw_path, "rb") as f:
+        password = f.read().rstrip(b"\r\n")
+    with open(key_path, "rb") as f:
+        key = serialization.load_pem_private_key(f.read(), password=password)
+    if key.public_key().public_bytes(DER, SPKI) != issuer.public_key().public_bytes(DER, SPKI):
+        sys.exit("the key does not belong to the issuer")
+    b = (x509.CertificateRevocationListBuilder().issuer_name(crl.issuer)
+         .last_update(utc(crl, "last_update")).next_update(utc(crl, "next_update")))
+    for ext in crl.extensions:
+        if ext.oid != ExtensionOID.ISSUING_DISTRIBUTION_POINT:
+            b = b.add_extension(ext.value, ext.critical)
+    for r in crl:
+        rb = x509.RevokedCertificateBuilder().serial_number(r.serial_number).revocation_date(utc(r, "revocation_date"))
+        for e in r.extensions:
+            rb = rb.add_extension(e.value, e.critical)
+        b = b.add_revoked_certificate(rb.build())
+    new = b.sign(key, hashes.SHA256())
+    if len(new) != len(crl) or not new.is_signature_valid(issuer.public_key()):
+        sys.exit("the re-signed CRL failed its own check")
+    with open(out, "wb") as f:
+        f.write(new.public_bytes(serialization.Encoding.PEM))
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 6:
+        sys.exit(__doc__.splitlines()[0])
+    main(*sys.argv[1:])

@@ -16,6 +16,7 @@
 1. Revocation is not enforced: the broker has no `crlfile` (B3.2b). Since v0.1.53 the CRL itself is
    kept fresh and monitored (see "CRL sync"); the cron `crl_sync.sh` it replaces had failed since
    2026-05-23 (it verified a CRL signed by the intermediate against the root alone) and nothing alerted.
+   A first attempt on 2026-11-15 rejected every device: see "Incident 2026-11-15" below.
    `revoked.acl` is not referenced and its syntax is invalid.
 2. One password opens the root key, the intermediate key and probably the `admin` provisioner. Until
    2026-11-08 it was readable by the group `iot-platform` (member: `srvpi`).
@@ -165,3 +166,48 @@ Rollback: `/root/homepi-removed/pki/step-ca.service.before-v0.1.86`.
 Never run step-ca as root on `/etc/step-ca/db`: Badger writes a new table when it closes, and a
 root-owned file stops step-ca from starting as step. Any restore of `db/` ends with
 `systemctl stop step-ca; chown -R step:step /etc/step-ca/db; systemctl start step-ca`.
+
+## Incident 2026-11-15: crlfile rejected every device (about 3 minutes)
+
+What happened: `crlfile` was enabled on 8883 and the broker restarted. Every client was then refused
+(171 x `OpenSSL Error[0]: error:0A000086:SSL routines::certificate verify failed`, 08:52 to 08:55 JST)
+until the line was commented out again. The operator noticed it; the test did not.
+
+Cause: step-ca always adds a critical Issuing Distribution Point (IDP) naming its CRL URL. OpenSSL
+then uses the CRL only for certificates carrying a matching CRL Distribution Point, and no HomePi
+certificate has one: `openssl verify -crl_check` fails with `error 44: different CRL scope` for any
+certificate, revoked or not. Reproduced with step-ca 0.30.2 and mosquitto 2.0.18 off the Pi: with
+the step-ca CRL a valid client is refused; with the same CRL re-signed without IDP a valid client
+connects, a revoked one is refused, and a SIGHUP is enough to load a new CRL. step-ca has no option
+to omit the IDP (`crl.idpURL` only changes its URL).
+
+Why the safeguards missed it:
+- the reconnection check counted devices with `last_seen` younger than 120 s, which the values from
+  before the restart satisfied; worse, the API refreshed `last_seen` of every device from retained
+  `status` messages when it resubscribed (fixed in v0.1.116: retained messages are ignored);
+- the TLS probe read `Verify return code: 0`, which is the client's verdict on the server
+  certificate, and took any refusal other than `certificate revoked` for an acceptance.
+
+Rules kept: a success check must be able to fail and must have been seen failing once; reconnection
+is proven by new data (InfluxDB points after the restart), never by `last_seen`; a broker probe is
+an MQTT CONNECT that must receive `CONNACK (0)`.
+
+## Re-signed CRL (v0.1.116)
+
+`homepi-crl-sync` now passes the verified step-ca CRL to `homepi-crl-resign`, which re-signs it with
+the intermediate key (the key and password step-ca itself reads) and drops only the IDP. It installs
+the result only if it verifies against the chain, has no IDP, and lets the broker certificate
+through `openssl verify -crl_check`: a CRL with which a valid certificate fails is never installed.
+It compares the CRL content (lastUpdate, number, serials), not its bytes, since ECDSA signatures
+differ at every run. Once certificates carry a CRL Distribution Point matching the step-ca IDP
+(templates, reissued with shorter lifetimes), the re-signing can go.
+
+Proven before the release (scratch CA, same versions): first run installs; a second run with no
+change does not reinstall; a CRL revoking the broker certificate is refused and the previous one
+stays; a regular revocation is installed.
+
+Also learned that day: `step ca revoke` has no `--provisioner`; it takes a token. Revocation is
+done with `step ca token <serial> --revoke` written to a 0600 file and a POST of
+`{"serial", "ott", "passive": true, "reasonCode"}` to `/1.0/revoke` (without `passive` step-ca
+answers 501); a token cannot be replayed (401). step-ca regenerates the CRL at start and every
+`renewPeriod` (1 h), not at revocation.

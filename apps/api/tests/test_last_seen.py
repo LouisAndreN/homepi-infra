@@ -1,4 +1,5 @@
-"""last_seen comes from every telemetry topic, with one registry write per device per 30 s (v0.1.113)."""
+"""last_seen comes from every telemetry topic, with one registry write per device per 30 s (v0.1.113),
+never from a retained message (v0.1.116)."""
 import importlib
 import os
 import sqlite3
@@ -29,8 +30,8 @@ def _row(db):
     return sqlite3.connect(db).execute("SELECT fw_version, last_seen FROM devices").fetchone()
 
 
-def _msg(kind, payload=b"{}"):
-    return SimpleNamespace(topic="iot/esp32-00000001/" + kind, payload=payload)
+def _msg(kind, payload=b"{}", retain=False):
+    return SimpleNamespace(topic="iot/esp32-00000001/" + kind, payload=payload, retain=retain)
 
 
 def test_nilm_and_status_update_last_seen(monkeypatch, tmp_path):
@@ -63,3 +64,11 @@ def test_metric_exposes_last_seen(monkeypatch, tmp_path):
     api, db = _api(monkeypatch, tmp_path)
     body = asyncio.run(api.homepi_metrics()).body.decode()
     assert 'homepi_device_last_seen_timestamp_seconds{device_id="esp32-00000001",status="active"} 1791978616' in body
+
+
+def test_retained_message_is_not_a_sign_of_life(monkeypatch, tmp_path):
+    api, db = _api(monkeypatch, tmp_path)
+    api.on_sensor_message(None, None, _msg("status", b'{"fw": "v9"}', retain=True))
+    assert _row(db) == ("v1", "2026-10-14T11:50:16Z")
+    api.on_sensor_message(None, None, _msg("status", b'{"fw": "v9"}'))
+    assert _row(db)[0] == "v9" and _row(db)[1] != "2026-10-14T11:50:16Z"
