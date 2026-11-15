@@ -55,6 +55,13 @@ mkdir -p "$WORK/sqlite-extra"
 for db in /var/lib/authelia/db.sqlite3 /var/lib/grafana/grafana.db; do
   sqlite3 "$db" ".backup '$WORK/sqlite-extra/$(basename "$db")'" || { echo "ERROR: sqlite backup of $db failed" >&2; exit 1; }
 done
+# CrowdSec (C1, 2026-11-15): crowdsec.db holds the local API machine and the nftables bouncer
+# registrations that /etc/crowdsec/local_api_credentials.yaml and bouncers/*.yaml refer to; /etc
+# without it restores credentials nothing validates. Decisions and alerts in it are disposable.
+if [ -f /var/lib/crowdsec/data/crowdsec.db ]; then
+  sqlite3 -cmd ".timeout 30000" /var/lib/crowdsec/data/crowdsec.db ".backup '$WORK/sqlite-extra/crowdsec.db'" \
+    || { echo "ERROR: sqlite backup of crowdsec.db failed" >&2; exit 1; }
+fi
 tar -C / -cf "$WORK/etc-and-state.tar" \
   --exclude='etc/homepi-gitops/age.key' --exclude='etc/shadow*' --exclude='etc/gshadow*' \
   --exclude='var/lib/homepi/*.db*' \
@@ -62,7 +69,8 @@ tar -C / -cf "$WORK/etc-and-state.tar" \
   --exclude='var/lib/homepi-terraform/data' --exclude='var/lib/homepi-terraform/review-data' \
   --exclude='var/lib/homepi-terraform/*.plan' --exclude='var/lib/homepi-terraform/*.bin' \
   --exclude='var/lib/homepi-terraform/*.json' \
-  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets var/lib/netbird var/lib/homepi-terraform || rc=$?
+  etc usr/local/bin usr/local/sbin var/lib/homepi var/lib/secrets var/lib/netbird var/lib/homepi-terraform \
+  home/srvpi/.ssh/authorized_keys || rc=$?
 [ "$rc" -le 1 ] || { echo "ERROR: tar failed (exit $rc)" >&2; exit 1; }
 if [ "$CA_STOPPED" = 1 ]; then systemctl start step-ca; CA_STOPPED=0; fi
 

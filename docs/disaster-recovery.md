@@ -72,3 +72,22 @@ metadata (bolt: buckets, tasks, authorizations) and the shards: `influx restore 
 token back, so Telegraf, Grafana, the dashboard and the backups keep working without a SOPS change.
 Data RPO goes from 7 days (weekly line-protocol export, Sunday 04:15, kept as the portable fallback)
 to 24 hours.
+
+## Added to the nightly archive (C1, 2026-11-15)
+
+- `sqlite-extra/crowdsec.db`: the local API machine and nftables bouncer registrations. Without it,
+  the restored `/etc/crowdsec` credentials match nothing and the bouncer stops blocking. Restore
+  with crowdsec and the bouncer stopped.
+- `home/srvpi/.ssh/authorized_keys` (inside `etc-and-state.tar`): the operator's public keys, so a
+  rebuilt Pi accepts the laptop without typing a key by hand.
+
+## Deliberately not backed up (measured 2026-11-15)
+
+| Path | Size | Consequence of a rebuild |
+|---|---|---|
+| `/var/lib/prometheus` | 6.3 G | metrics history lost; alerts restart from zero |
+| `/var/lib/loki` | 333 M | logs lost, audit events included: security evidence before the rebuild is gone |
+| `/var/lib/mosquitto` | 8 K | retained messages lost (retained OTA commands included: wanted) |
+| `/var/lib/alertmanager` | 8 K | silences lost |
+| `/var/lib/docker` | 70 M | unused (docker and containerd disabled): not reinstalled |
+| six empty volumes | 0 | `lv-containers`, `lv-ml-models`, `lv-ml-cache`, `lv-cloud-sync`, Btrfs `@personal`, `@archives`: recreated empty by the layout |
