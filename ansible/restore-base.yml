@@ -1,0 +1,12 @@
+# Restore phase R2 (docs/runbooks/restore.md), run by hand from the laptop on a host built by R1:
+#   ansible-playbook restore-base.yml
+# Installs the pinned apt sources and packages, and the monitoring service accounts, so that every
+# owner of the restored files exists before R3. No secret, no GitOps trust anchor needed.
+---
+- name: HomePi restore base (packages and service accounts)
+  hosts: pi_hosts
+  become: true
+  roles:
+    - common
+    - packages
+    - monitoring_binaries

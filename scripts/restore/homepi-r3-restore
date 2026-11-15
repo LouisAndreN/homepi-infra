@@ -1,0 +1,138 @@
+#!/bin/bash
+# homepi-r3-restore: restore phases R2 and R3 (docs/runbooks/restore.md), on the rebuilt Pi.
+#
+# Reads the DECRYPTED state archive on stdin (the laptop streams it, nothing decrypted is written
+# on the laptop), unpacks it in RAM (/run), creates the service accounts no package or role
+# creates, checks that every owner in the selection exists, stops the services, then restores
+# only the paths of r3-paths.txt, the SQLite databases and the application files under /opt.
+#
+#   laptop: age -d -i KEY homepi-state-....tar.age | ssh PI 'sudo /tmp/homepi-r3/homepi-r3-restore'
+#
+# Run after the base playbook (ansible/restore-base.yml: packages and monitoring users) and
+# before the full apply (R4). Every step stops with "STOPPED: ..." on the first problem.
+set -euo pipefail
+umask 077
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+HERE=$(cd "$(dirname "$0")" && pwd)
+PATHS="${HOMEPI_R3_PATHS:-$HERE/r3-paths.txt}"
+# ROOT exists for the offline test only; on the Pi it is always /
+ROOT="${HOMEPI_R3_ROOT:-/}"
+STAGE=$(mktemp -d /run/homepi-r3.XXXXXX)
+trap 'rm -rf "$STAGE"' EXIT
+
+# Accounts created by hand on the production Pi (no package or role creates them).
+# name:group:home:shell, same homes and shells as production (inventory 2026-11-15)
+ACCOUNTS="step:step:/nonexistent:/usr/sbin/nologin homepi-api:homepi-api:/opt/homepi:/usr/sbin/nologin"
+# Services that hold files R3 replaces: stopped first, started again by the full apply (R4)
+SERVICES="step-ca mosquitto nginx crowdsec crowdsec-firewall-bouncer grafana-server authelia netbird hostapd dnsmasq homepi-api homepi-api-admin homepi-api.socket homepi-api-admin.socket"
+# SQLite copies in the archive: member target owner group mode
+DATABASES=$(cat << 'EOF'
+./sqlite/var/lib/homepi/devices.db   /var/lib/homepi/devices.db          homepi-api homepi-api 0644
+./sqlite-extra/db.sqlite3            /var/lib/authelia/db.sqlite3        authelia   authelia   0600
+./sqlite-extra/grafana.db            /var/lib/grafana/grafana.db         grafana    grafana    0640
+./sqlite-extra/crowdsec.db           /var/lib/crowdsec/data/crowdsec.db  root       root       0640
+EOF
+)
+# Under /opt: application files that Ansible does not deploy (the API code comes from the repository)
+OPT_KEEP="opt/pironman5 opt/homepi"
+OPT_EXCLUDE="opt/homepi/api opt/homepi/api-venv opt/pironman5/venv"
+
+die() { echo "STOPPED: $*" >&2; exit 1; }
+log() { echo "homepi-r3: $*"; }
+
+unpack() {
+  [ "$EUID" -eq 0 ] || die "run as root"
+  [ -r "$PATHS" ] || die "allowlist $PATHS not found"
+  [ ! -t 0 ] || die "no archive on stdin (stream it from the laptop with age -d)"
+  log "unpacking the archive in RAM ($STAGE)"
+  tar -x -C "$STAGE" -f - || die "stdin is not the decrypted state archive"
+  for f in etc-and-state.tar opt.tar sqlite-extra/crowdsec.db; do [ -e "$STAGE/$f" ] || die "the archive has no $f"; done
+}
+
+ensure_accounts() {
+  local a name group home shell
+  for a in $ACCOUNTS; do
+    IFS=: read -r name group home shell <<< "$a"
+    getent group "$group" > /dev/null || { groupadd --system "$group"; log "group created: $group"; }
+    getent passwd "$name" > /dev/null || { useradd --system --gid "$group" --home-dir "$home" --no-create-home --shell "$shell" "$name"; log "user created: $name"; }
+  done
+}
+
+# Expand the allowlist against the archive: every required pattern must match at least one member
+select_members() {
+  local kind pattern n
+  tar -tf "$STAGE/etc-and-state.tar" > "$STAGE/members"
+  : > "$STAGE/patterns"
+  while read -r kind pattern; do
+    case "$kind" in ''|'#'*) continue ;; required|optional) ;; *) die "bad allowlist line: $kind $pattern" ;; esac
+    # A pattern matches the member itself or anything below it (directories end with /)
+    n=$(grep -cE "^$(printf '%s' "$pattern" | sed 's/[.]/\\./g; s/[*]/[^\/]*/g')(/.*)?$" "$STAGE/members" || true)
+    if [ "$n" = 0 ]; then
+      [ "$kind" = optional ] && { log "optional, absent from the archive: $pattern"; continue; }
+      die "required path absent from the archive: $pattern"
+    fi
+    printf '%s\n' "$pattern" >> "$STAGE/patterns"
+  done < "$PATHS"
+  log "$(wc -l < "$STAGE/patterns") allowlist entries found in the archive"
+}
+
+# tar maps owners by name: a name missing here would silently become a number
+check_owners() {
+  local missing=0 u g
+  tar -tvf "$STAGE/etc-and-state.tar" --wildcards -T "$STAGE/patterns" \
+    | awk '{split($2, o, "/"); print o[1], o[2]}' | sort -u > "$STAGE/owners"
+  while read -r u g; do
+    getent passwd "$u" > /dev/null || { echo "  missing user: $u"; missing=1; }
+    getent group "$g" > /dev/null || { echo "  missing group: $g"; missing=1; }
+  done < "$STAGE/owners"
+  [ "$missing" = 0 ] || die "owners missing on this system (run ansible/restore-base.yml first, or add them to ACCOUNTS)"
+  log "every owner of the selection exists ($(wc -l < "$STAGE/owners") user:group pairs)"
+}
+
+stop_services() {
+  local s
+  [ "$ROOT" = / ] || return 0
+  for s in $SERVICES; do
+    systemctl list-unit-files "$s.service" "$s" > /dev/null 2>&1 || continue
+    systemctl stop "$s" 2> /dev/null || true
+  done
+  log "services stopped: $SERVICES"
+}
+
+restore_files() {
+  tar -x -p --same-owner --wildcards -C "$ROOT" -f "$STAGE/etc-and-state.tar" -T "$STAGE/patterns" \
+    || die "extraction failed"
+  log "restored: $(tar -tf "$STAGE/etc-and-state.tar" --wildcards -T "$STAGE/patterns" | grep -vc '/$') files"
+  local x args=()
+  for x in $OPT_EXCLUDE; do args+=(--exclude="$x"); done
+  tar -x -p --same-owner -C "$ROOT" -f "$STAGE/opt.tar" "${args[@]}" $OPT_KEEP 2> /dev/null \
+    || log "WARNING: part of $OPT_KEEP is absent from opt.tar"
+  log "restored under /opt: $OPT_KEEP (without the API code and the virtualenvs)"
+}
+
+restore_databases() {
+  local member target owner group mode
+  while read -r member target owner group mode; do
+    [ -n "$member" ] || continue
+    [ -f "$STAGE/$member" ] || die "database $member absent from the archive"
+    install -d "$ROOT$(dirname "$target")"
+    rm -f "$ROOT$target" "$ROOT$target-wal" "$ROOT$target-shm"
+    install -m "$mode" -o "$owner" -g "$group" "$STAGE/$member" "$ROOT$target"
+    [ "$(sqlite3 "$ROOT$target" 'PRAGMA integrity_check;')" = ok ] || die "integrity check failed: $target"
+  done <<< "$DATABASES"
+  log "databases restored and checked: devices.db, Authelia, Grafana, CrowdSec"
+}
+
+main() {
+  unpack
+  ensure_accounts
+  select_members
+  check_owners
+  stop_services
+  restore_files
+  restore_databases
+  log "done. Next: R4 (new Pi age key, SOPS re-key, full apply); services stay stopped until then"
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

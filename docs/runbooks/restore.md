@@ -67,3 +67,49 @@ the image copy and the chroot are only proven on the hardware.
 
 After R1: power off, remove the microSD, power on. The new system has new SSH host keys until R3
 restores the production ones: connect with a separate known_hosts file during the rebuild.
+
+## R2: packages and service accounts (`ansible/restore-base.yml`, laptop)
+
+`ansible-playbook restore-base.yml` installs the pinned apt sources and packages (roles `common`,
+`packages`) and the monitoring accounts (`monitoring_binaries`). Packages create their own users
+(grafana, mosquitto, influxdb, telegraf, authelia, alloy, unbound, _chrony). Until R3 restores the
+production SSH host keys, connect with a separate known_hosts file: the rebuilt system has new ones.
+
+## R3: restore the state (`scripts/restore/homepi-r3-restore`, Pi)
+
+    age -d -i ~/.config/sops/age/keys.txt ~/homepi-restore/<day>/homepi-state-<...>.tar.age \
+      | ssh <pi> 'sudo /tmp/homepi-r3/homepi-r3-restore'
+
+The decrypted archive goes from age through SSH straight into RAM on the Pi (`/run`, removed at
+exit); nothing decrypted is written on the laptop or on the Pi's disks except the restored files.
+
+1. Creates `step` and `homepi-api` (made by hand on the production Pi, by no package or role),
+   with the production homes and shells.
+2. Expands `scripts/restore/r3-paths.txt` against the archive: a `required` path that is absent
+   stops the restore, an `optional` one is reported.
+3. Checks that every owner of the selected files exists: tar maps owners by name, and a missing
+   name would silently become a number.
+4. Stops the services that hold those files, restores the selection with owners and modes, the
+   application files under /opt (without the API code and the virtualenvs, which Ansible rebuilds),
+   and the four SQLite databases (devices.db, Authelia, Grafana, CrowdSec), each checked with
+   `PRAGMA integrity_check`.
+
+What the allowlist holds, and why: the files the verify-only roles check but never write (pki,
+network, nginx, provisioning_api: the full apply would fail without them), the identities (step-ca
+keys and database, broker certificate, nginx wildcard certificate, NetBird peer, AWS edge
+certificate, SSH host keys, GitHub deploy key), the GitOps trust anchor `allowed_signers`, and the
+state outside the repository (`/var/lib/secrets`, `/var/lib/homepi`, Terraform state). Everything
+else comes from the repository in R4. Never fstab, crypttab, machine-id or the boot files (R1).
+
+Tested offline (`scripts/restore/tests` style, fake archive): selection, wildcard host keys, step-ca
+database, /opt exclusions, database owners and modes; stray files, fstab and unlisted /etc files are
+not restored; a missing required path, an unknown owner and an empty stdin stop it.
+
+## R4: new Pi age key and full apply
+
+1. On the Pi: `age-keygen -o /etc/homepi-gitops/age.key` (root 0600), print the public key only.
+2. On the laptop: **add** that key to `.sops.yaml` and `sops updatekeys` every `*.sops.yaml`. Add,
+   never replace: the production Pi (Micron) must still decrypt the repository when it comes back.
+   After the drill, remove the drill key the same way.
+3. `ansible-playbook site.yml` from the laptop: every role applies, the verify-only roles prove the
+   restored files. Then a signed tag, and GitOps on the rebuilt Pi takes over.

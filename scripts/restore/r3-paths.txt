@@ -1,0 +1,76 @@
+# R3 allowlist: the only paths restored from etc-and-state.tar (docs/runbooks/restore.md).
+# Format: required|optional <member pattern>. A pattern names a file or a directory (restored with
+# everything under it); shell wildcards are allowed. "required" stops R3 when the archive lacks it.
+#
+# Everything else comes from the repository through Ansible (R4), or is the new system's own
+# (fstab, crypttab, machine-id, boot files: written by R1). Never add /etc as a whole.
+
+# PKI state, keys and the files the pki role only verifies (pki_files, pki_stat_files)
+required etc/step-ca
+required etc/mosquitto/mosquitto.conf
+required etc/mosquitto/conf.d/homepi_iot.conf
+required etc/mosquitto/acl/services.acl
+optional etc/mosquitto/acl/devices.acl
+required etc/mosquitto/certs
+required etc/mosquitto/passwd
+optional etc/mosquitto/crl
+required etc/systemd/system/step-ca.service
+required etc/systemd/system/step-renew.service
+required etc/systemd/system/step-renew.service.d
+required etc/systemd/system/step-renew.timer
+required etc/systemd/system/step-renew-mosquitto.service
+required etc/systemd/system/step-renew-mosquitto.timer
+
+# Network: verified by the network role, hostapd.conf carries the Wi-Fi passphrase (netplan: R1)
+required etc/nftables.conf
+required etc/iptables/rules.v4
+required etc/iptables/rules.v6
+required etc/default/hostapd
+required etc/dnsmasq.conf
+required etc/dnsmasq.d/homepi-local.conf
+required etc/systemd/network/20-wlx.network
+required etc/sysctl.d/99-ipforward.conf
+required etc/sysctl.d/10-network-security.conf
+required etc/sysctl.d/99-netbird-localnet.conf
+required etc/modprobe.d/blacklist-rtw88.conf
+required etc/systemd/system/hostapd.service.d/override.conf
+required etc/hostapd/hostapd.conf
+
+# Nginx: verified files, the wildcard certificate and key, the enabled-site links
+required etc/nginx/nginx.conf
+required etc/nginx/sites-available/auth.homepi.internal
+required etc/nginx/snippets/ssl-homepi.conf
+required etc/nginx/snippets/homepi-freeze-device-registration.conf
+required etc/nginx/ssl
+required etc/nginx/sites-enabled/homepi.internal
+required etc/nginx/sites-enabled/auth.homepi.internal
+
+# Device API: units and environment verified by provisioning_api (devices.db: sqlite/ below)
+required etc/systemd/system/homepi-api.service
+required etc/systemd/system/homepi-api-admin.service
+required etc/systemd/system/homepi-api.socket
+required etc/systemd/system/homepi-api-admin.socket
+required etc/homepi/api.env
+required var/lib/homepi
+
+# CrowdSec credentials (their registrations: sqlite-extra/crowdsec.db)
+required etc/crowdsec/local_api_credentials.yaml
+required etc/crowdsec/online_api_credentials.yaml
+required etc/crowdsec/config.yaml
+required etc/crowdsec/bouncers
+
+# Identities: NetBird peer, AWS edge certificate, SSH host keys, GitHub deploy key
+required var/lib/netbird
+optional etc/netbird
+required etc/homepi-aws
+required etc/ssh/ssh_host_*
+required etc/ssh/sshd_config
+optional etc/ssh/sshd_config.d
+required etc/homepi-gitops/allowed_signers
+optional etc/homepi-gitops/github_deploy_key
+optional etc/homepi-gitops/github_known_hosts
+
+# State and secrets that are not in the repository
+required var/lib/secrets
+required var/lib/homepi-terraform
+required home/srvpi/.ssh/authorized_keys
