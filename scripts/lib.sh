@@ -78,6 +78,10 @@ awsmgmt() {
   TF_VAR_backup_vault_email=$(sops -d --extract '["backup_vault_email"]' "$root/ansible/secrets/aws.sops.yaml") || { echo "STOPPED: backup_vault_email missing from SOPS"; return 1; }
   [ -n "$TF_VAR_log_archive_email" ] && [ -n "$TF_VAR_backup_vault_email" ] || { echo "STOPPED: an account e-mail is empty in SOPS"; return 1; }
   export TF_VAR_log_archive_email TF_VAR_backup_vault_email
+  # Member account IDs, looked up by name (empty until terraform/aws/org created them)
+  TF_VAR_log_archive_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='log-archive'].Id" --output text)
+  TF_VAR_backup_vault_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='backup-vault'].Id" --output text)
+  export TF_VAR_log_archive_account_id TF_VAR_backup_vault_account_id
   echo "AWS profile homepi-mgmt ready (management account, region $(aws configure get region))"
 }
 

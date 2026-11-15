@@ -69,6 +69,29 @@ the member account, so under the SCP), not its root (denied too). The only way i
 management account: detach the SCP first, which CloudTrail records. That is the break-glass that
 COMPLIANCE would not leave: a mistaken retention can still be corrected, deliberately and visibly.
 
+## D2b: organization trail into log-archive (`terraform/aws/logging`)
+
+1. Trusted access for CloudTrail (reversible, once):
+   `aws organizations enable-aws-service-access --service-principal cloudtrail.amazonaws.com`
+2. `plan` with `awsmgmt` (it looks up the log-archive account ID): 9 resources, all creations, in two
+   accounts. The bucket is reached through `OrganizationAccountAccessRole` in log-archive, so every
+   guardrail of the SCP applies to Terraform itself there.
+3. Bucket `homepi-cloudtrail-[log-archive]`: Object Lock GOVERNANCE 7 days (`trail_lock_days`, then
+   90), versioned, SSE-S3, public access blocked, TLS only, one-year expiry. Only
+   `cloudtrail.amazonaws.com` may write, only for `homepi-org-trail` (`aws:SourceArn`), only under
+   `AWSLogs/`.
+4. Trail `homepi-org-trail` in the management account: organization trail, all regions, global
+   service events, log file validation.
+
+Tests:
+
+| Claim | Test |
+|---|---|
+| Events of member accounts land in log-archive | an API call in homepi appears under `AWSLogs/[org]/[homepi]/` within about 15 minutes |
+| Logs cannot be removed early | from log-archive (OrganizationAccountAccessRole), delete a log object version with `--bypass-governance-retention`: denied by the SCP |
+| homepi cannot read them | `aws s3 ls s3://homepi-cloudtrail-[log-archive]` with homepi-admin: AccessDenied |
+| Integrity | `aws cloudtrail validate-logs` on the trail: digest files valid |
+
 ## Next
 
 D2b organization trail into `log-archive` (Object Lock GOVERNANCE 7 days, then GOVERNANCE 90 days), D3 `backup-vault` replica with replication from `homepi`,
