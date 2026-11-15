@@ -62,12 +62,15 @@ After attaching to Workloads, the Pi's paths must still work: off-site upload (S
 Roles Anywhere) and the heartbeat (CloudWatch PutMetricData), both in Tokyo. Check
 `homepi_offsite_upload_success` and the CloudWatch alarm in the hour after.
 
-Note: `DenyGovernanceBypass` ends the admin bypass on the homepi backup bucket, which GOVERNANCE
-allowed until now. Wanted: the bucket moves to COMPLIANCE in D5 anyway.
+Object Lock stays in GOVERNANCE everywhere (owner decision 2026-11-16, replaces the COMPLIANCE plan
+of D5). With `DenyGovernanceBypass` on both OUs, no identity of a member account can shorten a
+retention or delete a locked version: not its admins, not `OrganizationAccountAccessRole` (a role of
+the member account, so under the SCP), not its root (denied too). The only way is from the
+management account: detach the SCP first, which CloudTrail records. That is the break-glass that
+COMPLIANCE would not leave: a mistaken retention can still be corrected, deliberately and visibly.
 
 ## Next
 
-D2b organization trail into `log-archive` (Object Lock GOVERNANCE 7 days, then COMPLIANCE 90 days
-after two stable weeks, explicit go), D3 `backup-vault` replica with replication from `homepi`,
+D2b organization trail into `log-archive` (Object Lock GOVERNANCE 7 days, then GOVERNANCE 90 days), D3 `backup-vault` replica with replication from `homepi`,
 D2c the Pi's security logs off the host into `log-archive` (C1 decision: logs are not backed up,
 they are shipped), D6 hygiene.
