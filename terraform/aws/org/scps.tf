@@ -10,7 +10,10 @@ data "aws_iam_policy_document" "guardrails" {
     resources = ["*"]
   }
 
-  # The root user of a member account is for break-glass through the management account only
+  # The root user of a member account is denied. Exempt: the short root sessions that the management
+  # account opens with sts:AssumeRoot (centralized root access, root_access.tf), which carry the key
+  # aws:AssumedRoot and are limited to the AWS task policies (audit, delete root credentials, unlock
+  # an S3 bucket policy). Without the exemption the SCP blocks those tasks too.
   statement {
     sid       = "DenyMemberRoot"
     effect    = "Deny"
@@ -20,6 +23,11 @@ data "aws_iam_policy_document" "guardrails" {
       test     = "StringLike"
       variable = "aws:PrincipalArn"
       values   = ["arn:aws:iam::*:root"]
+    }
+    condition {
+      test     = "Null"
+      variable = "aws:AssumedRoot"
+      values   = ["true"]
     }
   }
 

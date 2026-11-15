@@ -117,6 +117,18 @@ Only new versions are replicated: the copy fills with the next nightly archives.
 | Deleting in homepi spares the copy | delete marker on a test object in homepi; the vault version is still there |
 | Restore from the vault | R0 with restore-reader (option to add to `homepi-r0-fetch`) |
 
+## D6: hygiene (`terraform/aws/org`: root_access.tf, budget.tf)
+
+- Centralized root access: trusted access for `iam.amazonaws.com` (once, by CLI), then the
+  features `RootCredentialsManagement` and `RootSessions`. The guardrail `DenyMemberRoot` exempts
+  only sessions carrying `aws:AssumedRoot` (opened by the management account with
+  `sts:AssumeRoot`, limited to an AWS task policy); without that exemption the SCP blocks the
+  centralized tasks too.
+- Audit, then removal, of the root credentials of every member account (task policies
+  `IAMAuditRootUserCredentials`, then `IAMDeleteRootUserCredentials`): no password, no access key,
+  no MFA device, no signing certificate left. Removal needs an explicit go.
+- Budget `homepi-monthly`: 10 USD, e-mail at 50 % actual and 100 % forecast (address from SOPS).
+
 ## Next
 
 D2b organization trail into `log-archive` (Object Lock GOVERNANCE 7 days, then GOVERNANCE 90 days), D3 `backup-vault` replica with replication from `homepi`,

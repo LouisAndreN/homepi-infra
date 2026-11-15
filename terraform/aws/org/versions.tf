@@ -38,6 +38,12 @@ variable "backup_vault_email" {
   sensitive = true
 }
 
+# Budget notifications (same address as the heartbeat alarm, from SOPS through awsmgmt)
+variable "alert_email" {
+  type      = string
+  sensitive = true
+}
+
 provider "aws" {
   region              = "ap-northeast-1"
   allowed_account_ids = [var.management_account_id]
