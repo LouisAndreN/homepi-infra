@@ -1,0 +1,22 @@
+#!/bin/bash
+# homepi-r7-end-drill: end of a restore drill (C3) on the SPARE disk, before the production disk
+# goes back. Stops and disables everything on this host that writes off-site or applies releases,
+# so that a spare booted again by mistake never uploads a diverging backup or competes with
+# production. Never run it on the production disk.
+set -euo pipefail
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EXPECT_MODEL="${1:-}"
+[ "$EUID" -eq 0 ] || { echo "STOPPED: run as root"; exit 1; }
+[ -n "$EXPECT_MODEL" ] || { echo "usage: $0 MODEL_TEXT (for example \"990 PRO\")"; exit 1; }
+root_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+model=$(sed 's/ *$//' "/sys/block/$root_disk/device/model")
+case "$model" in *Micron*) echo "STOPPED: this is the production disk ($model)"; exit 1 ;; esac
+case "$model" in *"$EXPECT_MODEL"*) ;; *) echo "STOPPED: the system disk is '$model', expected '$EXPECT_MODEL'"; exit 1 ;; esac
+UNITS="homepi-backup-state.timer homepi-backup-influx-native.timer homepi-backup-influx-lp.timer homepi-offsite.timer homepi-gitops-apply.timer homepi-gitops-check.timer homepi-heartbeat-relay.service"
+for u in $UNITS; do
+  systemctl list-unit-files "$u" > /dev/null 2>&1 || continue
+  systemctl disable --now "$u" > /dev/null 2>&1 || true
+  echo "stopped and disabled: $u"
+done
+echo "R7 done on '$model'. Power off (sudo poweroff), put the production disk back."
+echo "Then on the laptop: remove the drill Pi key from .sops.yaml, sops updatekeys, signed tag."

@@ -4,6 +4,34 @@
 # devices.db runs in WAL mode: every sqlite access runs as homepi-api so the -wal and -shm files keep
 # belonging to the API user.
 
+# Rebuild only (C1, docs/runbooks/restore.md): a host restored from backup has no virtualenv (the
+# state archive excludes it). Built from requirements.lock when missing; on a running Pi it exists
+# and both tasks are skipped, so the packages stay verified-only as before.
+- name: API virtualenv present? (read-only)
+  ansible.builtin.stat:
+    path: /opt/homepi/api-venv/bin/python
+  register: api_venv_python
+
+- name: Build the API virtualenv from requirements.lock (missing, rebuilt host)
+  when: not api_venv_python.stat.exists and not ansible_check_mode
+  block:
+    - name: Copy requirements.lock for the build
+      ansible.builtin.copy:
+        src: requirements.lock
+        dest: /opt/homepi/api-requirements.lock
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Create the virtualenv and install the locked packages
+      ansible.builtin.shell: |
+        set -e
+        python3 -m venv /opt/homepi/api-venv
+        /opt/homepi/api-venv/bin/pip install --no-input --disable-pip-version-check -q -r /opt/homepi/api-requirements.lock
+      args:
+        executable: /bin/bash
+      changed_when: true
+
 - name: API code from apps/api differs from the Pi? (check mode only)
   ansible.builtin.copy:
     src: "{{ item.src }}"

@@ -1,0 +1,32 @@
+#!/bin/bash
+# homepi-r6-verify: restore phase R6 (docs/runbooks/restore.md), on the rebuilt Pi after R4.
+# Read-only. Prints one line per check and exits 1 if any fails. Never prints a secret.
+set -uo pipefail
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+EXPECTED_DEVICES="${1:-7}"
+PROM=http://127.0.0.1:9090
+fails=0
+ok() { echo "ok    $*"; }
+bad() { echo "FAIL  $*"; fails=$((fails + 1)); }
+prom() { curl -fsS --max-time 10 "$PROM/api/v1/query" --data-urlencode "query=$1" | jq -r '.data.result[0].value[1] // empty'; }
+
+[ "$EUID" -eq 0 ] || { echo "STOPPED: run as root"; exit 1; }
+state=$(systemctl is-system-running 2> /dev/null)
+[ "$state" = running ] && ok "systemd: running" || bad "systemd: $state ($(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' '))"
+for c in /usr/local/sbin/homepi-*-check; do
+  [ -x "$c" ] || continue
+  if "$c" > /dev/null 2>&1; then ok "$(basename "$c")"; else bad "$(basename "$c") (run it for details)"; fi
+done
+read -r tag _ < /var/lib/homepi-gitops/deployed 2> /dev/null && ok "GitOps deployed $tag" || bad "GitOps has deployed nothing"
+n=$(ss -Htn state established '( sport = :8883 )' | wc -l)
+[ "$n" -ge "$EXPECTED_DEVICES" ] && ok "MQTT mTLS clients: $n (expected $EXPECTED_DEVICES)" || bad "MQTT mTLS clients: $n (expected $EXPECTED_DEVICES)"
+signs=$(prom 'homepi_stepca_requests{endpoint="sign",window="1h"}')
+[ "${signs:-0}" = 0 ] && ok "no certificate signed in the last hour (devices reconnected without re-enrolment)" || bad "$signs certificates signed in the last hour: a device re-enrolled"
+w=$(prom 'sum(rate(http_api_requests_total{job="influxdb",path="/api/v2/write",user_agent="Telegraf",status="2XX"}[5m]))')
+awk -v w="${w:-0}" 'BEGIN {exit !(w > 0)}' && ok "Telegraf writes accepted by InfluxDB: ${w}/s" || bad "no Telegraf write accepted by InfluxDB in 5 min"
+firing=$(curl -fsS --max-time 10 "$PROM/api/v1/alerts" | jq -r '[.data.alerts[] | select(.state == "firing") | .labels.alertname] | map(select(. != "Watchdog")) | unique | join(" ")')
+[ -z "$firing" ] && ok "no alert firing (Watchdog aside)" || bad "alerts firing: $firing"
+up=$(prom 'count(up == 0)')
+[ -z "$up" ] && ok "every Prometheus target up" || bad "$up Prometheus target(s) down"
+echo
+[ "$fails" = 0 ] && { echo "R6 PASS"; exit 0; } || { echo "R6 FAIL: $fails check(s)"; exit 1; }

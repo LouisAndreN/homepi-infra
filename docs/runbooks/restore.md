@@ -111,5 +111,42 @@ not restored; a missing required path, an unknown owner and an empty stdin stop 
 2. On the laptop: **add** that key to `.sops.yaml` and `sops updatekeys` every `*.sops.yaml`. Add,
    never replace: the production Pi (Micron) must still decrypt the repository when it comes back.
    After the drill, remove the drill key the same way.
-3. `ansible-playbook site.yml` from the laptop: every role applies, the verify-only roles prove the
-   restored files. Then a signed tag, and GitOps on the rebuilt Pi takes over.
+3. `ansible-playbook site.yml` from the laptop (after R5: the influxdb role checks the restored
+   state with the restored tokens): every role applies, the verify-only roles prove the restored
+   files, `provisioning_api` rebuilds the API virtualenv from `requirements.lock` (the archive
+   excludes virtualenvs). Then a signed tag, and GitOps on the rebuilt Pi takes over.
+
+Order on the drill: R1, R2, R3, **R5, then R4**, R6, R7.
+
+## R5: InfluxDB (`scripts/restore/homepi-r5-influx`, Pi)
+
+    age -d -i ~/.config/sops/age/keys.txt ~/homepi-restore/<day>/influx-native-<...>.tar.age \
+      | ssh <pi> 'sudo /tmp/homepi-r3/homepi-r5-influx /tmp/homepi-r3/config.toml'
+
+Refuses an InfluxDB that already holds data or is already set up. Installs the production
+`config.toml` (data under `/var/lib/influxdb/influxdb2`), runs a throwaway `influx setup` whose token
+stays in a config file in RAM, then `influx restore --full`: buckets, tasks, data and every
+authorization with its original token. Proof: the operator token restored by R3 lists the buckets,
+the downsampling task is present, the archived points are counted. No SOPS change follows.
+The throwaway password is passed on the command line: it dies with the restore a minute later.
+
+## R6: verify (`scripts/restore/homepi-r6-verify`, Pi, read-only)
+
+systemd `running`, every `homepi-*-check`, a deployed GitOps tag, at least 7 MQTT mTLS clients, no
+certificate signed in the last hour (devices came back without re-enrolment), Telegraf writes
+accepted by InfluxDB, no alert firing but the Watchdog, every Prometheus target up. Then by hand:
+the dashboard and Grafana through Authelia with 2FA, and the fan (pironman5, below).
+
+## R7: end of the drill (`scripts/restore/homepi-r7-end-drill "990 PRO"`, Pi)
+
+Refuses to run on the Micron. Stops and disables the backup timers, the off-site upload, the GitOps
+timers and the heartbeat relay on the spare, so a spare booted by mistake never uploads a diverging
+archive nor competes with production. Then power off, production disk back before 03:30, and on
+the laptop remove the drill Pi key from `.sops.yaml` (`sops updatekeys`, signed tag).
+
+## Known gap: pironman5
+
+The case software (fan, OLED) runs from `/opt/pironman5/venv`, which no role builds and the archive
+excludes. R3 restores `/opt/pironman5` without the venv; reinstall it with the vendor installer
+during the drill and note the time. Until a role owns it, the NVMe cooling of a rebuilt Pi depends
+on that manual step.

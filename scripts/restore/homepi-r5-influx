@@ -1,0 +1,82 @@
+#!/bin/bash
+# homepi-r5-influx: restore phase R5 (docs/runbooks/restore.md), on the rebuilt Pi, after R3.
+#
+# Reads the DECRYPTED native InfluxDB backup on stdin (streamed from the laptop), unpacks it in RAM,
+# puts the production config.toml in place (data paths under /var/lib/influxdb/influxdb2), runs a
+# throwaway `influx setup`, then `influx restore --full`: buckets, tasks, data and every
+# authorization come back with their original tokens, and the throwaway operator disappears.
+# Proof: the operator token restored by R3 (/var/lib/secrets/influx-operator.token) works again.
+#
+#   laptop: age -d -i KEY influx-native-....tar.age | ssh PI 'sudo /tmp/homepi-r3/homepi-r5-influx /tmp/homepi-r3/config.toml'
+set -euo pipefail
+umask 077
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+CONFIG_SRC="${1:-}"
+URL=http://127.0.0.1:8086
+OPERATOR_TOKEN=/var/lib/secrets/influx-operator.token
+EXPECTED_BUCKETS="iot-hot iot-archives"
+EXPECTED_TASK=downsample_iot_hot_to_archives
+STAGE=$(mktemp -d /run/homepi-r5.XXXXXX)
+trap 'rm -rf "$STAGE"' EXIT
+
+die() { echo "STOPPED: $*" >&2; exit 1; }
+log() { echo "homepi-r5: $*"; }
+
+wait_ready() {
+
+  for _ in $(seq 1 60); do
+    curl -fsS --max-time 2 "$URL/health" > /dev/null 2>&1 && return 0
+    sleep 2
+  done
+  die "InfluxDB did not answer on $URL/health within 120 s"
+}
+
+[ "$EUID" -eq 0 ] || die "run as root"
+[ -r "$CONFIG_SRC" ] || die "usage: $0 CONFIG_TOML (ansible/roles/influxdb/files/config.toml), archive on stdin"
+[ ! -t 0 ] || die "no archive on stdin (stream it from the laptop with age -d)"
+[ -r "$OPERATOR_TOKEN" ] || die "$OPERATOR_TOKEN is missing: run R3 first"
+command -v influx > /dev/null && command -v influxd > /dev/null || die "influxdb2 and influxdb2-cli are not installed (R2)"
+mountpoint -q /var/lib/influxdb || die "/var/lib/influxdb is not mounted (lv-influxdb)"
+
+log "unpacking the backup in RAM ($STAGE)"
+tar -x -C "$STAGE" -f - || die "stdin is not the decrypted native backup"
+ls "$STAGE"/*.manifest > /dev/null 2>&1 || die "no manifest in the backup"
+ls "$STAGE"/*bolt* > /dev/null 2>&1 || die "no metadata (bolt) in the backup: the tokens would be lost"
+
+# A fresh server only: never overwrite an InfluxDB that already holds data
+systemctl stop influxdb
+install -d -o influxdb -g influxdb -m 0755 /var/lib/influxdb/influxdb2
+if [ -e /var/lib/influxdb/influxdb2/influxd.bolt ] || [ -n "$(ls -A /var/lib/influxdb/influxdb2/engine 2> /dev/null)" ]; then
+  die "/var/lib/influxdb/influxdb2 already holds an InfluxDB: this is not a fresh server"
+fi
+install -m 0644 -o root -g root "$CONFIG_SRC" /etc/influxdb/config.toml
+systemctl start influxdb
+wait_ready
+curl -fsS "$URL/api/v2/setup" | grep -q '"allowed": *true' || die "InfluxDB is already set up: refusing to replace it"
+
+# Throwaway operator: replaced by the restored metadata a minute later. Its token stays in a config
+# file in RAM (INFLUX_CONFIGS_PATH), never on a command line.
+export INFLUX_CONFIGS_PATH="$STAGE/influx-configs"
+log "throwaway setup"
+influx setup --host "$URL" --org restore-tmp --bucket restore-tmp --username restore-tmp \
+  --password "$(head -c 24 /dev/urandom | base64 | tr -d '/+=')" --force > /dev/null || die "influx setup failed"
+
+log "influx restore --full (data, buckets, tasks, authorizations)"
+influx restore --host "$URL" --full "$STAGE" > "$STAGE/restore.log" 2>&1 \
+  || { tail -5 "$STAGE/restore.log" | sed -E 's/[A-Za-z0-9_-]{60,}={0,2}/<masked>/g' >&2; die "influx restore failed"; }
+unset INFLUX_CONFIGS_PATH
+
+# The restored operator token must work, and the expected objects must be there
+export INFLUX_TOKEN
+INFLUX_TOKEN=$(cat "$OPERATOR_TOKEN")
+buckets=$(influx bucket list --host "$URL" --org iot-org --hide-headers 2> /dev/null | awk '{print $2}') \
+  || die "the restored operator token does not work"
+for b in $EXPECTED_BUCKETS; do printf '%s\n' "$buckets" | grep -qx "$b" || die "bucket $b missing after the restore"; done
+influx task list --host "$URL" --org iot-org --hide-headers 2> /dev/null | grep -q "$EXPECTED_TASK" || die "task $EXPECTED_TASK missing"
+auths=$(influx auth list --host "$URL" --hide-headers 2> /dev/null | wc -l)
+points=$(influx query --host "$URL" --org iot-org --raw 'from(bucket: "iot-archives") |> range(start: -400d) |> filter(fn: (r) => r._field == "temperature") |> count() |> group() |> sum()' 2> /dev/null \
+  | awk -F, '$0 !~ /^#/ && NF > 1 {v = $NF} END {print v + 0}')
+unset INFLUX_TOKEN
+log "restored: buckets $EXPECTED_BUCKETS, task $EXPECTED_TASK, $auths authorizations, $points archived temperature points"
+log "done. The original tokens (Telegraf, Grafana, dashboard, backups) work again: no SOPS change"
