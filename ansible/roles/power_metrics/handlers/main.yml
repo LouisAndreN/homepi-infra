@@ -1,0 +1,5 @@
+---
+# Manager settings are read at (re-)execution: daemon-reexec applies them without a reboot
+- name: Re-execute systemd for the watchdog setting
+  ansible.builtin.systemd_service:
+    daemon_reexec: true

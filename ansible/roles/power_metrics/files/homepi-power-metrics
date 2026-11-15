@@ -1,0 +1,44 @@
+#!/bin/bash
+# homepi-power-metrics: supply health of the Pi 5 for Prometheus (textfile collector), every minute.
+#
+# - vcgencmd get_throttled, one gauge per bit (0 under-voltage now, 16 under-voltage since boot;
+#   1/17 frequency capped; 2/18 throttled; 3/19 soft temperature limit);
+# - the 5 V input measured by the PMIC (EXT5V_V);
+# - kernel "Undervoltage detected" events in the last hour (across a reboot) and since boot.
+# Until v0.1.122 none of this was collected: on 2026-11-15 the kernel reported 7 under-voltage
+# events in 16 hours, then the supply cable was touched and the Pi reset without a clean shutdown
+# (docs/runbooks/power.md).
+set -euo pipefail
+OUT=/var/lib/node_exporter/textfile_collector/homepi_power.prom
+T=$(mktemp "$OUT.XXXXXX")
+trap 'rm -f "$T"' EXIT
+
+raw=$(vcgencmd get_throttled | sed -n 's/^throttled=//p')
+[ -n "$raw" ] || { echo "homepi-power-metrics: vcgencmd get_throttled returned nothing" >&2; exit 1; }
+v=$((raw))
+volts=$(vcgencmd pmic_read_adc EXT5V_V 2>/dev/null | sed -n 's/.*=\([0-9.]*\)V.*/\1/p')
+hour=$(journalctl _TRANSPORT=kernel --since -1h -o cat --no-pager -q | grep -c 'Undervoltage detected' || true)
+boot=$(journalctl -k -b -o cat --no-pager -q | grep -c 'Undervoltage detected' || true)
+
+{
+  echo "# HELP homepi_power_throttled_bit One bit of vcgencmd get_throttled (0/16 under-voltage now/since boot, 1/17 frequency capped, 2/18 throttled, 3/19 soft temperature limit)"
+  echo "# TYPE homepi_power_throttled_bit gauge"
+  for b in 0 1 2 3 16 17 18 19; do
+    echo "homepi_power_throttled_bit{bit=\"$b\"} $(( (v >> b) & 1 ))"
+  done
+  if [ -n "$volts" ]; then
+    echo "# HELP homepi_power_ext5v_volts 5 V input of the Pi measured by the PMIC"
+    echo "# TYPE homepi_power_ext5v_volts gauge"
+    echo "homepi_power_ext5v_volts $volts"
+  fi
+  echo "# HELP homepi_power_undervoltage_events Kernel under-voltage events"
+  echo "# TYPE homepi_power_undervoltage_events gauge"
+  echo "homepi_power_undervoltage_events{window=\"1h\"} $hour"
+  echo "homepi_power_undervoltage_events{window=\"boot\"} $boot"
+  echo "# HELP homepi_power_metrics_timestamp_seconds Last successful run of homepi-power-metrics"
+  echo "# TYPE homepi_power_metrics_timestamp_seconds gauge"
+  echo "homepi_power_metrics_timestamp_seconds $(date +%s)"
+} > "$T"
+chmod 0644 "$T"
+mv "$T" "$OUT"
+trap - EXIT

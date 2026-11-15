@@ -1,0 +1,10 @@
+[Unit]
+Description=HomePi power metrics (vcgencmd throttling bits, 5 V input, kernel under-voltage events)
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/homepi-power-metrics
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ReadWritePaths=/var/lib/node_exporter/textfile_collector

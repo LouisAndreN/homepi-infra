@@ -1,0 +1,28 @@
+# Managed by Ansible (observability_core). v0.1.122: supply health of the Pi 5 (homepi-power-metrics,
+# docs/runbooks/power.md). On 2026-11-15 the kernel logged 7 under-voltage events in 16 hours, then
+# 9 in 20 minutes after the cable was touched and the Pi reset; nothing alerted.
+groups:
+  - name: power
+    rules:
+      - alert: PiUndervoltage
+        expr: homepi_power_undervoltage_events{window="1h"} > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} under-voltage event(s) on the Pi in the last hour"
+          description: "The 5 V input dropped below the Pi 5 threshold. Each event can corrupt a write in progress (SQLite registry, InfluxDB, Loki, Btrfs) and a deep one resets the Pi. Check the supply (official 27 W USB-C PD), the cable and the connector: docs/runbooks/power.md."
+      - alert: PiUndervoltageRepeated
+        expr: homepi_power_undervoltage_events{window="1h"} > 5
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} under-voltage events on the Pi in the last hour"
+          description: "The supply cannot hold the load. Stop deployments and rollouts (a reset in the middle aborts them and drops every device) until the supply is fixed: docs/runbooks/power.md."
+      - alert: PiPowerMetricsStale
+        expr: (time() - homepi_power_metrics_timestamp_seconds > 300) or absent(homepi_power_metrics_timestamp_seconds)
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Power metrics of the Pi are missing or older than 5 minutes"
+          description: "homepi-power-metrics.timer stopped or vcgencmd failed: the under-voltage alerts cannot fire. Check: systemctl status homepi-power-metrics.service."

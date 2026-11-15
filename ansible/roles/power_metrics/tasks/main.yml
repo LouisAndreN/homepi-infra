@@ -1,0 +1,70 @@
+---
+# v0.1.122: supply health of the Pi 5 for Prometheus, and the hardware watchdog fed by systemd
+# (docs/runbooks/power.md).
+
+- name: Power metrics exporter
+  ansible.builtin.copy:
+    src: homepi-power-metrics
+    dest: /usr/local/sbin/homepi-power-metrics
+    owner: root
+    group: root
+    mode: "0755"
+  register: power_metrics_script
+
+- name: Power metrics service and timer
+  ansible.builtin.copy:
+    src: "{{ item }}"
+    dest: "/etc/systemd/system/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [homepi-power-metrics.service, homepi-power-metrics.timer]
+  register: power_metrics_units
+
+- name: Reload systemd after a power metrics unit change
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: power_metrics_units is changed
+
+# Check mode does not install a new unit: skip only when the unit is about to be created, never ignore errors
+- name: Power metrics timer enabled and running
+  ansible.builtin.systemd_service:
+    name: homepi-power-metrics.timer
+    enabled: true
+    state: started
+  when: not (ansible_check_mode and power_metrics_units is changed)
+
+- name: Publish the power metrics now when the exporter or units changed (fails the run if it fails)
+  ansible.builtin.systemd_service:
+    name: homepi-power-metrics.service
+    state: started
+  when:
+    - not (ansible_check_mode and power_metrics_units is changed)
+    - power_metrics_script is changed or power_metrics_units is changed
+
+- name: Hardware watchdog device present (dtparam=watchdog=on)
+  ansible.builtin.stat:
+    path: /dev/watchdog0
+  register: power_watchdog_dev
+
+- name: Fail when the hardware watchdog is missing
+  ansible.builtin.fail:
+    msg: "/dev/watchdog0 is missing: systemd would have nothing to feed. See docs/runbooks/power.md."
+  when: not power_watchdog_dev.stat.exists
+
+- name: Directory for systemd manager drop-ins
+  ansible.builtin.file:
+    path: /etc/systemd/system.conf.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: systemd feeds the hardware watchdog (15 s)
+  ansible.builtin.copy:
+    src: 50-homepi-watchdog.conf
+    dest: /etc/systemd/system.conf.d/50-homepi-watchdog.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Re-execute systemd for the watchdog setting

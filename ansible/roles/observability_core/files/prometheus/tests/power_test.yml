@@ -1,0 +1,50 @@
+# promtool test rules power_test.yml (from this directory): each alert seen firing and seen quiet
+rule_files:
+  - ../rules/power.yml
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'homepi_power_undervoltage_events{window="1h"}'
+        values: '0 0 1 1 7 7'
+      - series: 'homepi_power_metrics_timestamp_seconds'
+        values: '0+60x5'
+    alert_rule_test:
+      - eval_time: 1m
+        alertname: PiUndervoltage
+        exp_alerts: []
+      - eval_time: 2m
+        alertname: PiUndervoltage
+        exp_alerts:
+          - exp_labels: {severity: warning, window: 1h}
+            exp_annotations:
+              summary: "1 under-voltage event(s) on the Pi in the last hour"
+              description: "The 5 V input dropped below the Pi 5 threshold. Each event can corrupt a write in progress (SQLite registry, InfluxDB, Loki, Btrfs) and a deep one resets the Pi. Check the supply (official 27 W USB-C PD), the cable and the connector: docs/runbooks/power.md."
+      - eval_time: 3m
+        alertname: PiUndervoltageRepeated
+        exp_alerts: []
+      - eval_time: 4m
+        alertname: PiUndervoltageRepeated
+        exp_alerts:
+          - exp_labels: {severity: critical, window: 1h}
+            exp_annotations:
+              summary: "7 under-voltage events on the Pi in the last hour"
+              description: "The supply cannot hold the load. Stop deployments and rollouts (a reset in the middle aborts them and drops every device) until the supply is fixed: docs/runbooks/power.md."
+      - eval_time: 5m
+        alertname: PiPowerMetricsStale
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'homepi_power_metrics_timestamp_seconds'
+        values: '0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: PiPowerMetricsStale
+        exp_alerts: []
+      - eval_time: 15m
+        alertname: PiPowerMetricsStale
+        exp_alerts:
+          - exp_labels: {severity: warning}
+            exp_annotations:
+              summary: "Power metrics of the Pi are missing or older than 5 minutes"
+              description: "homepi-power-metrics.timer stopped or vcgencmd failed: the under-voltage alerts cannot fire. Check: systemctl status homepi-power-metrics.service."
