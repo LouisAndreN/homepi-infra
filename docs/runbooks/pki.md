@@ -230,8 +230,27 @@ Limits:
   minutes: without a step-ca restart a revocation reaches the broker within about 75 minutes.
   `crl.generateOnRevoke` (present in step-ca 0.30.2) is to be tested off the Pi first.
 - The broker logs a revoked client as `certificate verify failed`, not `certificate revoked`.
-- nginx does not check the CRL yet: a revoked certificate still reaches the registration API.
+- nginx does not check the CRL (see "Registration and revocation", v0.1.118).
 
 The `admin` password was not lost: it is `step_admin_password` in `secrets/pki.sops.yaml`
 (v0.1.66). A JWK provisioner `ops` added on 2026-11-15 while it was believed lost was removed the
 same day (ca.json restored from the backup matching the pin).
+
+## Registration and revocation (v0.1.118)
+
+nginx cannot enforce the CRL: `ssl_crl` turns on the check of the whole chain, so it also needs a
+CRL for the intermediate, signed by the root, whose key is offline (escrow). Tested off the Pi
+with nginx 1.24: with only the intermediate CRL, every client fails with
+`3: unable to get certificate CRL` at depth 1.
+
+The registration API checks the leaf itself instead:
+- a certificate whose serial is in the CRL is refused (403, audit `registration_refused_revoked`);
+  the CRL is `/var/lib/homepi/crl.pem`, the same verified CRL that `homepi-crl-sync` installs for
+  the broker (the API never reads broker files), reloaded when its mtime changes;
+- an unreadable CRL refuses the registration (503); running devices keep their MQTT session;
+- a certificate that expires before the registered one is refused (403, audit
+  `registration_refused_older_certificate`): a device only moves to a newer certificate (renewal,
+  re-enrollment), and the 2026-10/11 re-enrollment leftovers are all older than the certificates in use.
+
+Tests: `test_registration.py` (revoked, CRL change picked up without restart, unreadable CRL,
+older and newer certificate).

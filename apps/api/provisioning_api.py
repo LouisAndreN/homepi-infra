@@ -585,6 +585,26 @@ class X5CEnrolledRequest(BaseModel):
 # The automatic OTA that followed every enrollment is gone: OTA goes through staged deployments only.
 REGISTRABLE = ("pre_announced", "approved", "active")
 
+# Revocation (v0.1.118). nginx cannot check the CRL: its ssl_crl checks the whole chain and would need a
+# CRL signed by the root, whose key is offline. The API checks the leaf itself against the CRL the
+# broker enforces: homepi-crl-sync installs the same verified CRL here for the API. An unreadable CRL
+# refuses the registration (503): running devices are not affected, they keep their MQTT session.
+CRL_PATH = "/var/lib/homepi/crl.pem"
+_crl_cache: dict = {"mtime": None, "serials": frozenset()}
+
+
+def _revoked_serials() -> frozenset:
+    try:
+        mtime = os.stat(CRL_PATH).st_mtime_ns
+        if mtime != _crl_cache["mtime"]:
+            with open(CRL_PATH, "rb") as f:
+                crl = x509.load_pem_x509_crl(f.read())
+            _crl_cache.update(mtime=mtime, serials=frozenset(r.serial_number for r in crl))
+    except (OSError, ValueError) as e:
+        log.error(f"CRL unreadable ({CRL_PATH}): {e}")
+        raise HTTPException(503, "Revocation status unavailable")
+    return _crl_cache["serials"]
+
 
 def _client_certificate(request: Request) -> x509.Certificate:
     pem = unquote(request.headers.get("X-SSL-Client-Cert", ""))
@@ -606,9 +626,19 @@ async def x5c_enrolled(req: X5CEnrolledRequest, request: Request):
     hw_model = req.hw_model or "unknown"
     fields = (req.chip_id, req.chip_target, hw_model, req.fw_version, json.dumps(req.capabilities),
               fingerprint, expiry)
+    if cert.serial_number in _revoked_serials():
+        audit(req.device_id, "registration_refused_revoked", f"cert={fingerprint[:16]} exp={expiry}")
+        raise HTTPException(403, "Client certificate revoked")
     with db() as conn:
-        row = conn.execute("SELECT status FROM devices WHERE device_id=?", (req.device_id,)).fetchone()
+        row = conn.execute("SELECT status, cert_expiry FROM devices WHERE device_id=?", (req.device_id,)).fetchone()
         before = row["status"] if row else None
+        # A device only ever moves to a newer certificate (renewal, re-enrollment). An older one is a
+        # leftover from before (v2.3.x re-enrolled at every broker outage): it must not replace the
+        # registered certificate, revoked or not.
+        if row and row["cert_expiry"] and expiry < row["cert_expiry"]:
+            audit(req.device_id, "registration_refused_older_certificate",
+                  f"cert={fingerprint[:16]} exp={expiry} registered_exp={row['cert_expiry']}")
+            raise HTTPException(403, "Older certificate than the registered one")
         if before is None:
             conn.execute("""
                 INSERT INTO devices (device_id, chip_id, chip_target, hw_model, fw_version, capabilities,

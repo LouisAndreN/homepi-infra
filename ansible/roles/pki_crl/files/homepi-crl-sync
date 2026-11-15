@@ -14,6 +14,8 @@ CA_PASSWORD="/etc/step-ca/password.txt"
 # A certificate issued by the intermediate and not revoked: the installed CRL must let it through
 PROBE_CERT="/etc/mosquitto/certs/broker_chain.crt"
 DEST="/etc/mosquitto/crl/crl.pem"
+# The same CRL for the registration API (it never reads broker files)
+API_COPY="/var/lib/homepi/crl.pem"
 PROM="/var/lib/node_exporter/textfile_collector/homepi_crl.prom"
 MIN_VALID=3600
 T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
@@ -75,5 +77,8 @@ if [ ! -s "$DEST" ] || [ "$(summary "$T/out.pem")" != "$(summary "$DEST")" ]; th
   if grep -qs '^crlfile' /etc/mosquitto/conf.d/*.conf && systemctl is-active --quiet mosquitto; then
     systemctl reload mosquitto || fail "mosquitto reload failed"
   fi
+fi
+if [ ! -s "$API_COPY" ] || [ "$(summary "$T/out.pem")" != "$(summary "$API_COPY")" ]; then
+  { install -o root -g root -m 0644 "$T/out.pem" "$API_COPY.new" && mv -f "$API_COPY.new" "$API_COPY"; } || fail "install of the API copy failed"
 fi
 publish 1
