@@ -1,0 +1,402 @@
+#!/bin/bash
+# homepi-r1-layout: restore phase R1 (docs/disaster-recovery.md, C1).
+#
+# Lays out a blank NVMe exactly like the production disk measured on 2026-11-15, installs the
+# verified Ubuntu 24.04 raspi image on it, and makes it bootable and reachable over SSH.
+# Nothing is restored here: data, secrets and services come in R2 to R6.
+#
+# Run as root on a Pi booted from the microSD, with the target NVMe in the slot and the
+# production NVMe REMOVED:
+#
+#   sudo ./homepi-r1-layout --target /dev/nvme0n1 --expect-model "990 PRO" \
+#        --authorized-keys /root/r1/authorized_keys --repo /root/r1/homepi-infra
+#
+# The LUKS passphrase is typed twice by the operator; the keyfile is generated here.
+# Every step checks its precondition and stops with "STOPPED: ..." on the first problem.
+set -euo pipefail
+umask 077
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+IMAGE_BASE=https://cdimage.ubuntu.com/releases/24.04/release
+IMAGE_PATTERN='ubuntu-24\.04(\.[0-9]+)?-preinstalled-server-arm64\+raspi\.img\.xz'
+WORKDIR=/var/tmp/homepi-r1
+MNT=/mnt/homepi-r1
+HOSTNAME_NEW=homepi
+OPERATOR=srvpi
+
+# Partition boundaries in MiB, as measured on the production disk (parted unit MiB print)
+P1_START=1 P1_END=1025 P2_END=103424 P3_END=107520 P4_END=112640
+
+# Logical volumes: name size_in_bytes filesystem label mountpoint mount_options
+# (lvs --units b and /etc/fstab of the production disk, 2026-11-15)
+LVS=$(cat << 'EOF'
+lv-var        21474836480  ext4  VAR        /var                defaults,noatime,nodiratime
+lv-logs       32212254720  ext4  LOGS       /var/log            defaults,noatime,nodiratime
+lv-influxdb  128849018880  xfs   INFLUXDB   /var/lib/influxdb   defaults,noatime,allocsize=16m,inode64
+lv-containers 85899345920  xfs   CONTAINERS /var/lib/containers defaults,noatime,allocsize=16m
+lv-grafana    10737418240  ext4  GRAFANA    /var/lib/grafana    defaults,noatime,nodiratime
+lv-ml-models  64424509440  xfs   ML-MODELS  /mnt/ml-models      defaults,noatime,allocsize=16m
+lv-ml-cache   42949672960  xfs   ML-CACHE   /mnt/ml-cache       defaults,noatime,allocsize=16m
+lv-cloud-sync 85899345920  xfs   CLOUD-SYNC /mnt/cloud-sync     defaults,noatime,allocsize=64m,inode64
+lv-data      369207803904  btrfs DATA       /mnt/data           defaults,noatime,compress=zstd:3,space_cache=v2,subvol=@iot-hot
+lv-loki       21474836480  xfs   loki       /var/lib/loki       defaults,noatime,inode64,nofail
+EOF
+)
+BTRFS_SUBVOLUMES="@iot-hot @iot-archives @backups @personal"
+SUBVOLUME_UNITS="mnt-data-archives.mount mnt-data-backups.mount mnt-data-personal.mount"
+PACKAGES_HOST="cryptsetup lvm2 btrfs-progs xfsprogs dosfstools e2fsprogs parted gdisk rsync xz-utils curl gpgv"
+PACKAGES_TARGET="cryptsetup cryptsetup-initramfs lvm2 btrfs-progs xfsprogs systemd-zram-generator"
+
+TARGET="" EXPECT_MODEL="" AUTH_KEYS="" REPO=""
+# The keyfile lives in RAM only until it is copied to the target (never on the microSD)
+KEYFILE=/run/homepi-r1-keyfile
+trap 'rm -f "$KEYFILE"' EXIT
+
+log() { echo "homepi-r1: $*"; }
+die() { echo "STOPPED: $*" >&2; exit 1; }
+part() { case "$TARGET" in *[0-9]) echo "${TARGET}p$1" ;; *) echo "${TARGET}$1" ;; esac; }
+
+parse_args() {
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --target) TARGET="$2"; shift 2 ;;
+      --expect-model) EXPECT_MODEL="$2"; shift 2 ;;
+      --authorized-keys) AUTH_KEYS="$2"; shift 2 ;;
+      --repo) REPO="$2"; shift 2 ;;
+      *) die "unknown argument $1" ;;
+    esac
+  done
+  [ -n "$TARGET" ] && [ -n "$EXPECT_MODEL" ] && [ -n "$AUTH_KEYS" ] && [ -n "$REPO" ] \
+    || die "usage: $0 --target DEV --expect-model TEXT --authorized-keys FILE --repo DIR"
+}
+
+# The model check is the main guard against wiping the wrong disk
+check_model() {
+  local name model
+  name=$(basename "$TARGET")
+  model=$(cat "/sys/block/$name/device/model" 2>/dev/null | sed 's/ *$//') || true
+  [ -n "$model" ] || die "cannot read the model of $TARGET"
+  case "$model" in *"$EXPECT_MODEL"*) log "target $TARGET is '$model'" ;; *) die "$TARGET is '$model', expected '$EXPECT_MODEL'" ;; esac
+  case "$model" in *Micron*) die "$TARGET is the production Micron: remove it from the Pi" ;; esac
+}
+
+preflight() {
+  local root_src b
+  [ "$EUID" -eq 0 ] || die "run as root"
+  [ -b "$TARGET" ] || die "$TARGET is not a block device"
+  check_model
+  root_src=$(findmnt -no SOURCE /)
+  case "$root_src" in "$TARGET"*) die "the running system is on $TARGET: boot from the microSD" ;; esac
+  # A second volume group named vg-main means the production disk is still attached
+  if vgs vg-main > /dev/null 2>&1; then
+    die "a volume group vg-main is visible: the production disk is attached, or an earlier run left it open (umount -R $MNT; vgchange -an vg-main; cryptsetup close cryptdata)"
+  fi
+  # Any LUKS partition outside the target is the production disk (or another disk to keep away)
+  if lsblk -rpno NAME,FSTYPE | awk '$2 == "crypto_LUKS" {print $1}' | grep -v "^$TARGET" | grep -q .; then
+    die "a LUKS partition exists outside $TARGET: remove the production disk"
+  fi
+  [ -r "$AUTH_KEYS" ] && grep -qE '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) ' "$AUTH_KEYS" || die "$AUTH_KEYS holds no SSH public key"
+  for f in ansible/roles/network/files/netplan-10-network.yaml $(printf 'ansible/roles/storage/files/%s ' $SUBVOLUME_UNITS); do
+    [ -r "$REPO/$f" ] || die "missing $REPO/$f"
+  done
+  mountpoint -q "$MNT" && die "$MNT is already mounted (an earlier run?): unmount it first"
+  for b in $PACKAGES_HOST; do dpkg -s "$b" > /dev/null 2>&1 || { log "installing $PACKAGES_HOST"; apt-get install -y -q $PACKAGES_HOST > /dev/null; break; }; done
+  curl -fsS --max-time 15 -o /dev/null "$IMAGE_BASE/SHA256SUMS" || die "cannot reach $IMAGE_BASE"
+}
+
+confirm_wipe() {
+  local answer
+  echo
+  lsblk -o NAME,SIZE,TYPE,FSTYPE,LABEL "$TARGET"
+  echo
+  echo "Everything on $TARGET will be destroyed. Type the device name ($(basename "$TARGET")) to continue:"
+  read -r answer
+  [ "$answer" = "$(basename "$TARGET")" ] || die "not confirmed"
+}
+
+# Download the newest 24.04 raspi image and check it against SHA256SUMS, itself signed by Ubuntu
+fetch_image() {
+  local name sum ok=0 k
+  install -d -m 0700 "$WORKDIR"
+  curl -fsS --max-time 60 -o "$WORKDIR/SHA256SUMS" "$IMAGE_BASE/SHA256SUMS" || die "cannot download SHA256SUMS"
+  curl -fsS --max-time 60 -o "$WORKDIR/SHA256SUMS.gpg" "$IMAGE_BASE/SHA256SUMS.gpg" || die "cannot download SHA256SUMS.gpg"
+  for k in /usr/share/keyrings/ubuntu-*.gpg; do
+    gpgv --keyring "$k" "$WORKDIR/SHA256SUMS.gpg" "$WORKDIR/SHA256SUMS" > /dev/null 2>&1 && { ok=1; log "SHA256SUMS signature valid ($(basename "$k"))"; break; }
+  done
+  [ "$ok" = 1 ] || die "the signature of SHA256SUMS does not verify with the local Ubuntu keyrings"
+  name=$(grep -oE "$IMAGE_PATTERN" "$WORKDIR/SHA256SUMS" | sort -V | tail -n 1)
+  [ -n "$name" ] || die "no raspi server image listed in SHA256SUMS"
+  sum=$(grep -F " *$name" "$WORKDIR/SHA256SUMS" | cut -d' ' -f1)
+  [ -n "$sum" ] || sum=$(grep -F "  $name" "$WORKDIR/SHA256SUMS" | cut -d' ' -f1)
+  [ -n "$sum" ] || die "no checksum for $name"
+  if [ ! -f "$WORKDIR/$name" ] || ! echo "$sum  $WORKDIR/$name" | sha256sum -c --quiet - 2> /dev/null; then
+    log "downloading $name"
+    curl -fSL --max-time 3600 -o "$WORKDIR/$name" "$IMAGE_BASE/$name" || die "download failed"
+  fi
+  echo "$sum  $WORKDIR/$name" | sha256sum -c --quiet - || die "checksum mismatch for $name"
+  log "image verified: $name"
+  IMAGE_XZ="$WORKDIR/$name"
+}
+
+wipe_and_partition() {
+  local sectors
+  log "wiping $TARGET"
+  wipefs -a -q "$TARGET"
+  sgdisk --zap-all "$TARGET" > /dev/null
+  dd if=/dev/zero of="$TARGET" bs=1M count=100 status=none conv=fsync
+  sectors=$(blockdev --getsz "$TARGET")
+  dd if=/dev/zero of="$TARGET" bs=1M count=100 seek=$(( sectors / 2048 - 100 )) status=none conv=fsync
+  log "partitioning (production boundaries in MiB)"
+  parted -s -a optimal "$TARGET" \
+    mklabel gpt \
+    mkpart primary fat32 "${P1_START}MiB" "${P1_END}MiB" \
+    mkpart primary ext4 "${P1_END}MiB" "${P2_END}MiB" \
+    mkpart primary linux-swap "${P2_END}MiB" "${P3_END}MiB" \
+    mkpart primary ext4 "${P3_END}MiB" "${P4_END}MiB" \
+    mkpart primary "${P4_END}MiB" 100% \
+    set 1 boot on set 1 esp on
+  partprobe "$TARGET"; udevadm settle
+  for n in 1 2 3 4 5; do [ -b "$(part $n)" ] || die "partition $(part $n) missing after partitioning"; done
+  mkfs.vfat -F32 -n BOOT "$(part 1)" > /dev/null
+  mkfs.ext4 -q -F -L ROOT "$(part 2)"
+  mkfs.ext4 -q -F -L RECOVERY "$(part 4)"
+}
+
+# Interactive: cryptsetup asks the operator for the passphrase twice (keyslot 0)
+luks_format() {
+  log "LUKS2 format of $(part 5): type the passphrase (twice)"
+  cryptsetup luksFormat -q --verify-passphrase --type luks2 --cipher aes-xts-plain64 --key-size 512 \
+    --sector-size 4096 --pbkdf argon2id --label cryptdata "$(part 5)" || die "luksFormat failed"
+}
+
+# Interactive: cryptsetup asks for the passphrase to add the keyfile (keyslot 1)
+luks_add_keyfile() {
+  log "adding the boot keyfile: type the passphrase once more"
+  cryptsetup luksAddKey -q --pbkdf argon2id "$(part 5)" "$KEYFILE" || die "luksAddKey failed"
+}
+
+setup_luks_lvm() {
+  local name size fs label mp opts
+  dd if=/dev/urandom of="$KEYFILE" bs=512 count=1 status=none
+  chmod 0400 "$KEYFILE"
+  luks_format
+  luks_add_keyfile
+  cryptsetup open --key-file "$KEYFILE" "$(part 5)" cryptdata || die "the keyfile does not open the LUKS volume"
+  pvcreate -q /dev/mapper/cryptdata
+  vgcreate -q vg-main /dev/mapper/cryptdata
+  while read -r name size fs label mp opts; do
+    [ -n "$name" ] || continue
+    lvcreate -q -y -L "${size}b" -n "$name" vg-main > /dev/null
+    case "$fs" in
+      ext4) mkfs.ext4 -q -F -L "$label" "/dev/vg-main/$name" ;;
+      xfs) mkfs.xfs -q -f -L "$label" "/dev/vg-main/$name" ;;
+      btrfs) mkfs.btrfs -q -f -L "$label" "/dev/vg-main/$name" > /dev/null ;;
+      *) die "unknown filesystem $fs" ;;
+    esac
+  done <<< "$LVS"
+  log "volume group: $(vgs --noheadings --units g -o vg_size,vg_free vg-main | xargs) (size, free)"
+  install -d /run/homepi-r1-btrfs
+  mount -t btrfs /dev/vg-main/lv-data /run/homepi-r1-btrfs
+  for sv in $BTRFS_SUBVOLUMES; do btrfs subvolume create "/run/homepi-r1-btrfs/$sv" > /dev/null; done
+  umount /run/homepi-r1-btrfs
+}
+
+# Mount the target tree with every volume at its place, so the image lands on the right volume
+mount_target() {
+  local name size fs label mp opts
+  install -d "$MNT"
+  mount "$(part 2)" "$MNT"
+  install -d "$MNT/boot/firmware" "$MNT/recovery"
+  mount "$(part 1)" "$MNT/boot/firmware"
+  mount "$(part 4)" "$MNT/recovery"
+  # Parents first: /var before /var/log and /var/lib/*
+  while read -r name size fs label mp opts; do
+    [ -n "$name" ] || continue
+    printf '%s %s %s %s\n' "$(echo "$mp" | tr -cd '/' | wc -c)" "$name" "$mp" "$opts"
+  done <<< "$LVS" | sort -n | while read -r _ name mp opts; do
+    install -d "$MNT$mp"
+    case "$name" in lv-data) mount -o subvol=@iot-hot "/dev/vg-main/$name" "$MNT$mp" ;; *) mount "/dev/vg-main/$name" "$MNT$mp" ;; esac
+  done
+}
+
+copy_image() {
+  local loop
+  log "decompressing the image"
+  xz -dc "$IMAGE_XZ" > "$WORKDIR/image.img"
+  loop=$(losetup -fP --show -r "$WORKDIR/image.img")
+  udevadm settle
+  install -d /run/homepi-r1-img/boot /run/homepi-r1-img/root
+  mount -o ro "${loop}p1" /run/homepi-r1-img/boot
+  mount -o ro "${loop}p2" /run/homepi-r1-img/root
+  log "copying the image root and boot partitions"
+  rsync -aHAX --numeric-ids /run/homepi-r1-img/root/ "$MNT/"
+  rsync -rlt /run/homepi-r1-img/boot/ "$MNT/boot/firmware/"
+  umount /run/homepi-r1-img/boot /run/homepi-r1-img/root
+  losetup -d "$loop"
+  rm -f "$WORKDIR/image.img"
+}
+
+write_system_files() {
+  local name size fs label mp opts u
+  log "writing fstab, crypttab, cmdline.txt, config.txt"
+  {
+    echo "# Written by homepi-r1-layout (C1): same entries as the production disk, new UUIDs"
+    echo "UUID=$(blkid -s UUID -o value "$(part 1)")  /boot/firmware  vfat  defaults  0 2"
+    echo "UUID=$(blkid -s UUID -o value "$(part 2)")  /  ext4  defaults,noatime  0 1"
+    echo "/dev/mapper/swap  none  swap  sw,pri=-2  0 0"
+    echo "UUID=$(blkid -s UUID -o value "$(part 4)")  /recovery  ext4  defaults,noatime  0 2"
+    while read -r name size fs label mp opts; do
+      [ -n "$name" ] || continue
+      echo "/dev/vg-main/$name  $mp  $fs  $opts  0 2"
+    done <<< "$LVS"
+    echo "tmpfs  /tmp  tmpfs  defaults,noatime,nosuid,nodev,size=2G  0 0"
+    echo "tmpfs  /var/tmp  tmpfs  defaults,noatime,nosuid,nodev,size=1G  0 0"
+  } > "$MNT/etc/fstab"
+  chmod 0644 "$MNT/etc/fstab"
+  {
+    echo "cryptdata UUID=$(blkid -s UUID -o value "$(part 5)") /boot/luks-keyfile luks,discard"
+    echo "swap $(part 3) /dev/urandom swap,cipher=aes-xts-plain64,size=512,sector-size=4096"
+  } > "$MNT/etc/crypttab"
+  chmod 0644 "$MNT/etc/crypttab"
+  install -m 0400 "$KEYFILE" "$MNT/boot/luks-keyfile"
+  echo "console=serial0,115200 multipath=off dwc_otg.lpm_enable=0 console=tty1 root=UUID=$(blkid -s UUID -o value "$(part 2)") rootfstype=ext4 fixrtc cfg80211.ieee80211_regdom=JP dtparam=watchdog=on" \
+    > "$MNT/boot/firmware/cmdline.txt"
+  cat > "$MNT/boot/firmware/config.txt" << 'EOF'
+[all]
+dtparam=pciex1_gen=3
+arm_64bit=1
+kernel=vmlinuz
+cmdline=cmdline.txt
+initramfs initrd.img followkernel
+dtparam=audio=on
+dtparam=i2c_arm=on
+dtparam=spi=on
+disable_overscan=1
+dtoverlay=vc4-kms-v3d
+disable_fw_kms_setup=1
+enable_uart=1
+camera_auto_detect=1
+display_auto_detect=1
+dtoverlay=dwc2
+[pi5]
+dtparam=pciex1
+[all]
+EOF
+  echo "$HOSTNAME_NEW" > "$MNT/etc/hostname"
+  sed -i "s/^127\.0\.1\.1.*/127.0.1.1 $HOSTNAME_NEW/" "$MNT/etc/hosts"
+  grep -q "^127\.0\.1\.1 " "$MNT/etc/hosts" || echo "127.0.1.1 $HOSTNAME_NEW" >> "$MNT/etc/hosts"
+  install -m 0600 "$REPO/ansible/roles/network/files/netplan-10-network.yaml" "$MNT/etc/netplan/10-network.yaml"
+  rm -f "$MNT"/etc/netplan/50-cloud-init.yaml
+  # cloud-init would create the default user and rewrite the network: the production Pi runs without it
+  touch "$MNT/etc/cloud/cloud-init.disabled"
+  for u in $SUBVOLUME_UNITS; do install -m 0644 "$REPO/ansible/roles/storage/files/$u" "$MNT/etc/systemd/system/$u"; done
+  install -d -m 0755 "$MNT/etc/systemd/system/multi-user.target.wants"
+  for u in $SUBVOLUME_UNITS; do ln -sf "/etc/systemd/system/$u" "$MNT/etc/systemd/system/multi-user.target.wants/$u"; done
+  install -d "$MNT/mnt/data/archives" "$MNT/mnt/data/backups" "$MNT/mnt/data/personal"
+  cat > "$MNT/etc/systemd/zram-generator.conf" << 'EOF'
+[zram0]
+zram-size = ram / 2
+compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap
+EOF
+}
+
+# Runs inside the target (arm64): packages for the unlock, the operator account, the initramfs
+chroot_setup() {
+  local d
+  log "configuring the target system (chroot)"
+  for d in dev dev/pts proc sys run; do mount --bind "/$d" "$MNT/$d"; done
+  cp /etc/resolv.conf "$MNT/run/homepi-r1-resolv.conf"
+  install -m 0644 "$AUTH_KEYS" "$MNT/run/homepi-r1-authorized_keys"
+  chroot "$MNT" /bin/bash -euo pipefail -c "
+    export DEBIAN_FRONTEND=noninteractive
+    mv /etc/resolv.conf /etc/resolv.conf.image 2>/dev/null || true
+    cp /run/homepi-r1-resolv.conf /etc/resolv.conf
+    apt-get update -q > /dev/null
+    apt-get install -y -q $PACKAGES_TARGET > /dev/null
+    id $OPERATOR > /dev/null 2>&1 || useradd -m -s /bin/bash -G adm,sudo $OPERATOR
+    passwd -l $OPERATOR > /dev/null
+    install -d -m 0700 -o $OPERATOR -g $OPERATOR /home/$OPERATOR/.ssh
+    install -m 0600 -o $OPERATOR -g $OPERATOR /run/homepi-r1-authorized_keys /home/$OPERATOR/.ssh/authorized_keys
+    echo '$OPERATOR ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/90-homepi-operator
+    chmod 0440 /etc/sudoers.d/90-homepi-operator
+    visudo -cq
+    systemctl enable ssh > /dev/null 2>&1 || true
+    update-initramfs -u -k all > /dev/null
+    # cloud-init is disabled: nothing else would create the SSH host keys
+    ssh-keygen -A > /dev/null
+    rm -f /etc/resolv.conf
+    mv /etc/resolv.conf.image /etc/resolv.conf 2>/dev/null || true
+  " || die "chroot configuration failed"
+  rm -f "$MNT/run/homepi-r1-authorized_keys" "$MNT/run/homepi-r1-resolv.conf"
+  for d in run sys proc dev/pts dev; do umount "$MNT/$d"; done
+}
+
+prepare_recovery() {
+  log "preparing /recovery (header backup and keyfile copy, as on the production disk)"
+  install -d -m 0755 "$MNT/recovery/backup" "$MNT/recovery/scripts" "$MNT/recovery/tools"
+  rm -f "$MNT/recovery/backup/luks-header-backup.img"
+  cryptsetup luksHeaderBackup "$(part 5)" --header-backup-file "$MNT/recovery/backup/luks-header-backup.img"
+  chmod 0400 "$MNT/recovery/backup/luks-header-backup.img"
+  install -m 0400 "$KEYFILE" "$MNT/recovery/backup/luks-keyfile"
+  cat > "$MNT/recovery/scripts/unlock-luks.sh" << EOF
+#!/bin/bash
+# Emergency LUKS unlock (written by homepi-r1-layout)
+cryptsetup open $(part 5) cryptdata --key-file /recovery/backup/luks-keyfile || cryptsetup open $(part 5) cryptdata
+vgchange -ay vg-main
+EOF
+  chmod 0755 "$MNT/recovery/scripts/unlock-luks.sh"
+  cat > "$MNT/recovery/README.txt" << 'EOF'
+EMERGENCY RECOVERY PARTITION (written by homepi-r1-layout)
+- backup/luks-header-backup.img: LUKS header of p5
+- backup/luks-keyfile: copy of /boot/luks-keyfile (keyslot 1)
+- scripts/unlock-luks.sh: open cryptdata and activate vg-main
+Header restore: cryptsetup luksHeaderRestore <p5> --header-backup-file /recovery/backup/luks-header-backup.img
+EOF
+}
+
+verify_target() {
+  local name size fs label mp opts n=0 bad=0
+  log "verifying"
+  while read -r name size fs label mp opts; do
+    [ -n "$name" ] || continue
+    n=$((n + 1))
+    [ "$(blockdev --getsize64 "/dev/vg-main/$name")" = "$size" ] || { echo "  size differs: $name"; bad=1; }
+    [ "$(blkid -s TYPE -o value "/dev/vg-main/$name")" = "$fs" ] || { echo "  filesystem differs: $name"; bad=1; }
+    mountpoint -q "$MNT$mp" || { echo "  not mounted: $mp"; bad=1; }
+  done <<< "$LVS"
+  [ "$(cryptsetup luksDump "$(part 5)" | grep -c ': luks2')" = 2 ] || { echo "  expected 2 LUKS keyslots"; bad=1; }
+  [ -s "$MNT/boot/firmware/vmlinuz" ] || [ -s "$MNT/boot/vmlinuz" ] || { echo "  no kernel"; bad=1; }
+  ls "$MNT"/boot/firmware/initrd.img* > /dev/null 2>&1 || ls "$MNT"/boot/initrd.img* > /dev/null 2>&1 || { echo "  no initramfs"; bad=1; }
+  [ -s "$MNT/home/$OPERATOR/.ssh/authorized_keys" ] || { echo "  no authorized_keys"; bad=1; }
+  [ "$bad" = 0 ] || die "verification failed"
+  log "OK: $n volumes with production sizes, 2 keyslots, kernel and initramfs present, $OPERATOR can log in by key"
+}
+
+unmount_target() {
+  sync
+  umount -R "$MNT"
+  vgchange -an vg-main > /dev/null
+  cryptsetup close cryptdata
+}
+
+main() {
+  parse_args "$@"
+  preflight
+  fetch_image
+  confirm_wipe
+  wipe_and_partition
+  setup_luks_lvm
+  mount_target
+  copy_image
+  write_system_files
+  chroot_setup
+  prepare_recovery
+  verify_target
+  unmount_target
+  log "done. Power off, remove the microSD, power on: the Pi boots from $TARGET (SSH as $OPERATOR, new host keys)"
+}
+
+# Sourcing the file (tests) defines the functions without running anything
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

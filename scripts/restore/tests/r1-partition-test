@@ -1,0 +1,33 @@
+#!/bin/bash
+# shellcheck disable=SC2046,SC2034  # word splitting of major:minor and unused read fields are intended
+# Partial offline test of homepi-r1-layout (no device-mapper needed): run as root on a Linux host.
+# Creates a sparse file of the exact 990 PRO size, runs the real wipe_and_partition, and checks the
+# partition boundaries against the production disk, the space left for the volumes, the mount
+# order and the model guard. LUKS, LVM, the image copy and the chroot are NOT covered: they are
+# proven on the hardware (C3).
+set -euo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+WORK=$(mktemp -d /var/tmp/r1-test.XXXXXX)
+trap 'losetup -d "$DEV" 2> /dev/null || true; rm -rf "$WORK"' EXIT
+truncate -s 1000204886016 "$WORK/disk.img"
+DEV=$(losetup -fP --show "$WORK/disk.img")
+. "$HERE/../homepi-r1-layout"
+TARGET="$DEV"
+# Containers have no udev: create the partition nodes from sysfs
+udevadm() { local n b; for b in /sys/block/$(basename "$TARGET")/$(basename "$TARGET")p*; do n=/dev/$(basename "$b"); [ -b "$n" ] || mknod "$n" b $(tr ':' ' ' < "$b/dev"); done; }
+fail() { echo "FAIL: $*"; exit 1; }
+wipe_and_partition > /dev/null
+table=$(parted -sm "$TARGET" unit MiB print | sed -n '3,$p' | cut -d: -f1-3 | tr '\n' ' ')
+[ "$table" = "1:1.00MiB:1025MiB 2:1025MiB:103424MiB 3:103424MiB:107520MiB 4:107520MiB:112640MiB 5:112640MiB:953869MiB " ] || fail "partition table: $table"
+for n in 1:vfat:BOOT 2:ext4:ROOT 4:ext4:RECOVERY; do
+  IFS=: read -r p t l <<< "$n"
+  [ "$(blkid -s TYPE -o value "$(part "$p")") $(blkid -s LABEL -o value "$(part "$p")")" = "$t $l" ] || fail "partition $p"
+done
+total=0; while read -r name size rest; do [ -n "$name" ] && total=$((total + size)); done <<< "$LVS"
+free=$(( ($(blockdev --getsize64 "$(part 5)") - 16777216 - total) / 1048576 ))
+[ "$free" -gt 10240 ] || fail "only $free MiB left in the volume group"
+order=$(while read -r name size fs label mp opts; do [ -n "$name" ] || continue; printf '%s %s\n' "$(echo "$mp" | tr -cd '/' | wc -c)" "$mp"; done <<< "$LVS" | sort -n | awk '{print $2}' | tr '\n' ' ')
+case "$order" in /var\ *) ;; *) fail "mount order: $order" ;; esac
+msg=$( (EXPECT_MODEL="990 PRO"; check_model) 2>&1 || true)
+[ "$msg" = "STOPPED: cannot read the model of $TARGET" ] || fail "model guard: $msg"
+echo "PASS: production boundaries, labels, $free MiB free in the VG on a 990 PRO, mount order, model guard"
