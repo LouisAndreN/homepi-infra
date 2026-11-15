@@ -10,7 +10,13 @@ For each device of the current phase:
   pending    -> the command is published               -> sent
   sent       -> the registry shows the new version     -> confirmed
              -> the device reported ota_failed         -> failed (bad signature, wrong project, ...)
+             -> no ota_received after ACK_TIMEOUT       -> failed (command lost or dropped; v2.4.2+ only)
              -> still on the old version after timeout -> failed (bootloader rollback, or offline)
+
+v0.1.121: firmware v2.4.2 acknowledges a queued command (ota_received, recorded in acked_at by the
+API). Before it, a command dropped by the device looked like a slow update for the whole timeout: on
+2026-11-15 esp32-819fe250 (v2.4.0-rc2) logged the command and could not start the OTA task, twice,
+silently. Older firmware sends no acknowledgment, so the check applies to v2.4.2 and later only.
 Any failed device aborts the rollout: the devices of the next phases are never sent anything.
 A phase whose devices all confirmed moves on after the soak time, if they all still publish.
 
@@ -22,11 +28,13 @@ import sqlite3
 import sys
 from datetime import datetime, timedelta, timezone
 
-from versions import same_version
+from versions import same_version, version_key
 
 DB_PATH = "/var/lib/homepi/devices.db"
 PROJECTS = ("homepi_sensor", "homepi_led", "homepi_nilm")
 SILENT_AFTER = timedelta(minutes=10)     # DeviceSilent's threshold
+ACK_TIMEOUT = timedelta(minutes=2)       # ota_received, firmware v2.4.2+
+ACK_SINCE = (2, 4, 2)
 ISO = "%Y-%m-%dT%H:%M:%SZ"
 
 SCHEMA = """
@@ -88,6 +96,33 @@ def ensure_schema(conn):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
     if "project" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN project TEXT DEFAULT ''")
+    rd = {r[1] for r in conn.execute("PRAGMA table_info(rollout_devices)")}
+    if "acked_at" not in rd:
+        try:
+            conn.execute("ALTER TABLE rollout_devices ADD COLUMN acked_at TEXT")
+        except sqlite3.OperationalError as e:   # the API and the timer both migrate: one of them wins
+            if "duplicate column" not in str(e):
+                raise
+
+
+def acknowledges(version):
+    """True when this firmware publishes ota_received for a queued command (v2.4.2+)."""
+    return version_key(version) >= ACK_SINCE
+
+
+def record_ack(conn, device_id, version, now=None):
+    """An ota_received from a device: marks its command of the rollout in progress for that version.
+    Returns the rollout id, or None when no command of that version is waiting for it.
+    'pending' too: the device answers within a second, before step() has committed 'sent' (step()
+    publishes, then writes, in one transaction), and this read does not see the uncommitted write."""
+    now = now or datetime.now(timezone.utc)
+    row = conn.execute("SELECT d.rollout_id FROM rollout_devices d JOIN rollouts r ON r.id = d.rollout_id "
+                       "WHERE d.device_id=? AND d.status IN ('pending', 'sent') AND d.acked_at IS NULL "
+                       "AND r.status='in_progress' AND r.version=?", (device_id, version)).fetchone()
+    if not row:
+        return None
+    conn.execute("UPDATE rollout_devices SET acked_at=? WHERE rollout_id=? AND device_id=?", (_ts(now), row[0], device_id))
+    return row[0]
 
 
 def _ts(dt):
@@ -192,6 +227,12 @@ def _step_one(conn, r, publish, now):
             conn.execute("UPDATE rollout_devices SET status='confirmed', confirmed_at=? WHERE rollout_id=? AND device_id=?",
                          (_ts(now), rid, did))
             _audit(conn, did, "rollout_confirmed", f"rollout={rid} {r['version']}")
+        elif acknowledges(d["from_version"]) and not d["acked_at"] and now - sent > ACK_TIMEOUT:
+            detail = (f"no ota_received {int(ACK_TIMEOUT.total_seconds() // 60)} min after the command "
+                      f"(not delivered, or dropped by {d['from_version']})")
+            conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
+                         (detail, rid, did))
+            failed.append(f"{did} {detail}")
         elif now - sent > timeout:
             detail = (f"still on {d['fw_version']} {r['timeout_minutes']} min after the command "
                       f"(rolled back by the bootloader, or offline)")

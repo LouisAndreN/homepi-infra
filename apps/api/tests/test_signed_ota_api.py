@@ -137,3 +137,21 @@ def test_ota_failed_report_is_recorded_for_the_rollout(api):
     with _db(api) as c:
         ev = c.execute("SELECT device_id, reason, version FROM ota_events").fetchone()
     assert tuple(ev) == ("esp32-00000001", "bad_signature", "v2.4.1")
+
+
+def test_ota_received_marks_the_waiting_command(api):
+    """v0.1.121: firmware v2.4.2 acknowledges a queued command; the rollout then waits for the update."""
+    with _db(api) as c:
+        c.execute("INSERT INTO devices (device_id, status, fw_version, project, enrolled_at) "
+                  "VALUES ('esp32-00000001', 'active', 'v2.4.2', 'homepi_sensor', '2026-11-01T00:00:00Z')")
+        c.execute("INSERT INTO firmware_images (project, version, chip_target, sha256, url, manifest, signature) "
+                  "VALUES ('homepi_sensor', 'v2.4.3', 'esp32c3', ?, 'u', '{}', 's')", ("ab" * 32,))
+        rid = api.mod.rollout.create(c, "homepi_sensor", "v2.4.3")
+    msg = SimpleNamespace(topic="iot/esp32-00000001/status", retain=False,
+                          payload=json.dumps({"type": "ota_received", "version": "v2.4.3", "running": "v2.4.2"}).encode())
+    api.mod.on_sensor_message(None, None, msg)
+    with _db(api) as c:
+        acked = c.execute("SELECT acked_at FROM rollout_devices WHERE rollout_id=?", (rid,)).fetchone()[0]
+        ev = c.execute("SELECT COUNT(*) FROM ota_events").fetchone()[0]
+        audit = c.execute("SELECT detail FROM audit_log WHERE event='ota_received'").fetchone()[0]
+    assert acked and ev == 0 and f"rollout={rid}" in audit

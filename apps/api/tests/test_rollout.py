@@ -193,3 +193,69 @@ def test_image_removed_during_the_rollout_aborts(conn):
     conn.execute("DELETE FROM firmware_images")
     rollout.step(conn, broker, T0)
     assert _phase(conn, rid)["status"] == "aborted" and broker.commands() == []
+
+
+# --- v0.1.121: acknowledgment of a queued command (firmware v2.4.2+) ---
+
+def _image_v243(conn):
+    conn.execute("UPDATE devices SET fw_version='v2.4.2' WHERE project='homepi_sensor'")
+    conn.execute("INSERT INTO firmware_images (project, version, chip_target, sha256, url, manifest, signature) "
+                 "VALUES ('homepi_sensor', 'v2.4.3', 'esp32c3', ?, 'https://homepi.internal/fw/homepi_sensor/v2.4.3.bin', '{}', 'c2ln')",
+                 ("cd" * 32,))
+
+
+def test_v242_device_without_acknowledgment_fails_after_two_minutes(conn):
+    """2026-11-15: esp32-819fe250 logged the command and dropped it; the rollout waited 20 min."""
+    _image_v243(conn)
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.3", timeout_minutes=20)
+    rollout.step(conn, broker, T0)
+    assert "waiting" in rollout.step(conn, broker, T0 + timedelta(minutes=1))[0]
+    rollout.step(conn, broker, T0 + timedelta(minutes=3))
+    r = _phase(conn, rid)
+    assert r["status"] == "aborted" and "no ota_received" in r["reason"] and "v2.4.2" in r["reason"]
+
+
+def test_acknowledged_command_waits_for_the_update(conn):
+    _image_v243(conn)
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.3", timeout_minutes=20)
+    rollout.step(conn, broker, T0)
+    assert rollout.record_ack(conn, "esp32-00000000", "v2.4.3", T0 + timedelta(seconds=2)) == rid
+    assert "waiting" in rollout.step(conn, broker, T0 + timedelta(minutes=5))[0]
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=6), "v2.4.3")
+    rollout.step(conn, broker, T0 + timedelta(minutes=6))
+    assert conn.execute("SELECT status FROM rollout_devices WHERE rollout_id=? AND phase=1", (rid,)).fetchone()[0] == "confirmed"
+
+
+def test_acknowledgment_before_step_commits_is_kept(conn):
+    """The device answers within a second, before step() has committed 'sent'."""
+    _image_v243(conn)
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.3")
+    assert rollout.record_ack(conn, "esp32-00000000", "v2.4.3", T0) == rid   # still pending
+    rollout.step(conn, broker, T0)
+    row = conn.execute("SELECT status, acked_at FROM rollout_devices WHERE rollout_id=? AND phase=1", (rid,)).fetchone()
+    assert row["status"] == "sent" and row["acked_at"]
+    assert "waiting" in rollout.step(conn, broker, T0 + timedelta(minutes=3))[0]
+
+
+def test_acknowledgment_of_another_version_or_without_rollout_is_ignored(conn):
+    _image_v243(conn)
+    assert rollout.record_ack(conn, "esp32-00000000", "v2.4.3") is None   # no rollout yet
+    rollout.create(conn, "homepi_sensor", "v2.4.3")
+    assert rollout.record_ack(conn, "esp32-00000000", "v2.4.9") is None
+
+
+def test_older_firmware_is_not_held_to_the_acknowledgment(conn):
+    """v2.4.0 and v2.4.1 never send ota_received: only the version timeout applies to them."""
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.1", timeout_minutes=20)
+    rollout.step(conn, broker, T0)
+    assert "waiting" in rollout.step(conn, broker, T0 + timedelta(minutes=5))[0]
+    assert _phase(conn, rid)["status"] == "in_progress"
+
+
+def test_acknowledges():
+    assert rollout.acknowledges("v2.4.2") and rollout.acknowledges("v2.5.0") and rollout.acknowledges("v3.0.0")
+    assert not rollout.acknowledges("v2.4.1") and not rollout.acknowledges("v2.4.0-rc2") and not rollout.acknowledges("")

@@ -1,4 +1,4 @@
-# Runbook: signed OTA and staged rollouts (v0.1.120, firmware v2.4.1)
+# Runbook: signed OTA and staged rollouts (v0.1.121, firmware v2.4.2)
 
 ## Model
 
@@ -30,6 +30,8 @@ device of the current phase, each minute:
 - `pending`: the command is published (QoS 1); a publish failure leaves it pending for the next step;
 - `sent` to `confirmed`: the registry shows the new version (the image confirms itself on its first
   broker connection, firmware `mqtt_app.c`);
+- `sent` to `failed` (v0.1.121): no `ota_received` 2 minutes after the command, for a device whose
+  firmware sends one (v2.4.2 and later): the command never arrived, or the device dropped it;
 - `sent` to `failed`: an `ota_failed` report after the command, or still on the old version after
   `timeout_minutes` (default 20: the image never confirmed and the bootloader reverted it after the
   10-minute deadline, or the device is offline).
@@ -39,6 +41,39 @@ all confirmed moves on after `soak_minutes` (default 30) if they all still publi
 the database only: an API or Pi restart in the middle of a rollout loses nothing (until v0.1.119
 the waits were `time.sleep` threads in the API process, which every deployment restarts, and each
 phase sent the newest image of the chip instead of the rollout's own image).
+
+## Device side (firmware v2.4.2)
+
+The MQTT task checks the signed manifest and the url, queues the command in a static buffer and
+publishes `{"type":"ota_received","version":...}` (recorded in `rollout_devices.acked_at`). The main
+loop (`homepi_main`, 32 KB stack reserved at boot) then stops MQTT, downloads, checks and installs.
+Nothing is allocated per command. A refusal or failure is published at the next broker connection.
+`heap_free`, `heap_min` and `heap_largest` come with every status message and sensor reading.
+
+v2.4.0 and v2.4.1 created an 8 KB task per command without checking the result, and published a
+failure 3 s after restarting MQTT, before an mTLS reconnection on the C3 completes. See the
+incident below.
+
+## Incident 2026-11-15: a sensor dropped the OTA command, twice, without a report
+
+Rollout 1 (homepi_sensor v2.4.1, 5 devices): the canary and phase 2 confirmed within a minute;
+in phase 3, `esp32-819fe250` (bh1750+bme688+sps30+sgp41, the sensor with the least free heap)
+stayed on v2.4.0-rc2; the rollout aborted after the 20-minute timeout, as designed. No `ota_failed`.
+
+Evidence, each able to show the other answer:
+
+| Check | Result |
+|---|---|
+| audit log | no `registration_refreshed` after the command: no reboot |
+| nginx access log | no request for the image from that device (the 4 others downloaded 1102656 bytes) |
+| InfluxDB `iot_sensors`, 04:45-05:10Z | no telemetry gap and no status message: MQTT was never stopped; the control device `esp32-b26247a4` shows a 58 s gap then `online` |
+| serial log, rollout 2 (one device, 30 s after a reboot) | `Command received: ota`, `OTA command: vv2.4.1 ...`, then nothing |
+| mosquitto.log | nothing: connections are logged at `notice`, not enabled (enabled in v0.1.121) |
+
+Cause: `xTaskCreate(ota_launch_task, ..., 8192, ...)` failed (no 8 KB block once the MQTT TLS
+session is up) and its result was not checked. Not fragmentation: it failed 30 s after a reboot.
+The same code is in v2.4.1. Fix: firmware v2.4.2 (above) and the acknowledgment deadline in
+`rollout.py` (v0.1.121). That device cannot take an OTA from v2.4.0: it is updated by USB.
 
 ## Procedures
 
@@ -68,13 +103,18 @@ rollout, someone published an OTA command).
 
 ## Proof plan (A5)
 
-On the canary sensor, each case observed on the device and in the registry:
+Order matters: cases 1 to 4 test the checks of v2.4.1+, so they run once the canary runs signed OTA
+firmware (on v2.4.0 an unsigned command would be installed, not refused), and outside a rollout of
+that device (any `ota_failed` aborts its rollout).
 
-1. unsigned command -> `ota_failed unsigned_command`, device stays on its image;
-2. command signed by another key -> `bad_signature`;
-3. a signed image of another project -> `wrong_project`;
-4. a signed older version -> `not_newer`;
-5. the signed v2.4.1 rollout -> canary confirmed, soak, phases 2 and 3;
-6. a signed rollback test image (`tools/ota-sign.sh <tag> homepi_sensor --rollback-test`, never
-   connects to the broker) -> the bootloader reverts it after 10 minutes, the rollout aborts and the
-   next phases are never sent.
+1. the signed rollout (v2.4.1, 2026-11-15): canary confirmed, soak, phases 2 and 3; one phase-3
+   device never updated and the rollout aborted (incident above);
+2. unsigned command -> `ota_failed unsigned_command`, device stays on its image;
+3. command signed by another key -> `bad_signature`;
+4. a signed image of another project -> `wrong_project`;
+5. a signed older version -> `not_newer` (`v2.4.2-rc1` once the fleet runs v2.4.2);
+6. a command the device never acknowledges (a v2.4.2 sensor powered off when its command is sent)
+   -> the rollout fails it after 2 minutes, not 20;
+7. a signed rollback test image newer than the fleet (`v2.4.3-rc1`, `tools/ota-sign.sh <tag>
+   homepi_sensor --rollback-test`, never connects to the broker) as the canary of a rollout -> the
+   bootloader reverts it after 10 minutes, the rollout aborts and phases 2 and 3 are never sent.

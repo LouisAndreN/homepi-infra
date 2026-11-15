@@ -182,6 +182,13 @@ def on_sensor_message(client, userdata, msg):
                                      (device_id, str(payload.get("reason", "unknown"))[:40],
                                       str(payload.get("version", ""))[:32], str(payload.get("detail", ""))[:96]))
                     audit(device_id, "ota_failed", f"{payload.get('reason')} {payload.get('version', '')} running={payload.get('running', '')}")
+                # v0.1.121: firmware v2.4.2+ acknowledges a queued command; a rollout fails a device that
+                # does not within rollout.ACK_TIMEOUT
+                elif parts[2] == "status" and payload.get("type") == "ota_received":
+                    with db() as conn:
+                        rid = rollout.record_ack(conn, device_id, str(payload.get("version", ""))[:32])
+                    audit(device_id, "ota_received",
+                          f"{payload.get('version', '')} running={payload.get('running', '')}" + (f" rollout={rid}" if rid else " (no rollout waiting)"))
         except ValueError:
             pass
         now = time.monotonic()
