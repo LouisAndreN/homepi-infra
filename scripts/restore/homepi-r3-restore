@@ -18,7 +18,10 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 PATHS="${HOMEPI_R3_PATHS:-$HERE/r3-paths.txt}"
 # ROOT exists for the offline test only; on the Pi it is always /
 ROOT="${HOMEPI_R3_ROOT:-/}"
-STAGE=$(mktemp -d /run/homepi-r3.XXXXXX)
+# --check (laptop, no root): reads the archive, keeps only the member names, checks the allowlist
+CHECK=0
+[ "${1:-}" != --check ] || CHECK=1
+if [ "$CHECK" = 1 ]; then STAGE=$(mktemp -d); else STAGE=$(mktemp -d /run/homepi-r3.XXXXXX); fi
 trap 'rm -rf "$STAGE"' EXIT
 
 # Accounts created by hand on the production Pi (no package or role creates them).
@@ -62,7 +65,7 @@ ensure_accounts() {
 # Expand the allowlist against the archive: every required pattern must match at least one member
 select_members() {
   local kind pattern n
-  tar -tf "$STAGE/etc-and-state.tar" > "$STAGE/members"
+  [ -s "$STAGE/members" ] || tar -tf "$STAGE/etc-and-state.tar" > "$STAGE/members"
   : > "$STAGE/patterns"
   while read -r kind pattern; do
     case "$kind" in ''|'#'*) continue ;; required|optional) ;; *) die "bad allowlist line: $kind $pattern" ;; esac
@@ -124,7 +127,17 @@ restore_databases() {
   log "databases restored and checked: devices.db, Authelia, Grafana, CrowdSec"
 }
 
+check_only() {
+  [ -r "$PATHS" ] || die "allowlist $PATHS not found"
+  [ ! -t 0 ] || die "no archive on stdin (stream it with age -d)"
+  # Names only: no file content of the archive is written anywhere
+  tar -xOf - ./etc-and-state.tar | tar -t > "$STAGE/members" || die "stdin is not the decrypted state archive"
+  select_members
+  log "check passed: every required path of the allowlist is in this archive"
+}
+
 main() {
+  if [ "$CHECK" = 1 ]; then check_only; return; fi
   unpack
   ensure_accounts
   select_members
