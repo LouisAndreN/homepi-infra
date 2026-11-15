@@ -41,7 +41,9 @@ device of the current phase, each minute:
   image that registers and never confirms is reverted by the bootloader about 10 minutes later.
 
 Any failed device aborts the rollout: later phases are never sent anything. A phase whose devices
-all confirmed moves on after `soak_minutes` (default 30) if they all still publish. State lives in
+all confirmed moves on after `soak_minutes` (default 15 since v0.1.124: the soak sees an image that never
+reaches the broker, reverted within 10 minutes of its boot, and a device silent for 10 minutes; nothing
+longer is visible to it, a slow leak needs hours) if they all still publish. State lives in
 the database only: an API or Pi restart in the middle of a rollout loses nothing (until v0.1.119
 the waits were `time.sleep` threads in the API process, which every deployment restarts, and each
 phase sent the newest image of the chip instead of the rollout's own image).
@@ -105,14 +107,24 @@ soak_minutes, timeout_minutes}`, `GET /api/admin/rollouts`, `POST /api/admin/rol
 than 6 h), `OtaCommandRefused` (a device refused or failed an OTA command in the last 24 h: outside a
 rollout, someone published an OTA command).
 
-## Proof results (A5, 2026-11-15)
+## Proof results (A5, 2026-11-15): complete
 
-| Case | Result |
-|---|---|
-| rollout v2.4.1, 5 sensors | canary and phase 2 confirmed in a minute; one phase-3 device dropped the command (incident above), aborted at the timeout |
-| rollout v2.4.2, 4 sensors | success, each device confirmed in under 2 minutes |
-| refusals on esp32-0a171a18 (v2.4.2) | unsigned_command, bad_signature (other key), bad_signature (real signature, manifest edited), wrong_project (LED image), not_newer (v2.4.1): 5/5, no reboot, no ota_received, OtaCommandRefused fired |
-| LED and NILM v2.4.0 to v2.4.2 | confirmed within 2 minutes |
+| Rollout | Case | Result |
+|---|---|---|
+| 1 | homepi_sensor v2.4.1, 5 sensors | canary and phase 2 confirmed in a minute; esp32-819fe250 dropped the command (incident above), aborted at the 20-minute timeout |
+| 3 | homepi_sensor v2.4.2, 4 sensors | success, each device confirmed in under 2 minutes |
+| (probes) | refusals on esp32-0a171a18 (v2.4.2) | unsigned_command, bad_signature (other key), bad_signature (real signature, manifest edited), wrong_project (LED image), not_newer (v2.4.1): 5/5, no reboot, no ota_received, OtaCommandRefused fired |
+| 4, 5 | LED and NILM v2.4.0 to v2.4.2 | success, confirmed within 2 minutes |
+| 6 | rollback test image v2.4.3-rc1 to the canary | ota_received 1 s after the command; registered as v2.4.3-rc1 24 s later (download, check, reboot) and marked confirmed; reverted by the bootloader to v2.4.2 10 min after its boot (same certificate); aborted "reverted to v2.4.2 after confirming"; phases 2 and 3 never sent |
+| 7 | v2.4.3 with the canary powered off | aborted "no ota_received" exactly 2 min after the command; phases 2 and 3 never sent; plugged back in, the canary stayed on v2.4.2 with no ota_received (the command was not delivered later) |
+| 8 | v2.4.3 | canary confirmed in a minute; aborted by the operator to restart with a 15-minute soak |
+| 9 | v2.4.3, 4 sensors, soak 15 min | success, including the rc3 to v2.4.3 OTA on esp32-819fe250 |
+
+Heap margin of the five sensors on v2.4.3 (lowest over 15 minutes): heap_min 28.3 to 29.7 KB, largest
+block 14.8 to 16.4 KB, homepi_main stack 3.3 KB used of 16. On v2.4.2 the bh1750+bme688+sps30+sgp41
+sensor had heap_min 9.5 KB and a largest block of 7 to 8 KB. Not measured yet: the stack used by the
+OTA download on homepi_main (the image restarts after a successful download, which resets the
+high-water mark) and by the LDevID renewal at boot.
 
 ## Proof plan (A5)
 

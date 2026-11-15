@@ -145,7 +145,13 @@ def _audit(conn, device_id, event, detail):
                  (device_id, event, detail))
 
 
-def create(conn, project, version, created_by="operator", soak_minutes=30, timeout_minutes=20):
+# v0.1.124: 15 min by default. The soak can only see an image that registers but never reaches the broker
+# (the bootloader reverts it within 10 minutes of its boot) and a device silent for 10 minutes; past
+# about 12 minutes it learns nothing more, and a slow leak needs hours, which 30 minutes did not cover either.
+SOAK_DEFAULT = 15
+
+
+def create(conn, project, version, created_by="operator", soak_minutes=SOAK_DEFAULT, timeout_minutes=20):
     """Creates a rollout and its phases; the first step() sends the canary its command."""
     if project not in PROJECTS:
         raise RolloutError(f"unknown project {project}")

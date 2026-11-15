@@ -686,7 +686,7 @@ async def list_firmware():
 class RolloutRequest(BaseModel):
     project:         str
     version:         str
-    soak_minutes:    int = 30
+    soak_minutes:    int = rollout.SOAK_DEFAULT
     timeout_minutes: int = 20
 
     @field_validator("soak_minutes", "timeout_minutes")
