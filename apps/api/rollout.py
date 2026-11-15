@@ -12,6 +12,7 @@ For each device of the current phase:
              -> the device reported ota_failed         -> failed (bad signature, wrong project, ...)
              -> no ota_received after ACK_TIMEOUT       -> failed (command lost or dropped; v2.4.2+ only)
              -> still on the old version after timeout -> failed (bootloader rollback, or offline)
+  confirmed  -> the registry shows another version     -> failed (reverted after confirming, v0.1.123)
 
 v0.1.121: firmware v2.4.2 acknowledges a queued command (ota_received, recorded in acked_at by the
 API). Before it, a command dropped by the device looked like a slow update for the whole timeout: on
@@ -19,6 +20,12 @@ API). Before it, a command dropped by the device looked like a slow update for t
 silently. Older firmware sends no acknowledgment, so the check applies to v2.4.2 and later only.
 Any failed device aborts the rollout: the devices of the next phases are never sent anything.
 A phase whose devices all confirmed moves on after the soak time, if they all still publish.
+
+v0.1.123: 'confirmed' is no longer final. The registry gets the version at the device's HTTPS
+registration, which runs before the broker connection that marks the image valid. An image that
+registers and then never confirms (the rollback test image does exactly that) was 'confirmed', and
+once the bootloader had reverted it the phase could still pass the soak and the next phase start.
+A confirmed device that runs another version fails the rollout at every step.
 
 Usage: rollout.py step   (homepi-ota-rollout.service)
 """
@@ -239,6 +246,13 @@ def _step_one(conn, r, publish, now):
             conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
                          (detail, rid, did))
             failed.append(f"{did} {detail}")
+    for d in conn.execute("SELECT d.device_id, v.fw_version FROM rollout_devices d LEFT JOIN devices v ON v.device_id = d.device_id "
+                          "WHERE d.rollout_id=? AND d.phase<=? AND d.status='confirmed'", (rid, phase)).fetchall():
+        if not same_version(d["fw_version"], r["version"]):
+            detail = f"reverted to {d['fw_version']} after confirming (bootloader rollback: the image never reached the broker)"
+            conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
+                         (detail, rid, d["device_id"]))
+            failed.append(f"{d['device_id']} {detail}")
     if failed:
         abort(conn, rid, f"phase {phase}: " + "; ".join(failed), publish)
         return f"rollout {rid}: aborted in phase {phase}"

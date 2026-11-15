@@ -36,6 +36,10 @@ device of the current phase, each minute:
   `timeout_minutes` (default 20: the image never confirmed and the bootloader reverted it after the
   10-minute deadline, or the device is offline).
 
+- `confirmed` to `failed` (v0.1.123): the registry shows another version again. The version reaches the
+  registry at the HTTPS registration, before the broker connection that marks the image valid: an
+  image that registers and never confirms is reverted by the bootloader about 10 minutes later.
+
 Any failed device aborts the rollout: later phases are never sent anything. A phase whose devices
 all confirmed moves on after `soak_minutes` (default 30) if they all still publish. State lives in
 the database only: an API or Pi restart in the middle of a rollout loses nothing (until v0.1.119
@@ -100,6 +104,15 @@ soak_minutes, timeout_minutes}`, `GET /api/admin/rollouts`, `POST /api/admin/rol
 `OtaRolloutAborted` (a rollout aborted in the last 24 h), `OtaRolloutStuck` (in progress for more
 than 6 h), `OtaCommandRefused` (a device refused or failed an OTA command in the last 24 h: outside a
 rollout, someone published an OTA command).
+
+## Proof results (A5, 2026-11-15)
+
+| Case | Result |
+|---|---|
+| rollout v2.4.1, 5 sensors | canary and phase 2 confirmed in a minute; one phase-3 device dropped the command (incident above), aborted at the timeout |
+| rollout v2.4.2, 4 sensors | success, each device confirmed in under 2 minutes |
+| refusals on esp32-0a171a18 (v2.4.2) | unsigned_command, bad_signature (other key), bad_signature (real signature, manifest edited), wrong_project (LED image), not_newer (v2.4.1): 5/5, no reboot, no ota_received, OtaCommandRefused fired |
+| LED and NILM v2.4.0 to v2.4.2 | confirmed within 2 minutes |
 
 ## Proof plan (A5)
 

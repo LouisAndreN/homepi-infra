@@ -259,3 +259,47 @@ def test_older_firmware_is_not_held_to_the_acknowledgment(conn):
 def test_acknowledges():
     assert rollout.acknowledges("v2.4.2") and rollout.acknowledges("v2.5.0") and rollout.acknowledges("v3.0.0")
     assert not rollout.acknowledges("v2.4.1") and not rollout.acknowledges("v2.4.0-rc2") and not rollout.acknowledges("")
+
+
+# --- v0.1.123: a confirmed device that later runs another version fails the rollout ---
+
+def test_image_that_registers_then_reverts_aborts_before_the_next_phase(conn):
+    """The rollback test image registers over HTTPS (the registry shows its version) and never reaches
+    the broker; the bootloader reverts it about 10 minutes later. The next phase must never start."""
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.1", soak_minutes=30, timeout_minutes=20)
+    rollout.step(conn, broker, T0)
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=1))                 # registration of the new image
+    rollout.step(conn, broker, T0 + timedelta(minutes=2))
+    assert conn.execute("SELECT status FROM rollout_devices WHERE rollout_id=? AND phase=1", (rid,)).fetchone()[0] == "confirmed"
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=12), "v2.4.0")      # reverted, publishing again
+    rollout.step(conn, broker, T0 + timedelta(minutes=12))
+    r = _phase(conn, rid)
+    assert r["status"] == "aborted" and "reverted to v2.4.0" in r["reason"]
+    assert broker.commands() == ["esp32-00000000"]
+
+
+def test_revert_is_caught_even_at_the_end_of_the_soak(conn):
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.1", soak_minutes=30)
+    rollout.step(conn, broker, T0)
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=1))
+    rollout.step(conn, broker, T0 + timedelta(minutes=2))
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=33), "v2.4.0")
+    assert "aborted" in rollout.step(conn, broker, T0 + timedelta(minutes=33))[0]
+    assert len(broker.commands()) == 1
+
+
+def test_earlier_phase_device_reverting_aborts_a_later_phase(conn):
+    broker = Broker()
+    rid = rollout.create(conn, "homepi_sensor", "v2.4.1", soak_minutes=30)
+    rollout.step(conn, broker, T0)
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=1))
+    rollout.step(conn, broker, T0 + timedelta(minutes=2))
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=32))
+    rollout.step(conn, broker, T0 + timedelta(minutes=32))                      # phase 2 starts
+    rollout.step(conn, broker, T0 + timedelta(minutes=33))                      # phase 2 sent
+    _confirm(conn, "esp32-00000000", T0 + timedelta(minutes=34), "v2.4.0")      # the canary reverts late
+    rollout.step(conn, broker, T0 + timedelta(minutes=34))
+    assert _phase(conn, rid)["status"] == "aborted"
+    assert broker.commands() == ["esp32-00000000", "esp32-00000001"]

@@ -24,9 +24,9 @@ rollouts), `PiPowerMetricsStale` (the exporter stopped: the other two cannot fir
 ## Hardware watchdog
 
 `/etc/systemd/system.conf.d/50-homepi-watchdog.conf`: systemd feeds `/dev/watchdog0` (bcm2835-wdt,
-`dtparam=watchdog=on`) with `RuntimeWatchdogSec=15s`, the limit of this watchdog; a hung system resets
-after 15 s. Until v0.1.122 `RuntimeWatchdogUSec` was 0: a hung Pi stayed hung. The watchdog does
-nothing for a power cut. Check: `systemctl show -p RuntimeWatchdogUSec` (15s) and
+`dtparam=watchdog=on`) with `RuntimeWatchdogSec=10s`, the timeout the Pi 5 watchdog runs (v0.1.122
+asked for 15 s and the device kept 10); a hung system resets after 10 s. Until v0.1.122 `RuntimeWatchdogUSec` was 0: a hung Pi stayed hung. The watchdog does
+nothing for a power cut. Check: `systemctl show -p RuntimeWatchdogUSec` (10s) and
 `cat /sys/class/watchdog/watchdog0/state` (active). Applied by `systemctl daemon-reexec`, no reboot.
 
 ## Incident 2026-11-15: reset when the supply cable was touched

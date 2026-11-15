@@ -60,7 +60,7 @@
     group: root
     mode: "0755"
 
-- name: systemd feeds the hardware watchdog (15 s)
+- name: systemd feeds the hardware watchdog (10 s)
   ansible.builtin.copy:
     src: 50-homepi-watchdog.conf
     dest: /etc/systemd/system.conf.d/50-homepi-watchdog.conf
