@@ -4,6 +4,8 @@
 !.env.example
 *.key
 *.pem
+# The OTA public key is public: the Pi verifies uploads with it (v0.1.120)
+!ansible/roles/ota_rollout/files/ota_signing_pub.pem
 *.age
 age.key
 keys.txt
