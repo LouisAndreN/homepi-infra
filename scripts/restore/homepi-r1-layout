@@ -100,7 +100,14 @@ preflight() {
     [ -r "$REPO/$f" ] || die "missing $REPO/$f"
   done
   mountpoint -q "$MNT" && die "$MNT is already mounted (an earlier run?): unmount it first"
-  for b in $PACKAGES_HOST; do dpkg -s "$b" > /dev/null 2>&1 || { log "installing $PACKAGES_HOST"; apt-get install -y -q $PACKAGES_HOST > /dev/null; break; }; done
+  # The microSD system can be months old: refresh the package lists before installing anything
+  for b in $PACKAGES_HOST; do
+    dpkg -s "$b" > /dev/null 2>&1 && continue
+    log "installing $PACKAGES_HOST"
+    apt-get update -q > /dev/null || die "apt-get update failed on the microSD system"
+    apt-get install -y -q $PACKAGES_HOST > /dev/null || die "cannot install $PACKAGES_HOST"
+    break
+  done
   curl -fsS --max-time 15 -o /dev/null "$IMAGE_BASE/SHA256SUMS" || die "cannot reach $IMAGE_BASE"
 }
 

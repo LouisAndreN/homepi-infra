@@ -1,0 +1,87 @@
+#!/bin/bash
+# homepi-r0-fetch: restore phase R0 (docs/runbooks/restore.md), on the laptop.
+#
+# Downloads from S3 the state archive and the native InfluxDB backup of the same night, checks each
+# one against the SHA-256 that S3 stored at upload time, and proves that the laptop age key
+# decrypts them (streamed: no plaintext is ever written to disk). The archives stay encrypted in
+# ~/homepi-restore/<date>/ until R3 streams them to the new Pi.
+#
+#   scripts/restore/homepi-r0-fetch            newest state archive and the native backup of that day
+#   scripts/restore/homepi-r0-fetch 2026-11-15 archives of that day
+set -uo pipefail
+umask 077
+
+DAY="${1:-}"
+AGE_KEY="$HOME/.config/sops/age/keys.txt"
+OUT_ROOT="$HOME/homepi-restore"
+MAX_AGE_HOURS=36
+
+die() { echo "STOPPED: $*" >&2; exit 1; }
+log() { echo "homepi-r0: $*"; }
+
+[ "$(hostname)" = "DESKTOP-581OMPC" ] || die "run this on the laptop"
+[ -z "$DAY" ] || [[ "$DAY" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || die "date must be YYYY-MM-DD"
+for c in aws age tar openssl base64; do command -v "$c" > /dev/null || die "missing command: $c"; done
+[ -r "$AGE_KEY" ] || die "laptop age key not found ($AGE_KEY)"
+REPO=$(cd "$(dirname "$0")/../.." && pwd)
+# shellcheck source=/dev/null
+. "$REPO/scripts/lib.sh"
+# awsenv may print an SSO device code to open in a browser: its output stays visible
+awsenv || die "no AWS session (awsenv failed)"
+[ -n "${TF_VAR_homepi_account_id:-}" ] || die "awsenv did not set the account"
+BUCKET="homepi-backups-${TF_VAR_homepi_account_id}"
+
+# Newest key of a prefix, optionally restricted to one day (names carry the date)
+pick() {
+  local prefix="$1" day="$2"
+  aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "$prefix/" --query 'Contents[].Key' --output text 2> /dev/null \
+    | tr '\t' '\n' | grep -E "^$prefix/[a-z-]+-${day:-[0-9]{4}-[0-9]{2}-[0-9]{2}}-[0-9]{4,6}\.tar\.age$" | sort | tail -n 1
+}
+
+STATE_KEY=$(pick state "$DAY")
+[ -n "$STATE_KEY" ] || die "no state archive${DAY:+ for $DAY} in s3://$BUCKET/state/"
+DAY=$(basename "$STATE_KEY" | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}')
+NATIVE_KEY=$(pick influx-native "$DAY")
+[ -n "$NATIVE_KEY" ] || die "no native InfluxDB backup for $DAY: choose another day (both must come from the same night)"
+
+DEST="$OUT_ROOT/$DAY"
+install -d -m 0700 "$DEST" || die "cannot create $DEST"
+
+fetch() {
+  local key="$1" file s3sum localsum modified age_h
+  file="$DEST/$(basename "$1")"
+  modified=$(aws s3api head-object --bucket "$BUCKET" --key "$key" --query LastModified --output text) || die "cannot read $key"
+  age_h=$(( ($(date +%s) - $(date -d "$modified" +%s)) / 3600 ))
+  log "$key: uploaded $modified (${age_h} h ago)"
+  [ "$age_h" -le "$MAX_AGE_HOURS" ] || echo "WARNING: $key is older than $MAX_AGE_HOURS h: the RPO target is 24 h"
+  s3sum=$(aws s3api head-object --bucket "$BUCKET" --key "$key" --checksum-mode ENABLED --query ChecksumSHA256 --output text) || die "no checksum for $key"
+  [ -n "$s3sum" ] && [ "$s3sum" != "None" ] || die "S3 holds no SHA-256 for $key"
+  if [ -f "$file" ] && [ "$(openssl dgst -sha256 -binary "$file" | base64)" = "$s3sum" ]; then
+    log "already downloaded and intact: $(basename "$file")"
+  else
+    aws s3api get-object --bucket "$BUCKET" --key "$key" --checksum-mode ENABLED "$file" > /dev/null || die "download of $key failed"
+  fi
+  localsum=$(openssl dgst -sha256 -binary "$file" | base64)
+  [ "$localsum" = "$s3sum" ] || die "checksum mismatch for $key (S3 and local differ)"
+  chmod 0600 "$file"
+  log "checksum OK: $(basename "$file") ($(stat -c %s "$file") bytes)"
+}
+
+# Decrypt in a stream and list the tar: proves the key and the archive without any plaintext on disk
+# LIST keeps the entry names of the last archive proven (names only, never contents)
+prove() {
+  local file
+  file="$DEST/$(basename "$1")"
+  LIST=$(age -d -i "$AGE_KEY" "$file" | tar -t) && [ -n "$LIST" ] || die "cannot decrypt or read $(basename "$file") with the laptop key"
+  log "decrypts with the laptop key: $(basename "$file") ($(printf '%s\n' "$LIST" | wc -l) entries)"
+}
+
+fetch "$STATE_KEY"
+fetch "$NATIVE_KEY"
+prove "$NATIVE_KEY"
+prove "$STATE_KEY"
+for want in ./etc-and-state.tar ./opt.tar ./sqlite-extra/crowdsec.db; do
+  printf '%s\n' "$LIST" | grep -qxF "$want" || die "$want missing from the state archive"
+done
+log "state archive holds etc-and-state.tar, opt.tar and the CrowdSec database"
+log "R0 done: $DEST (encrypted archives of $DAY, never decrypted to disk)"

@@ -12,6 +12,26 @@ Design: `docs/disaster-recovery.md`. Phases R0 to R7; this runbook grows phase b
 - The 990 PRO is 22 GiB smaller than the Micron: same partitions and volume sizes, about 17.6 GiB
   left free in `vg-main` (40 GiB on the Micron).
 
+## R0: fetch the backups (`scripts/restore/homepi-r0-fetch`, laptop)
+
+Picks the newest state archive in S3 (or the one of a given day) and the native InfluxDB backup of
+the same day, downloads both into `~/homepi-restore/<day>/`, checks each file against the SHA-256
+S3 stored at upload, and proves the laptop age key decrypts them by streaming `age -d | tar -t`:
+nothing is ever written decrypted. It also checks that the state archive holds `etc-and-state.tar`,
+`opt.tar` and `sqlite-extra/crowdsec.db`.
+
+The state archive of the nightly run (03:30) and the native backup (03:50) are 20 minutes apart. A
+state archive made by hand later in the day is newer than that day's native backup: InfluxDB then
+comes back older than the registry. Pass the day to pick the nightly pair if that matters.
+
+If the laptop is lost: the paper key opens the same archives (`docs/disaster-recovery.md`).
+
+## Before R1: the microSD
+
+The microSD was used to set up the production disk in 2026. It may still hold a copy of the
+production LUKS keyfile or of the setup notes (article 0 created the keyfile from the SD system).
+Check it before the drill and, once C3 is over, delete those copies: the SD is a loose card.
+
 ## R1: disk layout and base system (`scripts/restore/homepi-r1-layout`)
 
 What it does, in order, stopping at the first problem:
