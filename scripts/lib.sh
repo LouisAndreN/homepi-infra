@@ -62,6 +62,30 @@ awsenv() {
   echo "AWS profile homepi-admin ready (workload account, region $(aws configure get region))"
 }
 
+# Management account session for the organization roots (terraform/aws/mgmt-bootstrap, org).
+# The SSO profile homepi-mgmt must point at the management account; the root e-mail addresses of
+# the member accounts stay in SOPS and reach Terraform through the environment only.
+awsmgmt() {
+  local me mgmt root
+  export AWS_PROFILE=homepi-mgmt
+  aws sts get-caller-identity > /dev/null 2>&1 || aws sso login --no-browser || return 1
+  me=$(aws sts get-caller-identity --query Account --output text) || return 1
+  mgmt=$(aws organizations describe-organization --query Organization.MasterAccountId --output text) || return 1
+  [ "$me" = "$mgmt" ] || { echo "STOPPED: profile homepi-mgmt does not point at the management account"; return 1; }
+  export TF_VAR_management_account_id="$me"
+  root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  TF_VAR_log_archive_email=$(sops -d --extract '["log_archive_email"]' "$root/ansible/secrets/aws.sops.yaml") || { echo "STOPPED: log_archive_email missing from SOPS"; return 1; }
+  TF_VAR_backup_vault_email=$(sops -d --extract '["backup_vault_email"]' "$root/ansible/secrets/aws.sops.yaml") || { echo "STOPPED: backup_vault_email missing from SOPS"; return 1; }
+  [ -n "$TF_VAR_log_archive_email" ] && [ -n "$TF_VAR_backup_vault_email" ] || { echo "STOPPED: an account e-mail is empty in SOPS"; return 1; }
+  export TF_VAR_log_archive_email TF_VAR_backup_vault_email
+  echo "AWS profile homepi-mgmt ready (management account, region $(aws configure get region))"
+}
+
+tfinit_mgmt() {
+  [ -n "${TF_VAR_management_account_id:-}" ] || { echo "STOPPED: run awsmgmt first"; return 1; }
+  terraform init -input=false -no-color -backend-config="bucket=homepi-tfstate-${TF_VAR_management_account_id}" "$@"
+}
+
 # Initialise a Terraform root on the shared S3 backend. The bucket name contains the account ID,
 # so it is passed here instead of being written in the repository. Run awsenv first.
 tfinit() {
