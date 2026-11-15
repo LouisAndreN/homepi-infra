@@ -92,6 +92,31 @@ Tests:
 | homepi cannot read them | `aws s3 ls s3://homepi-cloudtrail-[log-archive]` with homepi-admin: AccessDenied |
 | Integrity | `aws cloudtrail validate-logs` on the trail: digest files valid |
 
+## D3: backup-vault (`terraform/aws/vault` and `terraform/aws/homepi/replication.tf`)
+
+Order (the vault bucket policy names the replication role, the replication rule needs the bucket):
+
+1. `backup_vault_account_id` into SOPS (`aws.sops.yaml`), so `awsenv` passes it to the homepi root.
+2. homepi root, `vault_replication_enabled` false: creates the role `homepi-backup-replication`
+   (trust: s3.amazonaws.com for this account only; reads the source versions and their retention,
+   writes replicas to the vault only).
+3. vault root (awsmgmt): bucket `homepi-backup-vault-[vault]` (Object Lock GOVERNANCE 30 days,
+   versioned, SSE-S3, public access blocked, TLS only, same expiry windows as the source), a bucket
+   policy that lets only the replication role write replicas and denies every other principal of
+   homepi, and the SSO permission set `restore-reader` (list and read the vault, nothing else)
+   assigned to `louis` on backup-vault.
+4. homepi root with `TF_VAR_vault_replication_enabled=true`: the replication rule (all prefixes,
+   delete markers not replicated, replicas owned by backup-vault).
+
+Only new versions are replicated: the copy fills with the next nightly archives.
+
+| Claim | Test |
+|---|---|
+| New archives reach the vault | after the next upload, the same key exists in the vault (restore-reader) |
+| homepi cannot read the copy | `aws s3 ls s3://homepi-backup-vault-[vault]` with homepi-admin: AccessDenied |
+| Deleting in homepi spares the copy | delete marker on a test object in homepi; the vault version is still there |
+| Restore from the vault | R0 with restore-reader (option to add to `homepi-r0-fetch`) |
+
 ## Next
 
 D2b organization trail into `log-archive` (Object Lock GOVERNANCE 7 days, then GOVERNANCE 90 days), D3 `backup-vault` replica with replication from `homepi`,

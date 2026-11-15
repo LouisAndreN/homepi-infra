@@ -59,6 +59,9 @@ awsenv() {
   TF_VAR_alert_email=$(sops -d --extract '["alert_email"]' "$root/ansible/secrets/aws.sops.yaml") || { echo "STOPPED: could not decrypt alert_email from SOPS"; return 1; }
   [ -n "$TF_VAR_alert_email" ] || { echo "STOPPED: alert_email is empty in SOPS"; return 1; }
   export TF_VAR_alert_email
+  # The backup-vault account ID (D3): optional, absent until the vault exists
+  TF_VAR_backup_vault_account_id=$(sops -d --extract '["backup_vault_account_id"]' "$root/ansible/secrets/aws.sops.yaml" 2> /dev/null || true)
+  export TF_VAR_backup_vault_account_id
   echo "AWS profile homepi-admin ready (workload account, region $(aws configure get region))"
 }
 
@@ -81,7 +84,8 @@ awsmgmt() {
   # Member account IDs, looked up by name (empty until terraform/aws/org created them)
   TF_VAR_log_archive_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='log-archive'].Id" --output text)
   TF_VAR_backup_vault_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='backup-vault'].Id" --output text)
-  export TF_VAR_log_archive_account_id TF_VAR_backup_vault_account_id
+  TF_VAR_homepi_account_id=$(aws organizations list-accounts --query "Accounts[?Name=='homepi'].Id" --output text)
+  export TF_VAR_log_archive_account_id TF_VAR_backup_vault_account_id TF_VAR_homepi_account_id
   echo "AWS profile homepi-mgmt ready (management account, region $(aws configure get region))"
 }
 
