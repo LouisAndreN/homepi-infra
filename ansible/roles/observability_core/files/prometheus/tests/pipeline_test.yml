@@ -1,0 +1,56 @@
+# promtool test rules pipeline_test.yml (from this directory): each alert seen firing and seen quiet
+rule_files:
+  - ../rules/pipeline.yml
+evaluation_interval: 1m
+tests:
+  # Writes every minute for 10 minutes, then none: quiet while writing, firing 25 min after the last one
+  - interval: 1m
+    input_series:
+      - series: 'http_api_requests_total{job="influxdb",path="/api/v2/write",user_agent="Telegraf",status="2XX",response_code="204"}'
+        values: '0+6x10 60x40'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: InfluxWritesStopped
+        exp_alerts: []
+      - eval_time: 30m
+        alertname: InfluxWritesStopped
+        exp_alerts: []
+      - eval_time: 36m
+        alertname: InfluxWritesStopped
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "InfluxDB accepted no write from Telegraf for 25 minutes: sensor data is not stored"
+              description: "Devices may still look alive (DeviceSilent reads the device API, not InfluxDB). Check: systemctl status telegraf; journalctl -u telegraf -n 30; homepi-telegraf-check; df -h /var/lib/influxdb. docs/runbooks/telegraf.md."
+  # The series never exists (InfluxDB restarted, nothing written): still fires
+  - interval: 1m
+    input_series:
+      - series: 'up{job="influxdb"}'
+        values: '1x30'
+    alert_rule_test:
+      - eval_time: 14m
+        alertname: InfluxWritesStopped
+        exp_alerts: []
+      - eval_time: 16m
+        alertname: InfluxWritesStopped
+        exp_alerts:
+          - exp_labels: {severity: critical}
+            exp_annotations:
+              summary: "InfluxDB accepted no write from Telegraf for 25 minutes: sensor data is not stored"
+              description: "Devices may still look alive (DeviceSilent reads the device API, not InfluxDB). Check: systemctl status telegraf; journalctl -u telegraf -n 30; homepi-telegraf-check; df -h /var/lib/influxdb. docs/runbooks/telegraf.md."
+  # A revoked token: 401 on every flush
+  - interval: 1m
+    input_series:
+      - series: 'http_api_requests_total{job="influxdb",path="/api/v2/write",user_agent="Telegraf",status="4XX",response_code="401"}'
+        values: '0x5 0+6x30'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: InfluxWritesRejected
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: InfluxWritesRejected
+        exp_alerts:
+          - exp_labels: {severity: warning, status: 4XX}
+            exp_annotations:
+              summary: "InfluxDB is refusing writes (4XX)"
+              description: "4XX: a token revoked or without write permission on the bucket, or a malformed point. 5XX: InfluxDB itself (disk, compaction). Check: journalctl -u telegraf -n 30 | grep -i error; journalctl -u influxdb -n 30."

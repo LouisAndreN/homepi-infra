@@ -1,0 +1,27 @@
+# Managed by Ansible (observability_core). Data pipeline: Telegraf writes into InfluxDB.
+# DeviceSilent watches the device API, a separate MQTT subscriber: a Telegraf that runs but cannot
+# write (revoked token, full volume, InfluxDB refusing) left devices "alive" and no data stored,
+# with no alert (found 2026-11-15 while writing article 17). These rules watch the write path itself.
+groups:
+  - name: homepi-pipeline
+    rules:
+      # Sensors publish every 30 s and Telegraf flushes every 10 s: ten minutes without a single
+      # accepted write means nothing reaches iot-hot. "or vector(0)" keeps the rule alive when the
+      # series is absent (InfluxDB restarted and never written to, or its scrape failing).
+      - alert: InfluxWritesStopped
+        expr: (sum(rate(http_api_requests_total{job="influxdb",path="/api/v2/write",user_agent="Telegraf",status="2XX"}[10m])) or vector(0)) == 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "InfluxDB accepted no write from Telegraf for 25 minutes: sensor data is not stored"
+          description: "Devices may still look alive (DeviceSilent reads the device API, not InfluxDB). Check: systemctl status telegraf; journalctl -u telegraf -n 30; homepi-telegraf-check; df -h /var/lib/influxdb. docs/runbooks/telegraf.md."
+
+      - alert: InfluxWritesRejected
+        expr: sum by (status) (rate(http_api_requests_total{job="influxdb",path="/api/v2/write",status=~"4XX|5XX"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "InfluxDB is refusing writes ({{ $labels.status }})"
+          description: "4XX: a token revoked or without write permission on the bucket, or a malformed point. 5XX: InfluxDB itself (disk, compaction). Check: journalctl -u telegraf -n 30 | grep -i error; journalctl -u influxdb -n 30."

@@ -25,3 +25,16 @@ payloads. The telegraf-bridge password was also in a world-readable file; it was
 
 `sops set` a new `mqtt_telegraf_password`, release, apply. The role rewrites the broker hash,
 reloads Mosquitto, runs a Telegraf test connection with the new configuration, then restarts it.
+
+## Alerts on the write path (pipeline.yml)
+
+`DeviceSilent` reads the device API, a separate MQTT subscriber: it says a device publishes, not
+that its data is stored. Two rules watch InfluxDB's own write counter
+(`http_api_requests_total{path="/api/v2/write"}`, scraped by the `influxdb` job):
+
+| Alert | Fires when | First checks |
+|---|---|---|
+| `InfluxWritesStopped` (critical) | no write from Telegraf accepted for 10 minutes, for 15 minutes (also when the series is absent) | `systemctl status telegraf`, `homepi-telegraf-check`, `df -h /var/lib/influxdb` |
+| `InfluxWritesRejected` (warning) | any 4XX or 5XX on `/api/v2/write` for 10 minutes | 401/403: the `telegraf-write` token (SOPS `influx_telegraf_token`); 5XX: `journalctl -u influxdb` |
+
+Unit tests: `cd ansible/roles/observability_core/files/prometheus/tests && promtool test rules pipeline_test.yml`.

@@ -54,8 +54,7 @@ See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
   `homepi-loki-housekeeping`, a workaround, not a fix. Fix planned: dedicated XFS volume.
 - **Not managed by the repo yet:** Nginx, Authelia, CrowdSec (its whitelist parser is locally
   modified, "tainted"), Loki, Unbound, NetBird DNS settings. The Pi cannot be fully rebuilt from Git.
-- **InfluxDB downsampling task** is exported from `/tmp/downsample.flux`, which does not survive a
-  reboot, so it is missing from every InfluxDB export. Fix planned with the InfluxDB role.
+- **InfluxDB downsampling task**: the live script is `ansible/roles/influxdb/files/tasks/downsample_iot_hot_to_archives.flux`, compared with InfluxDB (Flux text included) by `homepi-influx-check` on every apply and check, and kept with every token by the nightly native backup (v0.1.94). `/etc/influxdb/tasks/downsample_iot.flux` on the Pi is stale and unused.
 - **No GeoIP on nftables drops** (removed in v0.1.109). Measured over 24 h behind the home router:
   0 public IPv4 source among the dropped inbound packets (all LAN broadcast, multicast and NetBIOS).
   It comes back only if a port is ever exposed to the Internet.
