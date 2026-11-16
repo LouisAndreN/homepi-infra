@@ -47,7 +47,7 @@ flowchart LR
 |---|---|---|
 | Network isolation | Dedicated IoT Wi-Fi, nftables default drop, egress limited to HTTPS/HTTP/ICMP, NAT | `ansible/roles/network` |
 | DNS | Unbound as system resolver, DNSSEC, split views for LAN and NetBird | `ansible/roles/dns` |
-| Remote access | NetBird (WireGuard) with ACLs, SSH keys only, no port open to the Internet | articles 3 |
+| Remote access | NetBird (WireGuard) with ACLs, SSH keys only, no port open to the Internet | article 3 |
 | Device identity | Manufacturer CA (offline) issues IDevIDs; step-ca X5C provisioner with a template that binds the LDevID name to the IDevID (IEEE 802.1AR model) | `ansible/roles/pki` |
 | MQTT | Mosquitto mTLS on 8883, CRL enforced, ACL generated from the device registry | `ansible/roles/pki_crl`, `mqtt_acl` |
 | Enrolment | Zero-touch for pre-announced devices; unknown devices stay pending; the API holds no CA secret | `apps/api` |
@@ -56,7 +56,7 @@ flowchart LR
 | Alerting | Slack routing by severity, plus an independent dead man's switch: Watchdog → CloudWatch → e-mail | `terraform/aws/homepi/heartbeat.tf` |
 | Intrusion detection | CrowdSec + nftables bouncer, auditd rules scoped to login sessions | `ansible/roles/crowdsec`, `auditd` |
 | Web access | nginx as the only entry point, Authelia password + TOTP, per-path source allow lists | `ansible/roles/nginx`, `authelia` |
-| GitOps | Pull model: the Pi applies only GPG-signed tags, hourly drift check, release gate, automatic rollback per role | `ansible/roles/gitops_runtime` |
+| GitOps | Pull model: the Pi applies only signed tags from a trusted key, hourly drift check, release gate; nginx, Alloy, Authelia and the dashboard roll back automatically when their checks fail | `ansible/roles/gitops_runtime` |
 | AWS | Organization with management, workload, log-archive and backup-vault accounts; SCP guardrails; organization CloudTrail; cross-account backup vault; budget | `terraform/aws` |
 | Backups | Nightly state archive (age, two recipients) and native InfluxDB backup, uploaded off-site; restore scripts | `scripts/restore`, `docs/disaster-recovery.md` |
 
