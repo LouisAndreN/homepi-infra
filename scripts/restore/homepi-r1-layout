@@ -351,8 +351,13 @@ chroot_setup() {
     umask 022
     mv /etc/resolv.conf /etc/resolv.conf.image 2>/dev/null || true
     install -m 0644 /run/homepi-r1-resolv.conf /etc/resolv.conf
-    apt-get update -q > /dev/null
-    apt-get install -y -q $PACKAGES_TARGET > /dev/null
+    # Never wait for an answer nobody sees: dpkg asked about /etc/systemd/zram-generator.conf (written
+    # above, then shipped by systemd-zram-generator) on a terminal hidden behind > /dev/null, and
+    # waited 23 minutes (C3). confold keeps the files R1 wrote; stdin from /dev/null makes any other
+    # question fail at once; the output goes to the R1 log.
+    apt-get update -q < /dev/null
+    apt-get install -y -q -o Dpkg::Use-Pty=0 -o Dpkg::Options::=--force-confdef -o Dpkg::Options::=--force-confold \
+      $PACKAGES_TARGET < /dev/null
     id $OPERATOR > /dev/null 2>&1 || useradd -m -s /bin/bash -G adm,sudo $OPERATOR
     passwd -l $OPERATOR > /dev/null
     install -d -m 0700 -o $OPERATOR -g $OPERATOR /home/$OPERATOR/.ssh
