@@ -9,6 +9,18 @@
     group: root
     mode: "0700"
 
+# SQLite writes a journal next to db.sqlite3, so Authelia must own its state directory. On a rebuilt
+# Pi (C3, 2026-11-21) it was root-owned: reads worked, every write failed ("attempt to write a
+# readonly database"), so a valid TOTP code was refused (TOTP history not saved) and failed logins
+# were not recorded (regulation could not ban). homepi-authelia-check did not see it: it only reads.
+- name: Authelia state directory owned by Authelia (SQLite journal)
+  ansible.builtin.file:
+    path: /var/lib/authelia
+    state: directory
+    owner: authelia
+    group: authelia
+    mode: "0700"
+
 - name: Authelia files present before the change (a rebuilt Pi has no users database until SOPS writes it)
   ansible.builtin.stat:
     path: "{{ item.dest }}"
