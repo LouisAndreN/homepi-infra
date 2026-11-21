@@ -21,6 +21,10 @@ ROOT="${HOMEPI_R3_ROOT:-/}"
 # --check (laptop, no root): reads the archive, keeps only the member names, checks the allowlist
 CHECK=0
 [ "${1:-}" != --check ] || CHECK=1
+# --parents-only: restore only the mode and owner of the parent directories (repairs a host restored
+# by an earlier version of this script, which created them root-only)
+PARENTS_ONLY=0
+[ "${1:-}" != --parents-only ] || PARENTS_ONLY=1
 if [ "$CHECK" = 1 ]; then STAGE=$(mktemp -d); else STAGE=$(mktemp -d /run/homepi-r3.XXXXXX); fi
 trap 'rm -rf "$STAGE"' EXIT
 
@@ -103,9 +107,28 @@ stop_services() {
   log "services stopped: $SERVICES"
 }
 
+# The allowlist names files, and tar creates the missing parent directories itself: under the
+# script's umask 077 they came out root-only, so mosquitto could not open /etc/mosquitto/acl/*.acl
+# (C3, R4, 2026-11-21). Parents that exist in the archive get the production mode and owner; any
+# other directory tar has to create gets 0755.
+restore_parent_dirs() {
+  local n
+  tar -tf "$STAGE/etc-and-state.tar" --wildcards -T "$STAGE/patterns" | sed 's#/$##' | while read -r m; do
+    d=$(dirname "$m"); while [ "$d" != . ] && [ "$d" != / ]; do printf '%s/\n' "$d"; d=$(dirname "$d"); done
+  done | sort -u > "$STAGE/parents"
+  [ -s "$STAGE/members" ] || tar -tf "$STAGE/etc-and-state.tar" > "$STAGE/members"
+  grep -xF -f "$STAGE/parents" "$STAGE/members" > "$STAGE/parent-dirs" || true
+  n=$(wc -l < "$STAGE/parent-dirs")
+  [ "$n" -gt 0 ] || { log "no parent directory entry in the archive"; return 0; }
+  (umask 022; tar -x -p --same-owner --no-recursion -C "$ROOT" -f "$STAGE/etc-and-state.tar" -T "$STAGE/parent-dirs") \
+    || die "restoring the parent directories failed"
+  log "parent directories restored with their production mode and owner: $n"
+}
+
 restore_files() {
-  tar -x -p --same-owner --wildcards -C "$ROOT" -f "$STAGE/etc-and-state.tar" -T "$STAGE/patterns" \
+  (umask 022; tar -x -p --same-owner --wildcards -C "$ROOT" -f "$STAGE/etc-and-state.tar" -T "$STAGE/patterns") \
     || die "extraction failed"
+  restore_parent_dirs
   log "restored: $(tar -tf "$STAGE/etc-and-state.tar" --wildcards -T "$STAGE/patterns" | grep -vc '/$') files"
   local x args=()
   for x in $OPT_EXCLUDE; do args+=(--exclude="$x"); done
@@ -138,6 +161,7 @@ check_only() {
 
 main() {
   if [ "$CHECK" = 1 ]; then check_only; return; fi
+  if [ "$PARENTS_ONLY" = 1 ]; then unpack; select_members; restore_parent_dirs; return; fi
   unpack
   ensure_accounts
   select_members
