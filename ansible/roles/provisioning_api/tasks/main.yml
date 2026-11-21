@@ -152,9 +152,11 @@
         label: "{{ item.dest }}"
       register: api_code_install
 
+    # Enabled too: a rebuilt Pi has no enablement links (C3, 2026-11-21)
     - name: Start the API services
       ansible.builtin.systemd_service:
         name: "{{ item }}"
+        enabled: true
         state: started
       loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
 
@@ -232,6 +234,7 @@
     - name: Start the API services again
       ansible.builtin.systemd_service:
         name: "{{ item }}"
+        enabled: true
         state: started
       loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
 
