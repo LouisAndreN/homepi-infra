@@ -44,8 +44,9 @@
     daemon_reload: true
   when: service_ordering_mosquitto is changed or service_ordering_telegraf is changed or service_ordering_step is changed
 
-- name: Broker and collector running
+# Telegraf is started by its own role, after its configuration exists: started here, a rebuilt Pi
+# had no output configured yet and Telegraf failed ("no outputs found", C3, R4, 2026-11-21).
+- name: Broker running
   ansible.builtin.systemd_service:
-    name: "{{ item }}"
+    name: mosquitto
     state: started
-  loop: [mosquitto, telegraf]
