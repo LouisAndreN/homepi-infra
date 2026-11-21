@@ -70,6 +70,17 @@
     mode: "0755"
   register: crowdsec_checker
 
+# The role owns the running state: R3 of a rebuild (C3, 2026-11-21) stops both and nothing else
+# started the bouncer again, so the Pi had no crowdsec nftables sets
+- name: CrowdSec agent and firewall bouncer enabled and running
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: true
+    state: started
+  loop:
+    - crowdsec
+    - crowdsec-firewall-bouncer
+
 - name: CrowdSec agent, bouncer, console options and collections
   ansible.builtin.command:
     argv: "{{ ['/usr/local/sbin/homepi-crowdsec-check'] + crowdsec_collections }}"
