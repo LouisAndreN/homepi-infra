@@ -7,6 +7,10 @@ set -u
 HOST="${HOMEPI_HOST:-homepi}"; LAN_IP=192.168.0.151; NB_IP=100.116.35.149; WINDOW=180
 REPO="$(cd "$(dirname "$0")/.." && pwd)"; NEW="$REPO/ansible/roles/network/files/nftables.conf"
 tcp() { timeout 5 bash -c "</dev/tcp/$1/$2" 2>/dev/null; }
+# sshd answers through the firewall: its banner is read without authenticating. A BatchMode login
+# cannot prove it: the operator key has a passphrase and no agent, so it fails with "Permission
+# denied" whatever the firewall does (C3, 2026-11-21: a correct ruleset was rolled back).
+ssh_banner() { [ "$(timeout 5 bash -c "exec 3<> /dev/tcp/$1/22; head -c 7 <&3" 2>/dev/null)" = "SSH-2.0" ]; }
 state() { ssh "$HOST" 'sudo -H bash -s' << 'REMOTE'
 echo "tables=$(nft list tables | awk '{print $2"/"$3}' | sort | tr '\n' ' ')"
 echo "iot=$(ss -tnH state established '( sport = :8883 )' | wc -l)"
@@ -44,9 +48,9 @@ REMOTE
 T0=$(date +%s); sleep 3
 echo "=== checks with new connections"
 FAIL=0
-if ssh -o ControlPath=none -o ConnectTimeout=5 -o BatchMode=yes "$HOST" true </dev/null; then echo "ok   new SSH over LAN"; else echo "FAIL new SSH over LAN"; FAIL=1; fi
+if ssh_banner "$LAN_IP"; then echo "ok   new SSH over LAN (sshd banner through the firewall)"; else echo "FAIL new SSH over LAN"; FAIL=1; fi
 tcp "$LAN_IP" 443 && echo "ok   LAN https" || { [ "$L443" = up ] && { echo "FAIL LAN https"; FAIL=1; } || echo "info LAN https down before and after"; }
-if [ "$N22" = up ]; then tcp "$NB_IP" 22 && echo "ok   NetBird ssh" || { echo "FAIL NetBird ssh"; FAIL=1; }; else echo "info NetBird ssh not reachable from this laptop before, not tested"; fi
+if [ "$N22" = up ]; then ssh_banner "$NB_IP" && echo "ok   NetBird ssh (sshd banner)" || { echo "FAIL NetBird ssh"; FAIL=1; }; else echo "info NetBird ssh not reachable from this laptop before, not tested"; fi
 AFT=$(state); echo "$AFT"
 MISSING=$(comm -23 <(val "$B" tables | tr ' ' '\n' | sed '/^$/d' | sort) <(val "$AFT" tables | tr ' ' '\n' | sed '/^$/d' | sort) | tr '\n' ' ')
 ADDED=$(comm -13 <(val "$B" tables | tr ' ' '\n' | sed '/^$/d' | sort) <(val "$AFT" tables | tr ' ' '\n' | sed '/^$/d' | sort) | tr '\n' ' ')
