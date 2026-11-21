@@ -44,13 +44,20 @@ read -r -p "Physical access within the hour? Type REBOOT-HOMEPI to reboot: " ANS
 [ "$ANSWER" = "REBOOT-HOMEPI" ] || { echo "STOPPED: not confirmed, no reboot"; exit 1; }
 ssh "$HOST" 'sudo systemd-run --on-active=5 --unit="homepi-controlled-reboot-$(date +%s)" systemctl reboot' </dev/null || { echo "STOPPED: reboot not scheduled"; exit 1; }
 T0=$(date +%s); echo "reboot scheduled at $(date '+%T')"
-NEW=""
-for i in $(seq 1 120); do
-  sleep 5
-  NEW=$(ssh -o ControlPath=none -o ConnectTimeout=5 -o BatchMode=yes "$HOST" 'cat /proc/sys/kernel/random/boot_id' </dev/null 2>/dev/null || true)
-  [ -n "$NEW" ] && [ "$NEW" != "$OLD" ] && break; NEW=""
-done
-[ -n "$NEW" ] || { echo "FAIL: no SSH within 10 min. Do not retry; see docs/runbooks/reboot.md (no SSH after a reboot)"; exit 1; }
+# The operator key has a passphrase and no agent: a BatchMode login can never succeed, so the poll
+# watches TCP port 22 instead (down, then up again) and logs in once, interactively, at the end.
+read -r ADDR PORT < <(ssh -G "$HOST" | awk '$1 == "hostname" {h = $2} $1 == "port" {p = $2} END {print h, p}')
+port_open() { timeout 5 bash -c "exec 3<> /dev/tcp/$ADDR/$PORT" 2> /dev/null; }
+went_down=0
+for _ in $(seq 1 24); do sleep 5; port_open || { went_down=1; break; }; done
+[ "$went_down" = 1 ] && echo "SSH port closed after $(( $(date +%s) - T0 )) s (shutting down)" \
+  || echo "note: SSH port never closed within 2 min (fast reboot, or the reboot did not start)"
+up=0
+for _ in $(seq 1 120); do sleep 5; port_open && { up=1; break; }; done
+[ "$up" = 1 ] || { echo "FAIL: SSH port not open within 10 min. Do not retry; see docs/runbooks/reboot.md (no SSH after a reboot)"; exit 1; }
+sleep 5
+NEW=$(ssh -o ControlPath=none -o ConnectTimeout=10 "$HOST" 'cat /proc/sys/kernel/random/boot_id' < /dev/null)
+[ -n "$NEW" ] && [ "$NEW" != "$OLD" ] || { echo "FAIL: same boot id after the SSH port came back: the Pi did not reboot"; exit 1; }
 echo "SSH back after $(( $(date +%s) - T0 )) s"
 echo "=== post-boot checks (waits 60 s for late services)"
 POST=$(ssh -o ControlPath=none "$HOST" "sudo -H bash -s -- $IOT" << 'REMOTE'

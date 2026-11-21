@@ -13,9 +13,22 @@ prom() { curl -fsS --max-time 10 "$PROM/api/v1/query" --data-urlencode "query=$1
 [ "$EUID" -eq 0 ] || { echo "STOPPED: run as root"; exit 1; }
 state=$(systemctl is-system-running 2> /dev/null)
 [ "$state" = running ] && ok "systemd: running" || bad "systemd: $state ($(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' '))"
+# Three checks take arguments from Ansible and are called below with the same ones. influx-check
+# reads its expected state on stdin: only Ansible (the influxdb role, R4) can give it, so R6 skips it.
+# Every check runs with stdin closed: a check that reads stdin would otherwise consume this script
+# when it is piped through ssh (bash -s), and R6 would stop silently after the loop.
+API_DEVICE="${HOMEPI_API_DEVICE:-esp32-0a171a18}"
+DNS_ARGS="${HOMEPI_DNS_ARGS:-192.168.0.151 100.116.35.149 192.168.200.1}"
 for c in /usr/local/sbin/homepi-*-check; do
   [ -x "$c" ] || continue
-  if "$c" > /dev/null 2>&1; then ok "$(basename "$c")"; else bad "$(basename "$c") (run it for details)"; fi
+  name=$(basename "$c")
+  case "$name" in
+    homepi-api-check) args=("$API_DEVICE") ;;
+    homepi-dns-check) read -r -a args <<< "$DNS_ARGS" ;;
+    homepi-influx-check) echo "skip  $name (needs the expected state from Ansible: proven by R4)"; continue ;;
+    *) args=() ;;
+  esac
+  if "$c" "${args[@]}" < /dev/null > /dev/null 2>&1; then ok "$name"; else bad "$name (run it for details)"; fi
 done
 read -r tag _ < /var/lib/homepi-gitops/deployed 2> /dev/null && ok "GitOps deployed $tag" || bad "GitOps has deployed nothing"
 n=$(ss -Htn state established '( sport = :8883 )' | wc -l)
