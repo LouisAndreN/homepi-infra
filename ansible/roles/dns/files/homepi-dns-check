@@ -17,8 +17,10 @@ if dig @127.0.0.1 . NS +time=3 +tries=1 | grep -q 'status: NOERROR'; then
   printf '%s\n' "$r" | grep -q 'status: NOERROR' && printf '%s\n' "$r" | grep -qE 'flags:[a-z ]* ad' \
     && ok "DNSSEC positive: isc.org validated (ad)" || bad "DNSSEC positive: isc.org not validated"
   st=""
-  for n in 1 2 3; do
-    st=$(dig @127.0.0.1 dnssec-failed.org A +time=5 +tries=1 | grep -oE 'status: [A-Z]+' | cut -d' ' -f2)
+  for _ in 1 2 3; do
+    # 10 s: with a cold cache (a rebuilt Pi, C3 2026-11-21) Unbound needs more than 5 s to try every
+    # server of the broken zone before it answers SERVFAIL; three 5 s tries came back empty
+    st=$(dig @127.0.0.1 dnssec-failed.org A +time=10 +tries=1 | grep -oE 'status: [A-Z]+' | cut -d' ' -f2)
     [ -n "$st" ] && break
   done
   case "$st" in
