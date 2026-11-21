@@ -11,22 +11,51 @@
     mode: "0644"
   notify: Restart unbound
 
-- name: Apply a changed Unbound configuration before relying on it
+- name: Unbound configuration (main file and drop-ins)
+  ansible.builtin.copy:
+    src: "unbound/{{ item }}"
+    dest: "/etc/unbound/{{ item }}"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: [unbound.conf, unbound.conf.d/pi-iot.conf, unbound.conf.d/remote-control.conf, unbound.conf.d/root-auto-trust-anchor-file.conf]
+  register: dns_unbound_files
+  notify: Restart unbound
+
+- name: Unbound configuration is valid (before any restart)
+  ansible.builtin.command:
+    argv: [unbound-checkconf]
+    chdir: /
+  changed_when: false
+  check_mode: false
+
+- name: Unbound restarted now if its configuration changed
   ansible.builtin.meta: flush_handlers
 
-# A new Pi whose Unbound does not answer yet must not lose its DNS
+# A new Pi whose Unbound does not answer yet must not lose its DNS. The check runs after the Unbound
+# configuration is in place: on a rebuilt Pi (C3, R4, 2026-11-21) it ran before pi-iot.conf existed,
+# so homepi.internal could not resolve, and the first queries of a freshly started Unbound (trust
+# anchor priming) timed out. Each name gets five tries; a failed dig is retried, not fatal at once.
 - name: Check that Unbound answers before making it the system resolver
-  ansible.builtin.command: "dig +short +time=2 +tries=1 {{ item }} @127.0.0.1"
+  ansible.builtin.command: "dig +short +time=3 +tries=1 {{ item }} @127.0.0.1"
   loop:
     - hooks.slack.com
     - homepi.internal
   register: dns_unbound_check
   changed_when: false
   check_mode: false
-  # Three tries 5 s apart: one empty answer during a cache refresh stopped the v0.1.111 precheck
-  until: dns_unbound_check.stdout | length > 0
-  retries: 3
-  delay: 5
+  failed_when: false
+  until: dns_unbound_check.rc == 0 and dns_unbound_check.stdout | length > 0
+  retries: 5
+  delay: 3
+
+- name: Stop if Unbound does not answer
+  ansible.builtin.fail:
+    msg: "Unbound does not answer for {{ item.item }} (rc {{ item.rc }}): /etc/resolv.conf is left unchanged"
+  loop: "{{ dns_unbound_check.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.rc != 0 or item.stdout | length == 0
 
 - name: Find the NetBird client configuration
   ansible.builtin.stat:
@@ -55,27 +84,6 @@
     group: root
     mode: "0644"
     backup: true
-
-- name: Unbound configuration (main file and drop-ins)
-  ansible.builtin.copy:
-    src: "unbound/{{ item }}"
-    dest: "/etc/unbound/{{ item }}"
-    owner: root
-    group: root
-    mode: "0644"
-  loop: [unbound.conf, unbound.conf.d/pi-iot.conf, unbound.conf.d/remote-control.conf, unbound.conf.d/root-auto-trust-anchor-file.conf]
-  register: dns_unbound_files
-  notify: Restart unbound
-
-- name: Unbound configuration is valid (before any restart)
-  ansible.builtin.command:
-    argv: [unbound-checkconf]
-    chdir: /
-  changed_when: false
-  check_mode: false
-
-- name: Unbound restarted now if its configuration changed
-  ansible.builtin.meta: flush_handlers
 
 - name: DNS checker
   ansible.builtin.copy:
