@@ -317,6 +317,23 @@
     msg: "API drift detected: {{ api_drift | join(' | ') }}. See docs/runbooks/nginx-api.md."
   when: api_drift | length > 0
 
+# R3 does not restore /etc/homepi/ca (the certificate comes from the repository), so a rebuilt Pi
+# has no directory to copy it into (C3, 2026-11-21). Created only when missing: the mode of an
+# existing directory is left as it is.
+- name: Trust anchor directory present? (read-only)
+  ansible.builtin.stat:
+    path: /etc/homepi/ca
+  register: api_ca_dir
+
+- name: Trust anchor directory created when missing (root, readable by all, like the certificate)
+  ansible.builtin.file:
+    path: /etc/homepi/ca
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not api_ca_dir.stat.exists
+
 - name: Device identity trust anchor (public certificate, content pinned, root owned)
   ansible.builtin.copy:
     src: ca/manufacturer_ca.crt
