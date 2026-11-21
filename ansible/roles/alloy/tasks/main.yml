@@ -66,3 +66,53 @@
   loop:
     - /etc/GeoIP.conf
     - /var/lib/GeoIP
+
+# Exec audit trail (C3, 2026-11-21): auditd rule key "exec" -> this correlator -> exec-events.jsonl ->
+# Alloy job auditd_exec -> Loki. On production it was installed by hand; R3 does not restore its unit,
+# so a rebuilt Pi lost the trail silently (only homepi-alloy-check noticed). The script and the
+# logrotate file are the production bytes; the unit differs only by its English Description. The
+# script creates /var/log/homepi itself.
+- name: Exec audit correlator script (production bytes)
+  ansible.builtin.copy:
+    src: audit_exec_correlator.py
+    dest: /opt/homepi/audit_exec_correlator.py
+    owner: root
+    group: root
+    mode: "0750"
+  register: alloy_correlator_script
+
+- name: Exec audit correlator unit
+  ansible.builtin.copy:
+    src: audit-exec-correlator.service
+    dest: /etc/systemd/system/audit-exec-correlator.service
+    owner: root
+    group: root
+    mode: "0644"
+  register: alloy_correlator_unit
+
+- name: Exec events log rotation (production bytes)
+  ansible.builtin.copy:
+    src: logrotate-homepi-exec-events
+    dest: /etc/logrotate.d/homepi-exec-events
+    owner: root
+    group: root
+    mode: "0644"
+
+- name: Reload systemd after a correlator unit change
+  ansible.builtin.systemd:
+    daemon_reload: true
+  when: alloy_correlator_unit is changed and not ansible_check_mode
+
+- name: Exec audit correlator enabled and running
+  ansible.builtin.systemd:
+    name: audit-exec-correlator
+    enabled: true
+    state: started
+  register: alloy_correlator_started
+
+# A new script needs a restart; a new Description does not, but daemon-reload already covers it
+- name: Restart the correlator on a new script
+  ansible.builtin.systemd:
+    name: audit-exec-correlator
+    state: restarted
+  when: alloy_correlator_script is changed and alloy_correlator_started is not changed and not ansible_check_mode
