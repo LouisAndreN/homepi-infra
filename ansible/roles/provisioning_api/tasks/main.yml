@@ -45,6 +45,22 @@
   check_mode: true
   register: api_code_probe
 
+# WAL needs devices.db-wal and devices.db-shm, and SQLite creates them in the database directory,
+# which homepi-api cannot write. On production they exist since the API first ran; a restored Pi
+# has none (R3 restores the .db only), so every access as homepi-api failed with "attempt to write
+# a readonly database" (C3, 2026-11-21). Empty files owned by the API user are valid side files;
+# SQLite cannot unlink them here, so they stay. Existing files are left as they are.
+- name: WAL side files of the device database exist, owned by the API user
+  ansible.builtin.file:
+    path: "{{ api_db }}-{{ item }}"
+    state: touch
+    owner: homepi-api
+    group: homepi-api
+    mode: "0644"
+    access_time: preserve
+    modification_time: preserve
+  loop: [wal, shm]
+
 - name: Database schema version (read-only, as the API user)
   ansible.builtin.command:
     argv: [runuser, -u, homepi-api, --, sqlite3, -readonly, "{{ api_db }}", "PRAGMA user_version;"]
