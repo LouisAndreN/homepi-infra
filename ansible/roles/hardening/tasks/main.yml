@@ -1,9 +1,12 @@
 ---
 # Hardening: verify only. Fails the run on any regression of the 2026-11-08 containment.
 
+# script copies the file to the Pi first: the role path exists on the Pi only when the GitOps
+# reconciler runs Ansible there, not from the laptop (C3, 2026-11-21: "can't open file")
 - name: Audit world-writable paths reachable by every account and virtualenv integrity
-  ansible.builtin.command:
-    argv: [python3, -I, "{{ role_path }}/files/hardening-audit.py", "{{ hardening_venvs | to_json }}"]
+  ansible.builtin.script:
+    cmd: "{{ role_path }}/files/hardening-audit.py {{ hardening_venvs | to_json | quote }}"
+    executable: python3 -I
   check_mode: false
   changed_when: false
   register: hardening_audit

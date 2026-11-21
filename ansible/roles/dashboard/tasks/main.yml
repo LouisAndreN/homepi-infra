@@ -4,9 +4,12 @@
 # directory and switched atomically through a symlink. The stamp (content hash of apps/dashboard)
 # detects drift in check mode. Any failure points the symlink back to the previous release.
 
+# The sources are on the controller (the laptop, or the Pi when the GitOps reconciler runs there)
 - name: Content hash of apps/dashboard in the deployed tag
   ansible.builtin.command:
     argv: [python3, -I, "{{ role_path }}/files/source-hash.py", "{{ dashboard_src }}"]
+  delegate_to: localhost
+  become: false
   check_mode: false
   changed_when: false
   register: dashboard_tree
@@ -88,8 +91,9 @@
       when: not ansible_check_mode
 
     - name: Build references only existing assets and carries no token
-      ansible.builtin.command:
-        argv: [python3, -I, "{{ role_path }}/files/check-dashboard-build.py", "{{ dashboard_build }}/dist"]
+      ansible.builtin.script:
+        cmd: "{{ role_path }}/files/check-dashboard-build.py {{ (dashboard_build ~ '/dist') | quote }}"
+        executable: python3 -I
       changed_when: false
       when: not ansible_check_mode
 
