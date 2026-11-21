@@ -1,24 +1,30 @@
 ---
-# Handlers run at the end of the play, after the observability role has written the units and configs
+# Handlers run at the end of the play, after the observability role has written the units and configs.
+# restore-base.yml (R2) installs the binaries without that role: no unit exists yet, so it sets
+# monitoring_binaries_restart: false (C3, R2, 2026-11-21: "Could not find the requested service").
 - name: Restart prometheus
   ansible.builtin.systemd_service:
     name: prometheus
     state: restarted
+  when: monitoring_binaries_restart | default(true) | bool
 
 - name: Restart alertmanager
   ansible.builtin.systemd_service:
     name: alertmanager
     state: restarted
+  when: monitoring_binaries_restart | default(true) | bool
 
 - name: Restart node_exporter
   ansible.builtin.systemd_service:
     name: node_exporter
     state: restarted
+  when: monitoring_binaries_restart | default(true) | bool
 
 - name: Restart loki
   ansible.builtin.systemd_service:
     name: loki
     state: restarted
+  when: monitoring_binaries_restart | default(true) | bool
 
 # Rules, prometheus.yml and the scrape secret only need a reload (SIGHUP through ExecReload)
 - name: Reload prometheus

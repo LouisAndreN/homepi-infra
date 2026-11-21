@@ -6,6 +6,9 @@
 - name: HomePi restore base (packages and service accounts)
   hosts: pi_hosts
   become: true
+  vars:
+    # The service units come with the observability roles in R4: nothing to restart here
+    monitoring_binaries_restart: false
   roles:
     - common
     - packages
