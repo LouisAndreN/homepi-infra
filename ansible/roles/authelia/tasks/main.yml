@@ -9,24 +9,42 @@
     group: root
     mode: "0700"
 
+- name: Authelia files present before the change (a rebuilt Pi has no users database until SOPS writes it)
+  ansible.builtin.stat:
+    path: "{{ item.dest }}"
+    get_checksum: false
+  loop: "{{ authelia_rollback_files }}"
+  loop_control:
+    label: "{{ item.name }}"
+  register: authelia_prev
+
 - name: Authelia change with rollback
   block:
     - name: Keep the current files as the rollback copy
       ansible.builtin.copy:
-        src: "{{ item.src }}"
+        src: "{{ item.dest }}"
         dest: "/var/backups/authelia/{{ item.name }}"
         remote_src: true
         owner: root
         group: root
         mode: "0600"
-      loop:
-        - {src: /etc/authelia/configuration.yml, name: configuration.yml}
-        - {src: /var/lib/secrets/authelia.env, name: authelia.env}
-        - {src: /etc/authelia/users_database.yml, name: users_database.yml}
+      loop: "{{ authelia_rollback_files }}"
       loop_control:
         label: "{{ item.name }}"
+        index_var: authelia_i
       no_log: true
-      when: not ansible_check_mode
+      when: (not ansible_check_mode) and authelia_prev.results[authelia_i].stat.exists
+
+    # A copy left by an earlier run must not come back over a file that did not exist before this one
+    - name: No stale rollback copy for a file that does not exist yet
+      ansible.builtin.file:
+        path: "/var/backups/authelia/{{ item.name }}"
+        state: absent
+      loop: "{{ authelia_rollback_files }}"
+      loop_control:
+        label: "{{ item.name }}"
+        index_var: authelia_i
+      when: (not ansible_check_mode) and not authelia_prev.results[authelia_i].stat.exists
 
     - name: Authelia configuration (no secret inside)
       ansible.builtin.copy:
@@ -109,7 +127,7 @@
       when: not ansible_check_mode
 
   rescue:
-    - name: Restore the previous Authelia files
+    - name: Restore the previous Authelia files (only those that existed before the change)
       ansible.builtin.copy:
         src: "/var/backups/authelia/{{ item.name }}"
         dest: "{{ item.dest }}"
@@ -117,13 +135,12 @@
         owner: "{{ item.owner }}"
         group: "{{ item.owner }}"
         mode: "{{ item.mode }}"
-      loop:
-        - {name: configuration.yml, dest: /etc/authelia/configuration.yml, owner: authelia, mode: "0640"}
-        - {name: authelia.env, dest: /var/lib/secrets/authelia.env, owner: root, mode: "0600"}
-        - {name: users_database.yml, dest: /etc/authelia/users_database.yml, owner: authelia, mode: "0640"}
+      loop: "{{ authelia_rollback_files }}"
       loop_control:
         label: "{{ item.name }}"
+        index_var: authelia_i
       no_log: true
+      when: authelia_prev.results[authelia_i].stat.exists
 
     - name: Restart Authelia on the previous files
       ansible.builtin.systemd:
