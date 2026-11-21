@@ -17,7 +17,10 @@ set -euo pipefail
 umask 077
 export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-IMAGE_BASE=https://cdimage.ubuntu.com/releases/24.04/release
+# Moved by Ubuntu in November 2026 (the old /releases/24.04/release answers 301 to this path)
+IMAGE_BASE=https://cdimage.ubuntu.com/ubuntu/releases/24.04/release
+# Redirects are followed, HTTPS only: what matters is the signature checked against the local keyring
+CURL_GET=(curl -fsSL --proto "=https" --proto-redir "=https")
 IMAGE_PATTERN='ubuntu-24\.04(\.[0-9]+)?-preinstalled-server-arm64\+raspi\.img\.xz'
 WORKDIR=/var/tmp/homepi-r1
 MNT=/mnt/homepi-r1
@@ -108,7 +111,7 @@ preflight() {
     apt-get install -y -q $PACKAGES_HOST > /dev/null || die "cannot install $PACKAGES_HOST"
     break
   done
-  curl -fsS --max-time 15 -o /dev/null "$IMAGE_BASE/SHA256SUMS" || die "cannot reach $IMAGE_BASE"
+  "${CURL_GET[@]}" --max-time 15 -o /dev/null "$IMAGE_BASE/SHA256SUMS" || die "cannot reach $IMAGE_BASE"
 }
 
 confirm_wipe() {
@@ -125,8 +128,11 @@ confirm_wipe() {
 fetch_image() {
   local name sum ok=0 k
   install -d -m 0700 "$WORKDIR"
-  curl -fsS --max-time 60 -o "$WORKDIR/SHA256SUMS" "$IMAGE_BASE/SHA256SUMS" || die "cannot download SHA256SUMS"
-  curl -fsS --max-time 60 -o "$WORKDIR/SHA256SUMS.gpg" "$IMAGE_BASE/SHA256SUMS.gpg" || die "cannot download SHA256SUMS.gpg"
+  "${CURL_GET[@]}" --max-time 60 -o "$WORKDIR/SHA256SUMS" "$IMAGE_BASE/SHA256SUMS" || die "cannot download SHA256SUMS"
+  "${CURL_GET[@]}" --max-time 60 -o "$WORKDIR/SHA256SUMS.gpg" "$IMAGE_BASE/SHA256SUMS.gpg" || die "cannot download SHA256SUMS.gpg"
+  # A redirect page or an error page is not a checksum list: say so instead of "bad signature"
+  grep -qE '^[0-9a-f]{64} [ *]' "$WORKDIR/SHA256SUMS" \
+    || die "$IMAGE_BASE/SHA256SUMS is not a checksum list (moved again? open the URL in a browser)"
   for k in /usr/share/keyrings/ubuntu-*.gpg; do
     gpgv --keyring "$k" "$WORKDIR/SHA256SUMS.gpg" "$WORKDIR/SHA256SUMS" > /dev/null 2>&1 && { ok=1; log "SHA256SUMS signature valid ($(basename "$k"))"; break; }
   done
@@ -138,7 +144,7 @@ fetch_image() {
   [ -n "$sum" ] || die "no checksum for $name"
   if [ ! -f "$WORKDIR/$name" ] || ! echo "$sum  $WORKDIR/$name" | sha256sum -c --quiet - 2> /dev/null; then
     log "downloading $name"
-    curl -fSL --max-time 3600 -o "$WORKDIR/$name" "$IMAGE_BASE/$name" || die "download failed"
+    curl -fSL --proto "=https" --proto-redir "=https" --max-time 3600 -o "$WORKDIR/$name" "$IMAGE_BASE/$name" || die "download failed"
   fi
   echo "$sum  $WORKDIR/$name" | sha256sum -c --quiet - || die "checksum mismatch for $name"
   log "image verified: $name"
