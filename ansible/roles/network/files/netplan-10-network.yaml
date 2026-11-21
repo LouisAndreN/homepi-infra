@@ -6,4 +6,8 @@ network:
     eth0:
       dhcp4: true
       dhcp6: false
+      # Identify by the MAC address, not by a DUID derived from /etc/machine-id: a Pi rebuilt on a new
+      # disk has a new machine-id and got another address (C3, 2026-11-21), while Unbound, nftables and
+      # the DNS check expect 192.168.0.151. The router reserves that address for this MAC.
+      dhcp-identifier: mac
       optional: true
