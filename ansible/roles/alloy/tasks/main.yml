@@ -109,10 +109,12 @@
     enabled: true
     state: started
   register: alloy_correlator_started
+  # In check mode a unit that is not installed yet cannot be looked up (precheck of v0.1.130)
+  when: not (ansible_check_mode and alloy_correlator_unit is changed)
 
 # A new script needs a restart; a new Description does not, but daemon-reload already covers it
 - name: Restart the correlator on a new script
   ansible.builtin.systemd:
     name: audit-exec-correlator
     state: restarted
-  when: alloy_correlator_script is changed and alloy_correlator_started is not changed and not ansible_check_mode
+  when: alloy_correlator_script is changed and not (alloy_correlator_started is changed) and not ansible_check_mode
