@@ -11,6 +11,13 @@
   changed_when: false
   register: dashboard_tree
 
+# A rebuilt Pi has no served dashboard: R3 does not restore /var/www, the build regenerates it
+# (C3, 2026-11-21). The probe below cannot run without the directory, so a missing one means build.
+- name: Served dashboard present? (read-only)
+  ansible.builtin.stat:
+    path: "{{ dashboard_current }}"
+  register: dashboard_served
+
 - name: Served dashboard is the deployed source? (check mode only)
   ansible.builtin.copy:
     content: "{{ dashboard_tree.stdout }}\n"
@@ -20,6 +27,7 @@
     mode: "0644"
   check_mode: true
   register: dashboard_probe
+  when: dashboard_served.stat.exists
 
 - name: Unprivileged build user
   ansible.builtin.user:
@@ -30,7 +38,7 @@
     shell: /usr/sbin/nologin
 
 - name: Build, check and switch the dashboard, rolling back on any failure
-  when: dashboard_probe is changed
+  when: (not dashboard_served.stat.exists) or dashboard_probe is changed
   vars:
     dashboard_build: "{{ dashboard_build_home }}/build-{{ dashboard_tree.stdout[:12] }}"
     dashboard_release: "{{ dashboard_releases }}/{{ dashboard_tree.stdout[:12] }}"
@@ -163,11 +171,19 @@
         path: "{{ dashboard_current }}"
       register: dashboard_at_failure
 
+    # On a rebuilt Pi there is no previous release: no link is made to a directory that does not exist
+    - name: Previous release exists?
+      ansible.builtin.stat:
+        path: "{{ dashboard_previous | default('/nonexistent') }}"
+      register: dashboard_previous_target
+
     - name: Point the dashboard back to the previous release
       ansible.builtin.shell: >-
         ln -sfn {{ dashboard_previous | quote }} {{ (dashboard_current ~ '.new') | quote }}
         && mv -T {{ (dashboard_current ~ '.new') | quote }} {{ dashboard_current | quote }}
-      when: not ansible_check_mode and dashboard_previous is defined and ((dashboard_at_failure.stat.islnk | default(false)) or not dashboard_at_failure.stat.exists)
+      when: >-
+        not ansible_check_mode and dashboard_previous is defined and dashboard_previous_target.stat.exists
+        and ((dashboard_at_failure.stat.islnk | default(false)) or not dashboard_at_failure.stat.exists)
       register: dashboard_rollback
 
     - name: Report the rollback
