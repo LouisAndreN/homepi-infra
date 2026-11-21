@@ -2,6 +2,14 @@
 # nginx: the main site and the client CA chain are applied (nginx -t, reload, checks through nginx,
 # automatic rollback); the other loaded files, the enabled-site links and the TLS files are verified only.
 
+# The Ubuntu package enables its own 'default' site, which also claims the default server on port 80:
+# on a rebuilt Pi nginx -t failed with "a duplicate default server for [::]:80" (C3, R4, 2026-11-21).
+# It had been removed by hand on the running Pi.
+- name: The nginx package's default site is not enabled
+  ansible.builtin.file:
+    path: /etc/nginx/sites-enabled/default
+    state: absent
+
 - name: nginx applied files differ from the Pi? (check mode only)
   ansible.builtin.copy:
     src: "{{ item.src }}"
