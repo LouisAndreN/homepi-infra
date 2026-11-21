@@ -1,21 +1,4 @@
 # Packages and services of the Pi (rebuild manifest). See docs/runbooks/packages.md.
-- name: Services kept installed but stopped and disabled
-  ansible.builtin.systemd_service:
-    name: "{{ item }}"
-    state: stopped
-    enabled: false
-  loop: "{{ packages_disabled_services }}"
-
-- name: Disabled services stay inactive
-  ansible.builtin.command:
-    argv: [systemctl, is-active, "{{ item }}"]
-  loop: "{{ packages_disabled_services }}"
-  register: packages_disabled_state
-  changed_when: false
-  check_mode: false
-  failed_when: packages_disabled_state.stdout not in ['inactive', 'failed']
-  when: not ansible_check_mode
-
 - name: Units masked (cannot start, even as a dependency)
   ansible.builtin.file:
     src: /dev/null
@@ -83,6 +66,25 @@
   ansible.builtin.apt:
     name: "{{ packages_present }}"
     state: present
+
+# After the installation: on a host rebuilt by R1 (C3, 2026-11-21) Docker is not installed yet and
+# disabling its units first failed with "Could not find the requested service docker.socket".
+- name: Services kept installed but stopped and disabled
+  ansible.builtin.systemd_service:
+    name: "{{ item }}"
+    state: stopped
+    enabled: false
+  loop: "{{ packages_disabled_services }}"
+
+- name: Disabled services stay inactive
+  ansible.builtin.command:
+    argv: [systemctl, is-active, "{{ item }}"]
+  loop: "{{ packages_disabled_services }}"
+  register: packages_disabled_state
+  changed_when: false
+  check_mode: false
+  failed_when: packages_disabled_state.stdout not in ['inactive', 'failed']
+  when: not ansible_check_mode
 
 - name: Removed packages stay purged
   ansible.builtin.apt:
