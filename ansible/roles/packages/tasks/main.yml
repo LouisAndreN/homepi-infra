@@ -6,6 +6,22 @@
     state: link
     force: true
   loop: "{{ packages_masked_units }}"
+  register: packages_masked_links
+
+- name: Reload systemd after a new mask
+  ansible.builtin.systemd_service:
+    daemon_reload: true
+  when: packages_masked_links is changed
+
+# Masking does not stop a unit that is already running: on a fresh Ubuntu image lxd-installer.socket
+# is active from the first boot (C3, R2, 2026-11-21). On the adopted Pi it had been stopped by hand.
+- name: Masked units that are still running are stopped
+  ansible.builtin.shell:
+    cmd: if systemctl is-active -q "{{ item }}"; then systemctl stop "{{ item }}" && echo stopped; fi
+    executable: /bin/bash
+  loop: "{{ packages_masked_units }}"
+  register: packages_masked_stop
+  changed_when: "'stopped' in packages_masked_stop.stdout"
 
 - name: Masked units stay inactive
   ansible.builtin.command:
