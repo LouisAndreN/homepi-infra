@@ -62,9 +62,19 @@ log "throwaway setup"
 influx setup --host "$URL" --org restore-tmp --bucket restore-tmp --username restore-tmp \
   --password "$(head -c 24 /dev/urandom | base64 | tr -d '/+=')" --force > /dev/null || die "influx setup failed"
 
+masked_tail() { tail -5 "$1" | sed -E 's/[A-Za-z0-9_-]{60,}={0,2}/<masked>/g' >&2; }
 log "influx restore --full (data, buckets, tasks, authorizations)"
-influx restore --host "$URL" --full "$STAGE" > "$STAGE/restore.log" 2>&1 \
-  || { tail -5 "$STAGE/restore.log" | sed -E 's/[A-Za-z0-9_-]{60,}={0,2}/<masked>/g' >&2; die "influx restore failed"; }
+if ! influx restore --host "$URL" --full "$STAGE" > "$STAGE/restore.log" 2>&1; then
+  # The CLI restores the KV snapshot (authorizations included) first, then the SQL snapshot with the
+  # same token: the throwaway token no longer exists by then and the SQL step gets 401 (C3, R5,
+  # 2026-11-21). The KV snapshot brought the production operator token back: a second full restore
+  # with it rewrites the same KV, then the SQL snapshot and the shards. Token in the environment.
+  grep -q 'failed to restore SQL snapshot: 401' "$STAGE/restore.log" || { masked_tail "$STAGE/restore.log"; die "influx restore failed"; }
+  log "KV snapshot restored, throwaway token gone (expected): second pass with the restored operator token"
+  unset INFLUX_CONFIGS_PATH
+  INFLUX_TOKEN=$(cat "$OPERATOR_TOKEN") influx restore --host "$URL" --full "$STAGE" > "$STAGE/restore2.log" 2>&1 \
+    || { masked_tail "$STAGE/restore2.log"; die "influx restore failed (second pass)"; }
+fi
 unset INFLUX_CONFIGS_PATH
 
 # The restored operator token must work, and the expected objects must be there
