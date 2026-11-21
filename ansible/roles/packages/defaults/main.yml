@@ -25,9 +25,14 @@ packages_apt_keys:
   - {src: apt/keys/nodesource.gpg, dest: /usr/share/keyrings/nodesource.gpg, fingerprint: 6F71F525282841EEDAF851B42F59B5F99B1BE0B4}
   - {src: apt/keys/smallstep.asc, dest: /etc/apt/keyrings/smallstep.asc, fingerprint: 35BAA0B33E9EB396F59CA838C0BA5CE6DC6315A3}
 
-# Third-party sources, exact bytes. ubuntu.sources stays the image's own. influxdata.list is also
-# known to ucf (influxdata-archive-keyring, needed by influxdb2, influxdb2-cli and telegraf).
+# Apt sources, exact bytes. influxdata.list is also known to ucf (influxdata-archive-keyring, needed
+# by influxdb2, influxdb2-cli and telegraf).
+# ubuntu.sources: the Ubuntu image ships only noble and noble-security; cloud-init writes the full list
+# (noble-updates, noble-backports) at first boot, and R1 disables cloud-init. Without it a rebuilt Pi
+# could not install auditd (C3, R2, 2026-11-21). Bytes taken from the production Pi (state archive of
+# 2026-11-21, sha256 6c78ba8b...6df): unchanged on the running Pi.
 packages_apt_sources:
+  - ubuntu.sources
   - authelia.list
   - crowdsec_crowdsec.list
   - docker.list
