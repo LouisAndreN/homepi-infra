@@ -12,11 +12,22 @@ root_disk=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
 model=$(sed 's/ *$//' "/sys/block/$root_disk/device/model")
 case "$model" in *Micron*) echo "STOPPED: this is the production disk ($model)"; exit 1 ;; esac
 case "$model" in *"$EXPECT_MODEL"*) ;; *) echo "STOPPED: the system disk is '$model', expected '$EXPECT_MODEL'"; exit 1 ;; esac
-UNITS="homepi-backup-state.timer homepi-backup-influx-native.timer homepi-backup-influx-lp.timer homepi-offsite.timer homepi-gitops-apply.timer homepi-gitops-check.timer homepi-heartbeat-relay.service"
+# Everything that writes off-site (S3 backups, the log-archive bucket, the heartbeat) or applies
+# releases. homepi-log-ship.timer was missing before C3 (2026-11-21): a spare would have shipped its
+# own journal into the production log archive with the production identity.
+UNITS="homepi-backup-state.timer homepi-backup-influx-native.timer homepi-backup-influx-lp.timer homepi-offsite.timer homepi-log-ship.timer homepi-gitops-apply.timer homepi-gitops-check.timer homepi-heartbeat-relay.service"
+fails=0
 for u in $UNITS; do
-  systemctl list-unit-files "$u" > /dev/null 2>&1 || continue
+  if [ -z "$(systemctl list-unit-files --no-legend "$u")" ]; then echo "absent: $u"; continue; fi
   systemctl disable --now "$u" > /dev/null 2>&1 || true
-  echo "stopped and disabled: $u"
+  # Proven by state, not by the exit code of disable (C3: the first version printed success blindly)
+  en=$(systemctl is-enabled "$u" 2> /dev/null || true); ac=$(systemctl is-active "$u" 2> /dev/null || true)
+  if [ "$en" = disabled ] && [ "$ac" != active ] && [ "$ac" != activating ]; then
+    echo "stopped and disabled: $u"
+  else
+    echo "FAIL  $u is $en and $ac"; fails=$((fails + 1))
+  fi
 done
+[ "$fails" = 0 ] || { echo "STOPPED: $fails unit(s) still enabled or running; do not power off until fixed"; exit 1; }
 echo "R7 done on '$model'. Power off (sudo poweroff), put the production disk back."
 echo "Then on the laptop: remove the drill Pi key from .sops.yaml, sops updatekeys, signed tag."

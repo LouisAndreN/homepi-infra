@@ -139,8 +139,8 @@ the dashboard and Grafana through Authelia with 2FA, and the fan (pironman5, bel
 
 ## R7: end of the drill (`scripts/restore/homepi-r7-end-drill "990 PRO"`, Pi)
 
-Refuses to run on the Micron. Stops and disables the backup timers, the off-site upload, the GitOps
-timers and the heartbeat relay on the spare, so a spare booted by mistake never uploads a diverging
+Refuses to run on the Micron. Stops and disables the backup timers, the off-site upload, the log
+shipping, the GitOps timers and the heartbeat relay on the spare, checks each one by its state, so a spare booted by mistake never uploads a diverging
 archive nor competes with production. Then power off, production disk back before 03:30, and on
 the laptop remove the drill Pi key from `.sops.yaml` (`sops updatekeys`, signed tag).
 
