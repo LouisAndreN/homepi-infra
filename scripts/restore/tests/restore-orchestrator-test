@@ -1,0 +1,41 @@
+#!/bin/bash
+# Offline test of homepi-restore: phase order, timeline, resume after a failure, values carried
+# between phases (each phase runs in a subshell), RTO/RPO report. Every phase is stubbed: no SSH,
+# no disk, no AWS. Usage: scripts/restore/tests/restore-orchestrator-test
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=/dev/null
+. "$HERE/../homepi-restore"
+set +e
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+DRILL=$T/drill; mkdir -p "$DRILL"; : > "$DRILL/timeline.tsv"; : > "$DRILL/drill.env"
+fails=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+
+for p in $(phase_ids); do eval "phase_$p() { echo \"ran $p\" >> \"$T/order\"; }"; done
+phase_R0() { setvar STATE "$T/homepi-state-2026-11-21-0330.tar.age"; setvar NATIVE "$T/influx-native-2026-11-21-0350.tar.age"; }
+phase_T0() { setvar T0 "$(TZ=Asia/Tokyo date -d '2026-11-21 14:44:00' +%s)"; }
+phase_R2() { [ -n "${STATE:-}" ] || return 1; echo "R2 sees $STATE" >> "$T/order"; }
+phase_R3() { [ -e "$T/r3-fixed" ] || return 3; echo "ran R3" >> "$T/order"; }
+
+for p in $(phase_ids); do run_phase "$p" > /dev/null 2>&1 || break; done
+check "first run stops at the failing phase R3" '[ "$(tail -n 1 "$DRILL/timeline.tsv" | cut -f1,6)" = "R3	failed rc=3" ]'
+check "a value set by R0 reaches R2 (subshell state through drill.env)" 'grep -q "R2 sees $T/homepi-state" "$T/order"'
+check "nothing after R3 ran" '! grep -q "ran R5" "$T/order"'
+
+touch "$T/r3-fixed"; : > "$T/order"
+for p in $(phase_ids); do run_phase "$p" > /dev/null 2>&1 || break; done
+check "resume skips the phases already ok" '! grep -q "ran SD" "$T/order"'
+check "resume retries R3 and goes to R6" 'grep -q "ran R3" "$T/order" && grep -q "ran R6" "$T/order"'
+check "R3 appears twice in the timeline (failed, then ok)" '[ "$(cut -f1 "$DRILL/timeline.tsv" | grep -cx R3)" = 2 ]'
+check "every phase ends ok" '[ "$(awk -F"\t" "\$6 == \"ok\"" "$DRILL/timeline.tsv" | cut -f1 | sort -u | wc -l)" = "$(phase_ids | wc -l)" ]'
+
+# shellcheck disable=SC2034  # read by the checks below, through eval
+out=$(. "$DRILL/drill.env"; report)
+check "report gives an RTO once R6 passed" 'printf "%s\n" "$out" | grep -q "^RTO (T0 to R6 PASS)"'
+check "RPO of the 03:30 state archive at T0 14:44 is 11h14m00s" 'printf "%s\n" "$out" | grep -q "RPO homepi-state-2026-11-21-0330.tar.age: 11h14m00s"'
+check "RPO of the 03:50 native backup is 10h54m00s" 'printf "%s\n" "$out" | grep -q "RPO influx-native-2026-11-21-0350.tar.age: 10h54m00s"'
+check "kinds: T0, SD and BOOT wait for a person" '[ "$(awk -F"\t" "\$2 == \"human\"" "$DRILL/timeline.tsv" | cut -f1 | sort -u | tr "\n" " ")" = "BOOT SD T0 " ]'
+check "next tag after v0.1.135" '[ "$(REPO=$T/r; mkdir -p $T/r; git -C $T/r init -q; git -C $T/r -c user.email=t@t -c user.name=t commit -q --allow-empty -m x; git -C $T/r tag v0.1.9; git -C $T/r tag v0.1.135; next_tag)" = v0.1.136 ]'
+echo
+[ "$fails" = 0 ] && echo "restore-orchestrator-test PASS" || { echo "restore-orchestrator-test FAIL: $fails"; exit 1; }

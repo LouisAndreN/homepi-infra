@@ -59,7 +59,7 @@ for user, want in (("www-data", True), ("nobody", False)):
         check("%s reaches the %s socket: %s" % (user, surface, "yes" if want else "no"), (r.returncode == 0) == want, "curl rc %d" % r.returncode)
 w = subprocess.run(["/usr/local/sbin/homepi-sqlite-write-probe", "/var/lib/homepi/devices.db", "homepi-api"],
                    capture_output=True, text=True, cwd="/")
-check("device database writable by homepi-api", w.returncode == 0, (w.stdout or w.stderr).strip().splitlines()[-1:] or "no output")
+check("device database writable by homepi-api", w.returncode == 0, ((w.stdout or w.stderr).strip().splitlines() or ["no output"])[-1])
 tcp = subprocess.run(["ss", "-Hltn", "( sport = :8090 or sport = :8091 )"], capture_output=True, text=True).stdout.strip()
 check("no TCP listener on 8090 or 8091", tcp == "", "none" if not tcp else tcp.splitlines()[0])
 sys.exit(0 if all(res) else 1)

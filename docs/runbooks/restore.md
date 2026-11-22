@@ -2,6 +2,28 @@
 
 Design: `docs/disaster-recovery.md`. Phases R0 to R7; this runbook grows phase by phase.
 
+## Orchestrator (`scripts/restore/homepi-restore`, laptop)
+
+Since C4 the phases R0 to R6 run from one command, in the drill order, and each one is timed:
+
+    scripts/restore/homepi-restore start --day 2026-11-21 --devices 7 --model "990 PRO"
+    scripts/restore/homepi-restore resume     # after a stop: the failed phase is retried
+    scripts/restore/homepi-restore report     # timeline, RTO (T0 to R6 PASS), RPO per archive
+    scripts/restore/homepi-restore plan       # the phases, nothing run
+
+It waits for a person only at T0 (type POWEROFF: it powers production off), the disk swap (SD), and
+the microSD removal (BOOT); the R1 device name, the LUKS passphrase and the key and signing
+passphrases are typed inside their phases. The timeline (`~/homepi-restore/drill-<start>/timeline.tsv`)
+separates the time waiting for a person from the machine time, and keeps every failed attempt: the
+RTO is the wall clock from T0 to the first R6 PASS, failures included. RPO is T0 minus the time in each
+archive name. Host keys: `~/.ssh/known_hosts.drill-sd` for the microSD system,
+`~/.ssh/known_hosts.drill-new` for the rebuilt system until R3 restores the production keys; the usual
+`known_hosts` is never changed. R7 and R8 stay manual.
+
+Tested offline only (`scripts/restore/tests/restore-orchestrator-test`, every phase stubbed): order,
+timeline, resume after a failure, values carried between phases, RTO/RPO arithmetic. Each phase calls
+the same commands as C3 (article 20), but the chain itself is first proven by the C4 drill.
+
 ## Hardware
 
 - The production disk (Micron 2200) is **removed** and kept intact. The spare (Samsung 990 PRO)
