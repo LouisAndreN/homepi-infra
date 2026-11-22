@@ -6,7 +6,9 @@ on a new Raspberry Pi and a new NVMe drive.
 ## Targets
 - **RTO: 4 hours** from new hardware on the desk to sensors publishing and alerts working.
 - **RPO, configuration: 0** (the newest signed release tag is the source of truth).
-- **RPO, state and time series: 24 hours** (nightly state backup; InfluxDB export weekly).
+- **RPO, sensor data (`iot-hot`, `iot-archives`): 1 hour** (hourly delta since C4, below).
+- **RPO, state: 24 hours** (nightly state backup: registry, PKI, Authelia, Grafana, CrowdSec).
+- Not backed up at all: Prometheus metrics and Loki logs (table below).
 
 ## What survives each failure (2026-11-08)
 | Failure | What remains | Proof |
@@ -72,6 +74,30 @@ metadata (bolt: buckets, tasks, authorizations) and the shards: `influx restore 
 token back, so Telegraf, Grafana, the dashboard and the backups keep working without a SOPS change.
 Data RPO goes from 7 days (weekly line-protocol export, Sunday 04:15, kept as the portable fallback)
 to 24 hours.
+
+## InfluxDB: hourly sensor delta (C4)
+
+Hourly at :07: `influx-delta-<stamp>.tar.age` (`homepi-backup-influx-delta`), about 0.7 MB for an
+hour (11.5 MB as CSV, 60 000 points: NILM at 15 points/s, the environment sensors). It holds
+`iot-hot` from 5 min before the end of the last successful delta (65 min on a normal run; after
+missed runs, back to the last success, 26 h at most) and `iot-archives` from 2 h earlier still, as
+gzipped line protocol, plus a manifest (window, point counts). 48 kept on the Pi; every delta goes
+off-site under `influx-delta/` (35 days), oldest first, the first failure stopping the run so the
+next one retries in order.
+
+Restore: R0 downloads every delta newer than the native backup, R5 replays them oldest first after
+`influx restore --full` (`homepi-r5-deltas`). A point is a series and a timestamp, so overlaps and
+replays overwrite instead of duplicating; the replay checks that InfluxDB then holds at least the
+delta's points in its window.
+
+Rejected: a native backup every hour. 250 MB × 24 a day, each copy locked 30 days and replicated to the
+vault, is about 360 GB stored and 6 GB a day uploaded, for data that grows by a few MB an hour.
+Rejected too: a shorter Object Lock for an hourly prefix: it needs `s3:PutObjectRetention` for the
+Pi's role, and a compromised Pi could then shorten the lock of its own backups.
+
+What the delta does not cover: points that never reached InfluxDB. Telegraf subscribes with QoS 0
+and no persistent session, so messages published while it restarts are lost before any backup
+(docs/runbooks/telegraf.md).
 
 ## Added to the nightly archive (C1, 2026-11-15)
 

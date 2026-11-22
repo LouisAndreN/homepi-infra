@@ -1,9 +1,10 @@
 #!/bin/bash
 # homepi-r0-fetch: restore phase R0 (docs/runbooks/restore.md), on the laptop.
 #
-# Downloads from S3 the state archive and the native InfluxDB backup of the same night, checks each
-# one against the SHA-256 that S3 stored at upload time, and proves that the laptop age key
-# decrypts them (streamed: no plaintext is ever written to disk). The archives stay encrypted in
+# Downloads from S3 the state archive and the native InfluxDB backup of the same night, plus every
+# hourly sensor delta made after that native backup (RPO 1 h, C4), checks each one against the
+# SHA-256 that S3 stored at upload time, and proves that the laptop age key decrypts them (streamed:
+# no plaintext is ever written to disk). Deltas go to <date>/deltas/, oldest first by name. The archives stay encrypted in
 # ~/homepi-restore/<date>/ until R3 streams them to the new Pi.
 #
 #   scripts/restore/homepi-r0-fetch            newest state archive and the native backup of that day
@@ -57,7 +58,7 @@ fetch() {
   modified=$(aws s3api head-object --bucket "$BUCKET" --key "$key" --query LastModified --output text) || die "cannot read $key"
   age_h=$(( ($(date +%s) - $(date -d "$modified" +%s)) / 3600 ))
   log "$key: uploaded $modified (${age_h} h ago)"
-  [ "$age_h" -le "$MAX_AGE_HOURS" ] || echo "WARNING: $key is older than $MAX_AGE_HOURS h: the RPO target is 24 h"
+  [ "$age_h" -le "$MAX_AGE_HOURS" ] || echo "WARNING: $key is older than $MAX_AGE_HOURS h: a newer archive should exist"
   s3sum=$(aws s3api head-object --bucket "$BUCKET" --key "$key" --checksum-mode ENABLED --query ChecksumSHA256 --output text) || die "no checksum for $key"
   [ -n "$s3sum" ] && [ "$s3sum" != "None" ] || die "S3 holds no SHA-256 for $key"
   if [ -f "$file" ] && [ "$(openssl dgst -sha256 -binary "$file" | base64)" = "$s3sum" ]; then
@@ -88,4 +89,25 @@ for want in ./etc-and-state.tar ./opt.tar ./sqlite-extra/crowdsec.db; do
   printf '%s\n' "$LIST" | grep -qxF "$want" || die "$want missing from the state archive"
 done
 log "state archive holds etc-and-state.tar, opt.tar and the CrowdSec database"
+
+# Every delta newer than the native backup (names sort by time): R5 replays them in that order
+NATIVE_NAME=$(basename "$NATIVE_KEY" .tar.age)
+DELTA_KEYS=$(aws s3api list-objects-v2 --bucket "$BUCKET" --prefix "influx-delta/" --query 'Contents[].[Key]' --output text) \
+  || die "cannot list s3://$BUCKET/influx-delta/"
+DELTA_KEYS=$(printf '%s\n' "$DELTA_KEYS" | grep -E '^influx-delta/influx-delta-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{6}\.tar\.age$' | sort \
+  | awk -v n="influx-delta-${NATIVE_NAME#influx-native-}" '{f = $0; sub(/^influx-delta\//, "", f); sub(/\.tar\.age$/, "", f); if (f > n) print}')
+install -d -m 0700 "$DEST/deltas" || die "cannot create $DEST/deltas"
+ND=0
+for key in $DELTA_KEYS; do
+  DEST_SAVED=$DEST; DEST=$DEST/deltas
+  fetch "$key"
+  file="$DEST/$(basename "$key")"
+  age -d -i "$AGE_KEY" "$file" | tar -t | grep -qxF manifest.txt || die "cannot decrypt or read $(basename "$key")"
+  DEST=$DEST_SAVED; ND=$((ND + 1))
+done
+if [ "$ND" = 0 ]; then
+  echo "WARNING: no sensor delta after $NATIVE_NAME: sensor data comes back as of the native backup only"
+else
+  log "$ND sensor deltas after $NATIVE_NAME, newest $(printf '%s\n' $DELTA_KEYS | tail -n 1 | xargs basename)"
+fi
 log "R0 done: $DEST (encrypted archives of $DAY, never decrypted to disk)"

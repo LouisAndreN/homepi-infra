@@ -36,6 +36,7 @@ BOOTCHECK auto the rebuilt system answers and runs from the spare disk
 R2 auto packages and service accounts (restore-base.yml)
 R3 auto state archive streamed into RAM and restored (homepi-r3-restore)
 R5 auto InfluxDB native backup restored (homepi-r5-influx)
+R5D auto hourly sensor deltas replayed, oldest first (homepi-r5-deltas)
 R35 auto services started (restore-services.yml)
 R4KEY auto new age key on the Pi, public key only to the laptop
 R4SOPS auto drill key added to .sops.yaml, data keys updated, signed commit
@@ -152,6 +153,8 @@ phase_R0() {
   setvar STATE "$(ls -t "$dir"/homepi-state-*.tar.age | head -n 1)"
   setvar NATIVE "$(ls -t "$dir"/influx-native-*.tar.age | head -n 1)"
   [ -f "$STATE" ] && [ -f "$NATIVE" ] || { echo "archives not found in $dir"; return 1; }
+  [ -d "$dir/deltas" ] || { echo "R0 made no deltas directory"; return 1; }
+  setvar NEWEST_DELTA "$(find "$dir/deltas" -maxdepth 1 -name 'influx-delta-*.tar.age' | sort | tail -n 1)"
   log "state archive $(basename "$STATE"), native backup $(basename "$NATIVE")"
 }
 
@@ -222,7 +225,8 @@ phase_R3() {
   age -d -i "$AGE_KEY" "$STATE" | "$REPO/scripts/restore/homepi-r3-restore" --check || return 1
   ssh "$PI" 'rm -rf /tmp/homepi-r3 && install -d -m 0700 /tmp/homepi-r3' < /dev/null || return 1
   scp -q "$REPO/scripts/restore/homepi-r3-restore" "$REPO/scripts/restore/r3-paths.txt" \
-    "$REPO/scripts/restore/homepi-r5-influx" "$REPO/ansible/roles/influxdb/files/config.toml" "$PI:/tmp/homepi-r3/" || return 1
+    "$REPO/scripts/restore/homepi-r5-influx" "$REPO/scripts/restore/homepi-r5-deltas" \
+    "$REPO/ansible/roles/influxdb/files/config.toml" "$PI:/tmp/homepi-r3/" || return 1
   age -d -i "$AGE_KEY" "$STATE" | ssh "$PI" 'sudo /tmp/homepi-r3/homepi-r3-restore' || return 1
   setvar R3_DONE 1
 }
@@ -230,6 +234,19 @@ phase_R3() {
 phase_R5() {
   master_rebuilt || return 1
   age -d -i "$AGE_KEY" "$NATIVE" | ssh "$PI" 'sudo /tmp/homepi-r3/homepi-r5-influx /tmp/homepi-r3/config.toml'
+}
+
+phase_R5D() {
+  master_rebuilt || return 1
+  local f n=0
+  ssh "$PI" 'test -x /tmp/homepi-r3/homepi-r5-deltas' < /dev/null \
+    || scp -q "$REPO/scripts/restore/homepi-r5-deltas" "$PI:/tmp/homepi-r3/" || return 1
+  for f in $(find "$BACKUP_DIR/deltas" -maxdepth 1 -name 'influx-delta-*.tar.age' | sort); do
+    echo "--- $(basename "$f")"
+    age -d -i "$AGE_KEY" "$f" | ssh "$PI" 'sudo /tmp/homepi-r3/homepi-r5-deltas' || return 1
+    n=$((n + 1))
+  done
+  log "$n deltas replayed"
 }
 
 phase_R35() {
@@ -339,10 +356,15 @@ report() {
   fi
   echo "time in ok phases: machine $(hms "$auto_s"), waiting for a person $(hms "$human_s") (failed attempts count only in the RTO)"
   local a
-  for f in "${STATE:-}" "${NATIVE:-}"; do
+  for f in "${STATE:-}" "${NATIVE:-}" "${NEWEST_DELTA:-}"; do
     [ -n "$f" ] || continue
     a=$(archive_epoch "$f") && echo "RPO $(basename "$f"): $(hms $((T0 - a))) (archive time from its name, JST)"
   done
+  if [ -z "${NEWEST_DELTA:-}" ]; then
+    echo "RPO sensor data: no delta, same as the native backup"
+  elif a=$(archive_epoch "$NEWEST_DELTA"); then
+    echo "RPO sensor data (newest delta): $(hms $((T0 - a)))"
+  fi
 }
 
 # ---------------------------------------------------------------- main

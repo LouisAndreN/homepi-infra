@@ -13,6 +13,7 @@
     - homepi-alloy-check
     - homepi-backup-influx-lp
     - homepi-backup-influx-native
+    - homepi-backup-influx-delta
     - homepi-backup-run
     - homepi-backup-state
     - homepi-cli-check

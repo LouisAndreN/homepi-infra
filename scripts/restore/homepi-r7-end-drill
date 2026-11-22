@@ -15,7 +15,7 @@ case "$model" in *"$EXPECT_MODEL"*) ;; *) echo "STOPPED: the system disk is '$mo
 # Everything that writes off-site (S3 backups, the log-archive bucket, the heartbeat) or applies
 # releases. homepi-log-ship.timer was missing before C3 (2026-11-21): a spare would have shipped its
 # own journal into the production log archive with the production identity.
-UNITS="homepi-backup-state.timer homepi-backup-influx-native.timer homepi-backup-influx-lp.timer homepi-offsite.timer homepi-log-ship.timer homepi-gitops-apply.timer homepi-gitops-check.timer homepi-heartbeat-relay.service"
+UNITS="homepi-backup-state.timer homepi-backup-influx-native.timer homepi-backup-influx-delta.timer homepi-backup-influx-lp.timer homepi-offsite.timer homepi-log-ship.timer homepi-gitops-apply.timer homepi-gitops-check.timer homepi-heartbeat-relay.service"
 fails=0
 for u in $UNITS; do
   if [ -z "$(systemctl list-unit-files --no-legend "$u")" ]; then echo "absent: $u"; continue; fi

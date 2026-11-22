@@ -37,8 +37,17 @@ groups:
           summary: "No successful native InfluxDB backup for more than 36 hours"
           description: "Nightly at 03:50. Read: systemctl status homepi-backup-influx-native.timer; journalctl -u homepi-backup@influx-native.service"
 
+      - alert: BackupInfluxDeltaTooOld
+        expr: time() - homepi_backup_last_success_timestamp_seconds{kind="influx-delta"} > 3 * 3600
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No hourly sensor delta for more than 3 hours: the sensor RPO is no longer 1 hour"
+          description: "Hourly at :07. A missed run is covered by the next one, back to the last success (26 h at most). Read: journalctl -u homepi-backup@influx-delta.service"
+
       - alert: BackupMetricsMissing
-        expr: absent(homepi_backup_last_success_timestamp_seconds{kind="state"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-lp"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-native"})
+        expr: absent(homepi_backup_last_success_timestamp_seconds{kind="state"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-lp"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-native"}) or absent(homepi_backup_last_success_timestamp_seconds{kind="influx-delta"})
         for: 2h
         labels:
           severity: warning

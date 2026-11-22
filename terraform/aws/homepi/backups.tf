@@ -113,6 +113,21 @@ resource "aws_s3_bucket_lifecycle_configuration" "backups" {
     }
   }
 
+  # An hourly sensor delta is under 1 MB: five weeks, like the native backups they extend
+  rule {
+    id     = "influx-delta-35-days"
+    status = "Enabled"
+    filter {
+      prefix = "influx-delta/"
+    }
+    expiration {
+      days = 35
+    }
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+
   rule {
     id     = "abort-incomplete-uploads"
     status = "Enabled"

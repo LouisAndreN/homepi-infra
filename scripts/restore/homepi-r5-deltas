@@ -1,0 +1,48 @@
+#!/bin/bash
+# homepi-r5-deltas: restore phase R5, second half (docs/runbooks/restore.md), on the rebuilt Pi.
+# Replays ONE hourly sensor delta (homepi-backup-influx-delta) into InfluxDB after
+# `influx restore --full`. The decrypted delta tar comes on stdin and stays in RAM (/run).
+#
+#   age -d -i KEY influx-delta-<stamp>.tar.age | ssh <pi> 'sudo /tmp/homepi-r3/homepi-r5-deltas'
+#
+# Run once per delta, oldest first. A point is a series and a timestamp: writing it again overwrites
+# it, so the 5 min overlap between deltas and a replay done twice are harmless.
+# Proof: after the write, InfluxDB holds at least as many points in the delta window as the delta.
+set -uo pipefail
+umask 077
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+TOKEN_FILE=/var/lib/secrets/influx-operator.token
+HOST=http://127.0.0.1:8086
+ORG=iot-org
+die() { echo "STOPPED: $*" >&2; exit 1; }
+log() { echo "homepi-r5-deltas: $*"; }
+
+[ "$EUID" -eq 0 ] || die "run as root"
+[ ! -t 0 ] || die "the decrypted delta must come on stdin"
+[ -r "$TOKEN_FILE" ] || die "$TOKEN_FILE missing (R3 restores it)"
+W=$(mktemp -d /run/homepi-r5-deltas.XXXXXX) || die "cannot create a work directory in /run"
+trap 'rm -rf "$W"' EXIT
+tar -x -C "$W" --no-same-owner -f - manifest.txt iot-hot.lp.gz iot-archives.lp.gz || die "not a sensor delta archive"
+STOP=$(awk '$1 == "stop_ns" {print $2}' "$W/manifest.txt")
+[[ "$STOP" =~ ^[0-9]{19}$ ]] || die "manifest without a stop time"
+
+influx_env() { INFLUX_TOKEN="$(cat "$TOKEN_FILE")" "$@"; }
+for bucket in iot-hot iot-archives; do
+  read -r start points < <(awk -v b="$bucket" '$1 == b {print $3, $5}' "$W/manifest.txt")
+  [[ "$start" =~ ^[0-9]{19}$ ]] && [[ "$points" =~ ^[0-9]+$ ]] || die "manifest has no window for $bucket"
+  n=$(gzip -dc "$W/$bucket.lp.gz" | grep -c .)
+  [ "$n" = "$points" ] || die "$bucket: $n lines in the file, the manifest says $points"
+  if [ "$points" != 0 ]; then
+    # The token goes through the environment, never argv
+    gzip -dc "$W/$bucket.lp.gz" | influx_env influx write --host "$HOST" --org "$ORG" --bucket "$bucket" --precision ns \
+      || die "$bucket: influx write failed"
+  fi
+  # Count per series first: grouping fields of different types into one table is a schema collision
+  have=$(influx_env influx query --host "$HOST" --org "$ORG" --raw \
+    "from(bucket: \"$bucket\") |> range(start: time(v: $start), stop: time(v: $((STOP + 1)))) |> count() |> group() |> sum()" \
+    | tr -d '\r' | awk -F, '/^,_result,/ {print $NF}')
+  [ -n "$have" ] || have=0
+  [ "$have" -ge "$points" ] || die "$bucket: $have points in the window after the write, the delta holds $points"
+  log "$bucket: $points points replayed, $have in the window"
+done
+log "delta up to $(date -d "@${STOP:0:10}" '+%F %T %Z') replayed"

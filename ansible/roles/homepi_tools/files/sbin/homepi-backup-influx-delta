@@ -1,0 +1,201 @@
+#!/usr/bin/python3 -I
+"""homepi-backup-influx-delta: hourly delta of the sensor buckets, age-encrypted (RPO 1 h, C4).
+
+The nightly native backup (03:50) holds everything, tokens included, but a dead disk at 03:49 loses a
+day. Every hour this exports iot-hot from 5 min before the end of the last successful delta (so a
+failed run leaves no hole; 65 min on the first run, at most 26 h back) and iot-archives from 2 h
+earlier still (the downsampling task writes the previous hour late), as line protocol.
+R5 replays every delta newer than the native backup after `influx restore --full`. A point is a
+series and a timestamp: writing it twice overwrites it, so overlaps and repeats are harmless.
+
+The query goes through the HTTP API with the operator token in a header, never in argv. Output:
+/mnt/data/backups/homepi/influx-delta-<stamp>.tar.age holding iot-hot.lp.gz, iot-archives.lp.gz and
+manifest.txt (window, point counts), plus its .sha256 file.
+
+Usage: homepi-backup-influx-delta AGE_RECIPIENT [AGE_RECIPIENT...]   (run by homepi-backup-run)
+       homepi-backup-influx-delta --convert < annotated.csv > points.lp  (offline test)
+"""
+import csv
+import calendar
+import gzip
+import hashlib
+import io
+import json
+import os
+import subprocess
+import sys
+import tarfile
+import tempfile
+import time
+import urllib.request
+
+INFLUX = "http://127.0.0.1:8086"
+ORG = "iot-org"
+TOKEN_FILE = "/var/lib/secrets/influx-operator.token"
+DEST = "/mnt/data/backups/homepi"
+STATE_FILE = "/var/lib/homepi-backup/influx-delta-last-stop"
+OVERLAP_S, FIRST_S, MAX_BACK_S, ARCHIVES_EXTRA_S = 5 * 60, 65 * 60, 26 * 3600, 2 * 3600
+BUCKETS = (("iot-hot", 0), ("iot-archives", ARCHIVES_EXTRA_S))
+NS = 1_000_000_000
+
+
+def window_start(stop, last_stop):
+    """Start of the iot-hot window: overlap the last successful delta, never more than 26 h back."""
+    if last_stop is None:
+        return stop - FIRST_S * NS
+    return max(stop - MAX_BACK_S * NS, min(last_stop - OVERLAP_S * NS, stop - FIRST_S * NS))
+
+
+def read_last_stop():
+    try:
+        with open(STATE_FILE, encoding="utf-8") as f:
+            return int(f.read().split()[0])
+    except (OSError, ValueError, IndexError):
+        return None
+SKIP_COLUMNS = {"", "result", "table", "_start", "_stop", "_time", "_value", "_field", "_measurement"}
+
+
+def rfc3339_ns(text):
+    """2026-11-22T03:00:00.123456789Z -> epoch nanoseconds (datetime keeps only microseconds)."""
+    if not text.endswith("Z"):
+        raise ValueError("time not in UTC: %r" % text)
+    body = text[:-1]
+    frac = ""
+    if "." in body:
+        body, frac = body.split(".", 1)
+    seconds = calendar.timegm(time.strptime(body, "%Y-%m-%dT%H:%M:%S"))
+    return seconds * 1_000_000_000 + int((frac + "000000000")[:9])
+
+
+def esc_measurement(s):
+    return s.replace("\\", "\\\\").replace(",", "\\,").replace(" ", "\\ ")
+
+
+def esc_key(s):
+    return s.replace("\\", "\\\\").replace(",", "\\,").replace("=", "\\=").replace(" ", "\\ ")
+
+
+def field_value(kind, raw):
+    """Line-protocol field value for a Flux CSV datatype, or None when it cannot be written."""
+    if kind == "double":
+        if raw in ("NaN", "+Inf", "-Inf", "Inf", ""):
+            return None
+        return repr(float(raw))
+    if kind == "long":
+        return "%di" % int(raw)
+    if kind == "unsignedLong":
+        return "%du" % int(raw)
+    if kind == "boolean":
+        return "true" if raw == "true" else "false"
+    if kind == "string":
+        return '"%s"' % raw.replace("\\", "\\\\").replace('"', '\\"')
+    return None
+
+
+def convert(lines, out):
+    """Annotated CSV (datatype annotation) -> line protocol. Returns (points written, rows skipped)."""
+    written = skipped = 0
+    types = header = None
+    for row in csv.reader(lines):
+        if not row or all(c == "" for c in row):
+            types = header = None  # a blank line ends a table; the next one has its own annotations
+            continue
+        if row[0] == "#datatype":
+            types, header = row, None
+            continue
+        if row[0].startswith("#"):
+            continue
+        if header is None:
+            header = row
+            idx = {name: i for i, name in enumerate(header)}
+            for need in ("_time", "_value", "_field", "_measurement"):
+                if need not in idx:
+                    raise ValueError("column %s missing from the query result" % need)
+            tag_cols = sorted((name, i) for name, i in idx.items() if name not in SKIP_COLUMNS)
+            continue
+        if types is None:
+            raise ValueError("data row without a #datatype annotation")
+        value = field_value(types[idx["_value"]], row[idx["_value"]])
+        if value is None:
+            skipped += 1
+            continue
+        tags = "".join(",%s=%s" % (esc_key(name), esc_key(row[i])) for name, i in tag_cols if row[i] != "")
+        out.write("%s%s %s=%s %d\n" % (esc_measurement(row[idx["_measurement"]]), tags,
+                                       esc_key(row[idx["_field"]]), value, rfc3339_ns(row[idx["_time"]])))
+        written += 1
+    return written, skipped
+
+
+def query(token, bucket, start, stop):
+    flux = 'from(bucket: "%s") |> range(start: time(v: %d), stop: time(v: %d))' % (bucket, start, stop)
+    body = json.dumps({"query": flux, "type": "flux",
+                       "dialect": {"annotations": ["datatype"], "header": True, "delimiter": ","}}).encode()
+    req = urllib.request.Request("%s/api/v2/query?org=%s" % (INFLUX, ORG), data=body, method="POST", headers={
+        "Authorization": "Token " + token, "Content-Type": "application/json", "Accept": "application/csv"})
+    return urllib.request.urlopen(req, timeout=300)
+
+
+def main():
+    if sys.argv[1:] == ["--convert"]:
+        written, skipped = convert(io.TextIOWrapper(sys.stdin.buffer, encoding="utf-8", newline=""), sys.stdout)
+        print("converted %d points, skipped %d" % (written, skipped), file=sys.stderr)
+        return
+    recipients = sys.argv[1:]
+    if not recipients or any(not r.startswith("age1") for r in recipients):
+        sys.exit("usage: homepi-backup-influx-delta AGE_RECIPIENT...")
+    if os.geteuid() != 0:
+        sys.exit("run as root")
+    if not os.path.ismount("/mnt/data/backups"):
+        sys.exit("ERROR: /mnt/data/backups is not mounted")
+    with open(TOKEN_FILE, encoding="utf-8") as f:
+        token = f.read().strip()
+    stop = time.time_ns()
+    stamp = time.strftime("%Y-%m-%d-%H%M%S", time.localtime(stop / 1e9))
+    out = os.path.join(DEST, "influx-delta-%s.tar.age" % stamp)
+    if os.path.exists(out):
+        sys.exit("ERROR: %s already exists" % out)
+    os.makedirs(DEST, mode=0o711, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=DEST, prefix=".delta-work-") as work:
+        manifest = ["stop_ns %d" % stop]
+        hot_start = window_start(stop, read_last_stop())
+        for bucket, extra in BUCKETS:
+            start = hot_start - extra * NS
+            seconds = (stop - start) // NS
+            path = os.path.join(work, bucket + ".lp.gz")
+            with query(token, bucket, start, stop) as reply, gzip.open(path, "wt", encoding="utf-8") as lp:
+                written, skipped = convert(io.TextIOWrapper(reply, encoding="utf-8", newline=""), lp)
+            manifest.append("%s start_ns %d points %d skipped %d" % (bucket, start, written, skipped))
+            print("%s: %d points (%d skipped) in %d s window" % (bucket, written, skipped, seconds))
+        with open(os.path.join(work, "manifest.txt"), "w", encoding="utf-8") as f:
+            f.write("\n".join(manifest) + "\n")
+        tar_path = os.path.join(work, "delta.tar")
+        with tarfile.open(tar_path, "w") as tar:
+            for name in ("manifest.txt", "iot-hot.lp.gz", "iot-archives.lp.gz"):
+                tar.add(os.path.join(work, name), arcname=name)
+        args = ["age"]
+        for r in recipients:
+            args += ["-r", r]
+        partial = out + ".partial"
+        with open(tar_path, "rb") as src, open(partial, "wb") as dst:
+            subprocess.run(args, stdin=src, stdout=dst, check=True)
+        os.chmod(partial, 0o600)
+        if os.path.getsize(partial) == 0:
+            sys.exit("ERROR: empty archive")
+        os.rename(partial, out)
+    digest = hashlib.sha256()
+    with open(out, "rb") as f:
+        for block in iter(lambda: f.read(1 << 20), b""):
+            digest.update(block)
+    with open(out + ".sha256", "w", encoding="utf-8") as f:
+        f.write("%s  %s\n" % (digest.hexdigest(), os.path.basename(out)))
+    # Only now: a run that failed before this line is covered by the next one
+    os.makedirs(os.path.dirname(STATE_FILE), mode=0o700, exist_ok=True)
+    with open(STATE_FILE + ".new", "w", encoding="utf-8") as f:
+        f.write("%d %s\n" % (stop, os.path.basename(out)))
+    os.replace(STATE_FILE + ".new", STATE_FILE)
+    print("%s (%d bytes)" % (out, os.path.getsize(out)))
+    print("DONE")
+
+
+if __name__ == "__main__":
+    main()

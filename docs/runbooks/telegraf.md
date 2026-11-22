@@ -38,3 +38,16 @@ that its data is stored. Two rules watch InfluxDB's own write counter
 | `InfluxWritesRejected` (warning) | any 4XX or 5XX on `/api/v2/write` for 10 minutes | 401/403: the `telegraf-write` token (SOPS `influx_telegraf_token`); 5XX: `journalctl -u influxdb` |
 
 Unit tests: `cd ansible/roles/observability_core/files/prometheus/tests && promtool test rules pipeline_test.yml`.
+
+## Known gap: messages lost while Telegraf restarts (C4, open)
+
+Both `mqtt_consumer` inputs subscribe with `qos = 0`, without `persistent_session` and without a
+`client_id`. The broker keeps nothing for such a client: every message published while Telegraf is
+stopped or reconnecting is lost, before any backup can see it. Measured 2026-11-21/22: five Telegraf
+stops, from 2 to 20 minutes. The output buffer (10 000 points, in memory) only covers InfluxDB being
+down while Telegraf runs (the Sunday export, 04:18: no loss).
+
+A fix needs all of: a distinct `client_id` per input (they share the `telegraf-bridge` account),
+`persistent_session = true` and `qos = 1`; a broker queue that holds about 20 minutes (QoS 0
+publishers need `queue_qos0_messages`, or the devices publish with QoS 1); and the device `ts` field as
+the point time (`json_time_key`), or late messages are stored at their arrival time.

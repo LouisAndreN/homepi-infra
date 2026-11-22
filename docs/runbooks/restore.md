@@ -46,6 +46,10 @@ The state archive of the nightly run (03:30) and the native backup (03:50) are 2
 state archive made by hand later in the day is newer than that day's native backup: InfluxDB then
 comes back older than the registry. Pass the day to pick the nightly pair if that matters.
 
+It then downloads every hourly sensor delta newer than that native backup into `<day>/deltas/`, checks
+each against its S3 SHA-256 and proves it decrypts (`manifest.txt` listed). No delta is a warning,
+not a failure: sensor data then comes back as of the native backup.
+
 If the laptop is lost: the paper key opens the same archives (`docs/disaster-recovery.md`).
 
 ## Before R1: the microSD
@@ -160,7 +164,7 @@ its own role in R4, once its site files are in place.
    `homepi-gitops@apply.service` once on the Pi. That apply runs `site.yml` with the default
    `gitops_timers_enabled: true`: GitOps takes over from there.
 
-Order on the drill: R1, R2, R3, **R5, R3.5, then R4**, R6, R7, R8.
+Order on the drill: R1, R2, R3, **R5 (native backup, then deltas), R3.5, then R4**, R6, R7, R8.
 
 ## R5: InfluxDB (`scripts/restore/homepi-r5-influx`, Pi)
 
@@ -173,6 +177,16 @@ stays in a config file in RAM, then `influx restore --full`: buckets, tasks, dat
 authorization with its original token. Proof: the operator token restored by R3 lists the buckets,
 the downsampling task is present, the archived points are counted. No SOPS change follows.
 The throwaway password is passed on the command line: it dies with the restore a minute later.
+
+Then the hourly deltas, oldest first, one at a time (the orchestrator phase R5D does this loop):
+
+    for f in ~/homepi-restore/<day>/deltas/influx-delta-*.tar.age; do
+      age -d -i ~/.config/sops/age/keys.txt "$f" | ssh <pi> 'sudo /tmp/homepi-r3/homepi-r5-deltas' || break
+    done
+
+Each delta stays in RAM (`/run`); `influx write` gets the restored operator token through the
+environment. After each bucket the script counts the points in the delta window and stops if
+InfluxDB holds fewer than the delta.
 
 ## R6: verify (`scripts/restore/homepi-r6-verify`, Pi, read-only)
 

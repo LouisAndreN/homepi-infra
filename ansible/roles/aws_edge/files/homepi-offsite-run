@@ -10,30 +10,46 @@ umask 077
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 DEST=/mnt/data/backups/homepi
-declare -A PREFIX=([state]=homepi-state [influx-lp]=influx-lp [influx-native]=influx-native)
+declare -A PREFIX=([state]=homepi-state [influx-lp]=influx-lp [influx-native]=influx-native [influx-delta]=influx-delta)
 
-for kind in state influx-lp influx-native; do
-  newest=$(find "$DEST" -maxdepth 1 -regextype posix-extended \
-             -regex ".*/${PREFIX[$kind]}-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}([0-9]{2})?\.tar\.age" \
-             -printf '%T@ %p\n' | sort -rn | sed -n '1p' | cut -d' ' -f2-)
-  if [ -z "$newest" ]; then
+archives() {  # oldest first
+  find "$DEST" -maxdepth 1 -regextype posix-extended \
+    -regex ".*/${PREFIX[$1]}-[0-9]{4}-[0-9]{2}-[0-9]{2}-[0-9]{4}([0-9]{2})?\.tar\.age" \
+    -printf '%T@ %p\n' | sort -n | cut -d' ' -f2-
+}
+
+upload() {  # 0 uploaded or already there, 1 not ready, 2 failed
+  local kind=$1 archive=$2 name out
+  name=$(basename "$archive")
+  [ -e "$archive.offsite" ] && return 0
+  # Not ready while the backup is still being written and verified
+  if [ ! -s "$archive.sha256" ] || [ -n "$(find "$archive.sha256" -mmin -2)" ]; then
+    echo "homepi-offsite: $kind: $name not ready yet, next run"
+    return 1
+  fi
+  if out=$(homepi-offsite-upload "$archive" "$kind" 2>&1); then
+    echo "$out"
+    printf '%s %s\n' "$(date -Is)" "$out" > "$archive.offsite"
+    return 0
+  fi
+  echo "$out" >&2
+  return 2
+}
+
+for kind in state influx-lp influx-native influx-delta; do
+  mapfile -t list < <(archives "$kind")
+  if [ "${#list[@]}" = 0 ]; then
     echo "homepi-offsite: $kind: no archive yet"
     continue
   fi
-  name=$(basename "$newest")
-  if [ -e "$newest.offsite" ]; then
-    echo "homepi-offsite: $kind: $name already uploaded"
-    continue
-  fi
-  # Not ready while the backup is still being written and verified
-  if [ ! -s "$newest.sha256" ] || [ -n "$(find "$newest.sha256" -mmin -2)" ]; then
-    echo "homepi-offsite: $kind: $name not ready yet, next run"
-    continue
-  fi
-  if out=$(homepi-offsite-upload "$newest" "$kind" 2>&1); then
-    echo "$out"
-    printf '%s %s\n' "$(date -Is)" "$out" > "$newest.offsite"
+  if [ "$kind" = influx-delta ]; then
+    # Every delta matters (each one covers its own hours): upload all that are missing, oldest first,
+    # and stop at the first failure so the order is kept and the next run retries from there
+    for a in "${list[@]}"; do upload "$kind" "$a" || break; done
   else
-    echo "$out" >&2
+    # One archive is a full copy: only the newest needs to be off-site
+    newest=${list[-1]}
+    if [ -e "$newest.offsite" ]; then echo "homepi-offsite: $kind: $(basename "$newest") already uploaded"; continue; fi
+    upload "$kind" "$newest" || true
   fi
 done
