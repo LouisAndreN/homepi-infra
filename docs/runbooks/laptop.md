@@ -13,7 +13,9 @@ rejects the commit in check mode with its own runtime (`homepi-precheck`), or wh
 Pi run different ansible-core versions.
 
 To change a version: edit the requirement file, release; the Pi installs it through `gitops_runtime`,
-then rebuild the laptop venv with the commands above.
+then rebuild the laptop venv with the commands above. Never in the other order: a laptop already on the new
+version makes `release()` refuse, since the Pi only gets it by applying that release (2026-11-22,
+ansible-core 2.20.11).
 
 ## When a released tag fails to apply
 
