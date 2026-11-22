@@ -4,8 +4,11 @@ Description=HomePi: hourly off-site upload of new backups
 
 [Timer]
 OnBootSec=15min
-OnCalendar=hourly
-RandomizedDelaySec=5min
+# :10, three minutes after the hourly sensor delta (:07): an archive is uploaded once its checksum is
+# 2 minutes old, so the delta leaves the Pi within about 6 minutes. With "hourly" (:00) it waited
+# 53 minutes on the Pi, and a dead disk lost up to 1 h 53 min of sensor data instead of about 1 h 13 min.
+OnCalendar=*-*-* *:10:00
+RandomizedDelaySec=3min
 Persistent=true
 
 [Install]

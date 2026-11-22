@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""homepi-backup-influx-delta: hourly delta of the sensor buckets, age-encrypted (RPO 1 h, C4).
+"""homepi-backup-influx-delta: hourly delta of the sensor buckets, age-encrypted (C4).
 
 The nightly native backup (03:50) holds everything, tokens included, but a dead disk at 03:49 loses a
 day. Every hour this exports iot-hot from 5 min before the end of the last successful delta (so a

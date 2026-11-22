@@ -1,5 +1,5 @@
 [Unit]
-Description=Hourly delta of the sensor buckets (RPO 1 h; the nightly native backup holds the rest)
+Description=Hourly delta of the sensor buckets (off-site at :10; the nightly native backup holds the rest)
 
 [Timer]
 # :07, clear of the native backup (03:50) and of the weekly export that stops InfluxDB (Sun 04:18)

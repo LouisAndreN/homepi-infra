@@ -6,7 +6,9 @@ on a new Raspberry Pi and a new NVMe drive.
 ## Targets
 - **RTO: 4 hours** from new hardware on the desk to sensors publishing and alerts working.
 - **RPO, configuration: 0** (the newest signed release tag is the source of truth).
-- **RPO, sensor data (`iot-hot`, `iot-archives`): 1 hour** (hourly delta since C4, below).
+- **RPO, sensor data (`iot-hot`, `iot-archives`): about 1 h 13 min at worst** (hourly delta at :07,
+  uploaded off-site at :10 to :13; a disk that dies just before an upload loses back to the previous
+  delta).
 - **RPO, state: 24 hours** (nightly state backup: registry, PKI, Authelia, Grafana, CrowdSec).
 - Not backed up at all: Prometheus metrics and Loki logs (table below).
 
@@ -83,7 +85,8 @@ hour (11.5 MB as CSV, 60 000 points: NILM at 15 points/s, the environment sensor
 missed runs, back to the last success, 26 h at most) and `iot-archives` from 2 h earlier still, as
 gzipped line protocol, plus a manifest (window, point counts). 48 kept on the Pi; every delta goes
 off-site under `influx-delta/` (35 days), oldest first, the first failure stopping the run so the
-next one retries in order.
+next one retries in order. The upload runs at :10 (plus up to 3 minutes): with the former hourly
+upload at :00, a delta waited 53 minutes on the Pi and the worst case was 1 h 53 min.
 
 Restore: R0 downloads every delta newer than the native backup, R5 replays them oldest first after
 `influx restore --full` (`homepi-r5-deltas`). A point is a series and a timestamp, so overlaps and
