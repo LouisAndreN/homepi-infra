@@ -1,0 +1,17 @@
+# Managed by Ansible (role sshd).
+# SSH listens on every address: nftables allows port 22 only from the LAN and NetBird (wt0).
+# C3 (2026-11-21): ListenAddress pinned to one LAN address and the NetBird address made SSH depend on
+# an address the router did not reserve; on another address the Pi was unreachable for a night.
+Include /etc/ssh/sshd_config.d/*.conf
+
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+# Nobody logs in as root over SSH: the operator account uses sudo
+PermitRootLogin no
+# The production file had both "no" and "yes"; sshd keeps the first value, so "no" was in effect
+X11Forwarding no
+UsePAM yes
+PrintMotd no
+AcceptEnv LANG LC_*
+Subsystem sftp /usr/lib/openssh/sftp-server

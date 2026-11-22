@@ -1,0 +1,76 @@
+---
+# sshd configuration with a guarded switch. A broken file or a socket that no longer listens would lock
+# the operator out, so: sshd -t before the file replaces the live one, then a new connection to port 22
+# must answer (sshd banner) on every address; otherwise the previous file comes back at once.
+# Sessions already open (the Ansible connection included) survive a restart of ssh.socket.
+
+- name: Previous sshd_config kept for the rollback (root only)
+  ansible.builtin.copy:
+    src: /etc/ssh/sshd_config
+    dest: /root/sshd_config.before-role
+    remote_src: true
+    owner: root
+    group: root
+    mode: "0600"
+    force: false
+  when: not ansible_check_mode
+
+- name: sshd change with rollback
+  block:
+    - name: sshd_config (validated by sshd -t before it replaces the live file)
+      ansible.builtin.copy:
+        src: sshd_config
+        dest: /etc/ssh/sshd_config
+        owner: root
+        group: root
+        mode: "0644"
+        validate: /usr/sbin/sshd -t -f %s
+      register: sshd_config_file
+
+    # The socket addresses are generated from ListenAddress at daemon-reload (sshd-socket-generator)
+    - name: Regenerate the ssh socket addresses and restart the socket
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        daemon_reload: true
+        state: restarted
+      when: sshd_config_file is changed and not ansible_check_mode
+
+    - name: A new connection gets the sshd banner on every local address
+      ansible.builtin.shell: |
+        set -o pipefail
+        for a in 127.0.0.1 $(hostname -I); do
+          case "$a" in *:*) continue ;; esac
+          b=$(timeout 5 bash -c "exec 3<> /dev/tcp/$a/22; head -c 7 <&3" 2>/dev/null || true)
+          [ "$b" = "SSH-2.0" ] || { echo "no sshd banner on $a:22"; exit 1; }
+          echo "sshd answers on $a:22"
+        done
+      args:
+        executable: /bin/bash
+      changed_when: false
+      when: not ansible_check_mode
+
+  rescue:
+    - name: Put the previous sshd_config back
+      ansible.builtin.copy:
+        src: /root/sshd_config.before-role
+        dest: /etc/ssh/sshd_config
+        remote_src: true
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Restart the socket on the previous file
+      ansible.builtin.systemd_service:
+        name: ssh.socket
+        daemon_reload: true
+        state: restarted
+
+    - name: Report the rollback
+      ansible.builtin.fail:
+        msg: "sshd change rolled back: the new configuration did not answer on every address. See docs/runbooks/network.md."
+
+- name: SSH socket enabled (socket activation, as Ubuntu ships it)
+  ansible.builtin.systemd_service:
+    name: ssh.socket
+    enabled: true
+    state: started
