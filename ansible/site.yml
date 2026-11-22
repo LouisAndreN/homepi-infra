@@ -29,13 +29,15 @@
     - mqtt_acl
     - influxdb
     - telegraf
-    # Verify only: nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md)
-    - nginx
     - grafana
     - authelia
     - crowdsec
     # Verify only: provisioning API code, units and Python packages
     - provisioning_api
+    # nginx sites, snippets and TLS files (docs/runbooks/nginx-api.md). After authelia and
+    # provisioning_api: its route checks need both backends (C4: on a first install the API answered
+    # 502 and the portal 500, and the role rolled nginx back)
+    - nginx
     # Applies: device identity activity for Prometheus (v0.1.57)
     - device_metrics
     # Applies: signed OTA, rollout timer and the signing public key (v0.1.120)
