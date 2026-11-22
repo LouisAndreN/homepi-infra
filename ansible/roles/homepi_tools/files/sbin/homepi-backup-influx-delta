@@ -126,6 +126,24 @@ def convert(lines, out):
     return written, skipped
 
 
+def wait_ready(limit_s=180):
+    """InfluxDB answers /health. A timer catch-up (Persistent=true) fires right after boot: systemd
+    reports influxdb started 1.5 s before it listens (R8 of C4, 2026-11-22: connection refused)."""
+    deadline = time.monotonic() + limit_s
+    last = "no answer yet"
+    while True:
+        try:
+            with urllib.request.urlopen(INFLUX + "/health", timeout=5) as r:
+                if r.status == 200:
+                    return
+                last = "HTTP %d" % r.status
+        except OSError as e:  # URLError and connection errors are OSError
+            last = e
+        if time.monotonic() > deadline:
+            sys.exit("ERROR: InfluxDB not ready after %d s: %s" % (limit_s, last))
+        time.sleep(5)
+
+
 def query(token, bucket, start, stop):
     flux = 'from(bucket: "%s") |> range(start: time(v: %d), stop: time(v: %d))' % (bucket, start, stop)
     body = json.dumps({"query": flux, "type": "flux",
@@ -149,6 +167,7 @@ def main():
         sys.exit("ERROR: /mnt/data/backups is not mounted")
     with open(TOKEN_FILE, encoding="utf-8") as f:
         token = f.read().strip()
+    wait_ready()
     stop = time.time_ns()
     stamp = time.strftime("%Y-%m-%d-%H%M%S", time.localtime(stop / 1e9))
     out = os.path.join(DEST, "influx-delta-%s.tar.age" % stamp)
