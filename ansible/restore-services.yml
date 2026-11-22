@@ -7,6 +7,9 @@
 - name: HomePi restore services (R3.5)
   hosts: pi_hosts
   become: true
+  vars:
+    # The IoT access point interface (roles/network/files/20-wlx.network)
+    restore_iot_interface: wlx0013eff27090
   pre_tasks:
     - name: Refuse to run on the production disk
       ansible.builtin.shell: |
@@ -48,12 +51,49 @@
         enabled: true
         state: restarted
 
-    - name: Network services enabled and running
+    # DKMS builds and installs the module but loads nothing: without this the IoT interface only appears
+    # after a reboot, hostapd reports active without an interface and dnsmasq cannot bind
+    # 192.168.200.1 (C4, R3.5)
+    - name: IoT access point driver loaded
+      ansible.builtin.command:
+        argv: [modprobe, "{{ wifi_driver_module | default('88x2bu') }}"]
+      changed_when: false
+
+    - name: IoT interface present (the adapter enumerated by the driver)
+      ansible.builtin.command:
+        argv: [ip, link, show, "{{ restore_iot_interface }}"]
+      register: restore_iot_link
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: restore_iot_link.rc == 0
+
+    - name: systemd-networkd enabled and running
       ansible.builtin.systemd_service:
-        name: "{{ item }}"
+        name: systemd-networkd
         enabled: true
         state: started
-      loop: [systemd-networkd, hostapd, dnsmasq]
+
+    # Restarted, not only started: hostapd may already run from before the interface existed
+    - name: hostapd enabled and restarted on the interface
+      ansible.builtin.systemd_service:
+        name: hostapd
+        enabled: true
+        state: restarted
+
+    - name: IoT interface holds 192.168.200.1 (set by systemd-networkd once hostapd brought it up)
+      ansible.builtin.shell: ip -4 -o addr show dev {{ restore_iot_interface }} | grep -q ' 192.168.200.1/'
+      register: restore_iot_addr
+      changed_when: false
+      retries: 20
+      delay: 3
+      until: restore_iot_addr.rc == 0
+
+    - name: dnsmasq enabled and running (it binds 192.168.200.1 only)
+      ansible.builtin.systemd_service:
+        name: dnsmasq
+        enabled: true
+        state: started
 
     # NetBird adds its own tables: restart it after the firewall so they exist
     - name: NetBird enabled and restarted after the firewall
