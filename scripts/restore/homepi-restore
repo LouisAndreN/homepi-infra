@@ -223,7 +223,14 @@ phase_BOOTCHECK() {
   m=$(disk_model) || return 1
   echo "root disk: $m"
   [[ "$m" == *"$MODEL"* ]] || { echo "the rebuilt system does not run from the $MODEL"; return 1; }
-  ssh "$PI" 'findmnt -no SOURCE /var/lib/influxdb /mnt/data' < /dev/null || { echo "data volumes not mounted"; return 1; }
+  # One findmnt per mount point: with two arguments findmnt reads them as SOURCE and TARGET (C4)
+  local mp src bad=0
+  for mp in /var/lib/influxdb /mnt/data /var/log /var; do
+    src=$(ssh "$PI" "findmnt -no SOURCE --mountpoint $mp" < /dev/null)
+    echo "$mp: ${src:-NOT MOUNTED}"
+    [ -n "$src" ] || bad=1
+  done
+  [ "$bad" = 0 ] || { echo "data volumes not mounted"; return 1; }
 }
 
 phase_R2() {
