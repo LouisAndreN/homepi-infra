@@ -79,7 +79,7 @@ for m in /var /var/log /var/lib/loki /mnt/data /mnt/data/backups /mnt/data/perso
 done
 code=000; for i in $(seq 1 60); do code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:3100/ready || true); [ "$code" = 200 ] && break; sleep 2; done
 [ "$code" = 200 ] && ok "loki ready" || fail "loki ready $code"
-for u in prometheus alertmanager node_exporter alloy loki grafana-server homepi-heartbeat-relay unbound mosquitto telegraf influxdb nginx authelia crowdsec step-ca hostapd netbird; do
+for u in prometheus alertmanager node_exporter alloy loki grafana-server homepi-heartbeat-relay unbound mosquitto telegraf influxdb nginx authelia crowdsec step-ca hostapd dnsmasq netbird; do
   a=$(systemctl is-active "$u" 2>/dev/null); [ "$a" = active ] && ok "service $u" || fail "service $u $a"
 done
 for u in mosquitto telegraf; do echo "info $u automatic restarts: $(systemctl show "$u" -p NRestarts --value)"; done
@@ -98,10 +98,18 @@ REMOTE
 )
 echo "$POST"
 echo "=== storage drift (from the laptop)"
-DRIFT=$(cd "$REPO/ansible" && ansible-playbook storage.yml --check 2>&1 | grep -oE 'storage drift: [^"]*' | head -n 1)
-echo "$DRIFT"
-[ "$DRIFT" = "storage drift: none" ] || POST="$POST
-FAIL storage ${DRIFT:-no drift report}"
+# The full output is kept: a check that hides why it produced nothing is no check
+# (C4, 2026-11-22: "no drift report" twice, the reason was thrown away by the grep)
+SLOG=$(mktemp /tmp/homepi-storage-check.XXXXXX.log)
+(cd "$REPO/ansible" && LC_ALL=C.UTF-8 ansible-playbook storage.yml --check) > "$SLOG" 2>&1
+SRC=$?
+DRIFT=$(grep -oE 'storage drift: [^"]*' "$SLOG" | head -n 1)
+echo "${DRIFT:-no drift line} (ansible-playbook rc $SRC, full log $SLOG)"
+if [ "$DRIFT" = "storage drift: none" ] && [ "$SRC" -eq 0 ]; then rm -f "$SLOG"; else
+  tail -n 15 "$SLOG"
+  POST="$POST
+FAIL storage ${DRIFT:-no drift report} (rc $SRC, log $SLOG)"
+fi
 FAILS=$(echo "$POST" | grep -c '^FAIL')
 if [ "$FAILS" -eq 0 ]; then echo "RESULT: PASS"; exit 0; fi
 echo "RESULT: FAIL ($FAILS check(s))"; echo "$POST" | grep '^FAIL'; exit 1
