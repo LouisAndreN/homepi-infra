@@ -202,9 +202,40 @@ shipping, the GitOps timers and the heartbeat relay on the spare, checks each on
 archive nor competes with production. Then power off, production disk back before 03:30, and on
 the laptop remove the drill Pi key from `.sops.yaml` (`sops updatekeys`, signed tag).
 
+## R8: production back (`docs/game-days/2026-11-21-c3.md`)
+
+R8 was the hardest step of C3: the production disk came back on another LAN address, with SSH and DNS
+bound to the old one, and no way to log in for a night. Since v0.1.134 the address is static
+(netplan, plus a router reservation), sshd listens on every address and Unbound uses `ip-freebind`,
+so the production disk should come back as it left. The procedure, after R7 on the spare:
+
+1. Power off the spare (`sudo systemctl poweroff`), wait for the power LED, unplug.
+2. Swap the disks: spare out, production disk in, seated fully. Ethernet in. (C3: no SSH at first
+   was suspected to be a badly seated disk; the cause was the LAN address, see the game-day report.)
+3. Power on. Within 3 minutes: the ESP32s reconnect to `Pi-IoT` (the access point is up), then
+   `ssh homepi true` from the laptop works with the usual `known_hosts`.
+   If SSH does not answer: check the router's client list for the Pi's MAC; the address must be the
+   reserved one. Without SSH there is no clean shutdown (the case button needs pironman5): pull the
+   power only after the disk activity stops.
+4. On the Pi: `systemctl is-system-running`, then R6 (`homepi-r6-verify 7`) on production.
+5. Off-site: `systemctl start homepi-offsite.service`. Archives made by production while it was
+   powered off do not exist; archives of the hours before T0 that were not uploaded yet go now.
+6. Laptop: remove the drill Pi key from `.sops.yaml` (exact match, checked first), then for every
+   `ansible/secrets/*.sops.yaml`: `sops updatekeys -y`, `sops rotate -i`, `sops -d > /dev/null`.
+   `updatekeys` alone only re-wraps the data key: the drill key, still on the spare disk, would open
+   future versions encrypted with the same data key. Commit signed, then `release`; production applies
+   the tag through GitOps.
+7. Delete `~/.ssh/known_hosts.drill-sd` and `~/.ssh/known_hosts.drill-new` on the laptop, and keep
+   the spare disk powered off (R7 disabled its timers; a spare booted by mistake must stay silent).
+
+What the drill cannot bring back: the sensor data the rebuilt Pi collected stays on the spare. In a
+real failure the rebuilt Pi stays production, so this gap does not exist.
+
 ## Known gap: pironman5
 
-The case software (fan, OLED) runs from `/opt/pironman5/venv`, which no role builds and the archive
-excludes. R3 restores `/opt/pironman5` without the venv; reinstall it with the vendor installer
-during the drill and note the time. Until a role owns it, the NVMe cooling of a rebuilt Pi depends
-on that manual step.
+The case software (fan, OLED, power button) runs from `/opt/pironman5/venv`, which no role builds and
+the archive excludes. **Never run the vendor installer** (`curl ... | sudo bash`, even pinned): on
+2026-11-21 its cloned repository ran `install_influxdb.sh`, which uninstalled `influxdb2` on the rebuilt
+Pi (InfluxDB down 13 minutes), added a `pironman5` user with `NOPASSWD: /usr/bin/systemctl` and made
+`/opt/pironman5` 775. A rebuilt Pi runs without it until a role installs it from a pinned commit
+without the vendor pre-scripts. Without it the case button does not power the Pi off.
