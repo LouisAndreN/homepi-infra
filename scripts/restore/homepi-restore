@@ -371,7 +371,9 @@ report() {
   if [ -n "$r6" ]; then
     echo "RTO (T0 to R6 PASS): $(hms $((r6 - T0)))"
   else
-    echo "RTO: not measured yet (R6 has not passed); elapsed since T0: $(hms $(( ${last_end:-$T0} - T0 )))"
+    # Now, not the end of the last ok phase: failed attempts and fixes are part of the outage
+    # (C4, 2026-11-22: it printed 1h29m at 19:00, four hours after T0)
+    echo "RTO: not measured yet (R6 has not passed); elapsed since T0: $(hms $(( $(date +%s) - T0 )))"
   fi
   echo "time in ok phases: machine $(hms "$auto_s"), waiting for a person $(hms "$human_s") (failed attempts count only in the RTO)"
   local a
