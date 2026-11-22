@@ -110,8 +110,9 @@ wait_banner() {
   t0=$(now)
   a=$(pi_addr)
   while :; do
-    b=$(timeout 5 bash -c "exec 3<> /dev/tcp/$a/22 && head -c 7 <&3" 2>&1) || true
-    [ "$b" = "SSH-2.0" ] && { log "sshd answers on $a:22 after $(hms $(( $(now) - t0 )))"; return 0; }
+    # OpenSSH only: an initramfs unlock server (dropbear) also says SSH-2.0, with another host key
+    b=$(timeout 5 bash -c "exec 3<> /dev/tcp/$a/22 && head -c 15 <&3" 2>&1) || true
+    [ "$b" = "SSH-2.0-OpenSSH" ] && { log "sshd answers on $a:22 after $(hms $(( $(now) - t0 )))"; return 0; }
     [ $(( ($(now) - t0) % 60 )) -lt 5 ] && log "waiting for sshd on $a:22 ($(hms $(( $(now) - t0 ))))"
     sleep 5
   done
