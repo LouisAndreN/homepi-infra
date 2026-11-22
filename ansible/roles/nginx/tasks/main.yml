@@ -169,6 +169,16 @@
   failed_when: false
   register: nginx_test
 
+# A rebuilt Pi gets its applied site files only from the block above, so nginx cannot be started before
+# this role (C3, 2026-11-21, defect 28). Started here once its configuration is valid; on a running Pi
+# this changes nothing.
+- name: nginx enabled and started when its configuration is valid
+  ansible.builtin.systemd_service:
+    name: nginx
+    enabled: true
+    state: started
+  when: nginx_test.rc == 0 and not ansible_check_mode
+
 - name: nginx service enabled and running (check mode only)
   ansible.builtin.systemd_service:
     name: "{{ item }}"

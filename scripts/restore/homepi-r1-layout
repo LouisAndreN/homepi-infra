@@ -202,7 +202,9 @@ luks_format() {
 
 # Interactive: cryptsetup asks for the passphrase to add the keyfile (keyslot 1)
 luks_add_keyfile() {
-  log "adding the boot keyfile: type the passphrase once more"
+  # C3 (2026-11-21): cryptsetup's own prompt reads "Enter any existing passphrase", which looked like a
+  # request for an older passphrase. It is the one just typed twice above.
+  log "adding the boot keyfile: at \"Enter any existing passphrase\", type the SAME passphrase you just set (third time)"
   cryptsetup luksAddKey -q --pbkdf argon2id "$(part 5)" "$KEYFILE" || die "luksAddKey failed"
 }
 

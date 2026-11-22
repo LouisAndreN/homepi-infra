@@ -1,0 +1,86 @@
+---
+# The IoT access point needs the 88x2bu module for EVERY installed kernel: the running one and the
+# fallback one the boot chain can return to. C3 (2026-11-21): a rebuilt Pi had no driver at all (built
+# by hand), then a module for the running kernel only (WifiDriverMissingForInstalledKernel).
+# Existing sources are never replaced here: moving to another upstream commit is a manual, documented
+# operation (docs/runbooks/wifi-driver.md).
+
+- name: DKMS source of the driver present? (read-only)
+  ansible.builtin.stat:
+    path: "{{ wifi_driver_src }}/dkms.conf"
+  register: wifi_driver_dkms_conf
+
+- name: DKMS source from the pinned upstream commit (rebuilt Pi only)
+  ansible.builtin.git:
+    repo: "{{ wifi_driver_repo }}"
+    dest: "{{ wifi_driver_src }}"
+    version: "{{ wifi_driver_commit }}"
+    update: false
+  when: not wifi_driver_dkms_conf.stat.exists
+
+- name: Installed raspi kernels (read-only)
+  ansible.builtin.find:
+    paths: /boot
+    patterns: "vmlinuz-*-raspi"
+    file_type: file
+  register: wifi_driver_vmlinuz
+
+- name: Kernel versions to build for
+  ansible.builtin.set_fact:
+    wifi_driver_kernels: "{{ wifi_driver_vmlinuz.files | map(attribute='path') | map('basename') | map('regex_replace', '^vmlinuz-', '') | sort }}"
+
+- name: At least one kernel found
+  ansible.builtin.assert:
+    that: wifi_driver_kernels | length > 0
+    fail_msg: "no /boot/vmlinuz-*-raspi found"
+    quiet: true
+
+- name: Kernel headers for every installed kernel (DKMS builds against them)
+  ansible.builtin.apt:
+    name: "{{ wifi_driver_kernels | map('regex_replace', '^', 'linux-headers-') | list }}"
+    state: present
+
+- name: Driver registered with DKMS? (read-only)
+  ansible.builtin.stat:
+    path: "/var/lib/dkms/{{ wifi_driver_name }}/{{ wifi_driver_version }}"
+  register: wifi_driver_registered
+
+- name: Register the driver with DKMS
+  ansible.builtin.command:
+    argv: [dkms, add, -m, "{{ wifi_driver_name }}", -v, "{{ wifi_driver_version }}"]
+  when: not wifi_driver_registered.stat.exists and not ansible_check_mode
+
+- name: Module built for each kernel? (read-only)
+  ansible.builtin.find:
+    paths: "/lib/modules/{{ item }}"
+    patterns: "{{ wifi_driver_module }}.ko*"
+    recurse: true
+  loop: "{{ wifi_driver_kernels }}"
+  register: wifi_driver_modules
+
+- name: Build and install the module for each kernel that lacks it
+  ansible.builtin.command:
+    argv: [dkms, install, -m, "{{ wifi_driver_name }}", -v, "{{ wifi_driver_version }}", -k, "{{ item.item }}"]
+  loop: "{{ wifi_driver_modules.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: item.matched == 0 and not ansible_check_mode
+
+- name: Module present for each kernel after the build (read-only)
+  ansible.builtin.find:
+    paths: "/lib/modules/{{ item }}"
+    patterns: "{{ wifi_driver_module }}.ko*"
+    recurse: true
+  loop: "{{ wifi_driver_kernels }}"
+  register: wifi_driver_modules_after
+  when: not ansible_check_mode
+
+- name: Every installed kernel has the module
+  ansible.builtin.assert:
+    that: item.matched > 0
+    fail_msg: "kernel {{ item.item }} has no {{ wifi_driver_module }} module: the IoT access point would not come up on it"
+    quiet: true
+  loop: "{{ wifi_driver_modules_after.results }}"
+  loop_control:
+    label: "{{ item.item }}"
+  when: not ansible_check_mode

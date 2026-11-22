@@ -1,0 +1,79 @@
+# Restore phase R3.5 (docs/runbooks/restore.md), run from the laptop after R5 and before R4:
+#   ansible-playbook restore-services.yml
+# R3 stops the services that own restored files, and the verify-only roles (network, pki) never start
+# anything. C3 (2026-11-21) did all of this by hand; this playbook is that list, as code. It runs once
+# on a rebuilt host: some tasks restart on purpose. Never run it on production.
+---
+- name: HomePi restore services (R3.5)
+  hosts: pi_hosts
+  become: true
+  pre_tasks:
+    - name: Refuse to run on the production disk
+      ansible.builtin.shell: |
+        set -o pipefail
+        d=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+        sed 's/ *$//' "/sys/block/$d/device/model"
+      args:
+        executable: /bin/bash
+      changed_when: false
+      register: restore_disk_model
+
+    - name: Stop if this is the Micron
+      ansible.builtin.assert:
+        that: "'Micron' not in restore_disk_model.stdout"
+        fail_msg: "STOPPED: this is the production disk ({{ restore_disk_model.stdout }})"
+        quiet: true
+  roles:
+    - wifi_driver
+  tasks:
+    - name: hostapd is not masked (the package masks it)
+      ansible.builtin.systemd_service:
+        name: hostapd
+        masked: false
+
+    - name: Restored nftables ruleset is valid before it is loaded
+      ansible.builtin.command: nft -c -f /etc/nftables.conf
+      changed_when: false
+
+    - name: nftables enabled and loaded
+      ansible.builtin.systemd_service:
+        name: nftables
+        enabled: true
+        state: started
+
+    # rules.v4/v6 (IoT NAT, NetBird DNS DNAT) were loaded at boot, before R3 restored them (C3 defect 37)
+    - name: iptables-nft rules reloaded from the restored files
+      ansible.builtin.systemd_service:
+        name: netfilter-persistent
+        enabled: true
+        state: restarted
+
+    - name: Network services enabled and running
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [systemd-networkd, hostapd, dnsmasq]
+
+    # NetBird adds its own tables: restart it after the firewall so they exist
+    - name: NetBird enabled and restarted after the firewall
+      ansible.builtin.systemd_service:
+        name: netbird
+        enabled: true
+        state: restarted
+
+    - name: PKI services and renewal timers enabled and running
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [step-ca, step-renew.timer, step-renew-mosquitto.timer]
+
+    - name: IoT NAT rule present (the ESP32s reach NTP and HTTPS through it)
+      ansible.builtin.shell: iptables -t nat -S POSTROUTING | grep -c -- '-o eth0 -j MASQUERADE'
+      changed_when: false
+
+    - name: Every service of this phase is active
+      ansible.builtin.command:
+        argv: [systemctl, is-active, nftables, hostapd, dnsmasq, netbird, step-ca, systemd-networkd]
+      changed_when: false

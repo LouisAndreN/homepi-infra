@@ -16,6 +16,8 @@
     - dns
     - service_ordering
     - boot_chain
+    # Applies: the IoT access point driver for every installed kernel (docs/runbooks/wifi-driver.md)
+    - wifi_driver
     # Verify only: never writes network files, never reloads (docs/runbooks/network.md)
     - network
     # Verify only: PKI and broker files, secrets by owner and mode (docs/runbooks/pki.md)

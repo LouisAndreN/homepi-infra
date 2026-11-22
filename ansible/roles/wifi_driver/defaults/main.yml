@@ -1,0 +1,8 @@
+---
+# Out-of-tree driver of the IoT access point adapter (Realtek 0bda:b812), see docs/runbooks/wifi-driver.md
+wifi_driver_repo: https://github.com/morrownr/88x2bu-20210702.git
+wifi_driver_commit: 418d71cc00cd18b4a671f8c49ecce9b19cbfd3c9
+wifi_driver_name: rtl88x2bu
+wifi_driver_version: "5.13.1"
+wifi_driver_src: /usr/src/rtl88x2bu-5.13.1
+wifi_driver_module: 88x2bu
