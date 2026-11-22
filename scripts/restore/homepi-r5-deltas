@@ -38,10 +38,11 @@ for bucket in iot-hot iot-archives; do
     gzip -dc "$W/$bucket.lp.gz" | influx_env influx write --host "$HOST" --org "$ORG" --bucket "$bucket" --precision ns \
       || die "$bucket: influx write failed"
   fi
-  # Count per series first: grouping fields of different types into one table is a schema collision
+  # Count per series first: grouping fields of different types into one table is a schema collision.
+  # Data rows have an empty result column (the CLI puts "_result" in the #default annotation)
   have=$(influx_env influx query --host "$HOST" --org "$ORG" --raw \
     "from(bucket: \"$bucket\") |> range(start: time(v: $start), stop: time(v: $((STOP + 1)))) |> count() |> group() |> sum()" \
-    | tr -d '\r' | awk -F, '/^,_result,/ {print $NF}')
+    | tr -d '\r' | awk -F, '/^#/ || /^,result,/ || NF < 2 {next} {print $NF}')
   [ -n "$have" ] || have=0
   [ "$have" -ge "$points" ] || die "$bucket: $have points in the window after the write, the delta holds $points"
   log "$bucket: $points points replayed, $have in the window"
