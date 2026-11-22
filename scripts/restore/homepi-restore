@@ -16,7 +16,8 @@
 # R7 and R8 stay manual: they end the drill and bring production back (restore.md).
 set -uo pipefail
 umask 077
-export LC_ALL=C
+# C.UTF-8, not C: ansible-playbook refuses a locale whose encoding is not UTF-8 (C4, R2)
+export LC_ALL=C.UTF-8
 
 ROOT_DIR="$HOME/homepi-restore"
 CURRENT="$ROOT_DIR/current-drill"
