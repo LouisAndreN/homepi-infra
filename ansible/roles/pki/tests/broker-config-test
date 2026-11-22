@@ -1,0 +1,62 @@
+#!/bin/bash
+# broker-config-test CONF: run a broker configuration in a throwaway mosquitto (same binary) and prove
+# what the platform needs from it, without touching the running broker:
+#   1. a device certificate (CN esp32-deadbeef) connects on the TLS listener and publishes its topic
+#   2. a client without certificate is refused on the TLS listener
+#   3. a device cannot publish another device's topic (the ACL drops it)
+#   4. a durable loopback client (telegraf-bridge) offline for 15 s gets the 15 QoS 1 messages queued
+# Listeners move to 127.0.0.1:18883 and 127.0.0.1:11883; certificates, password file and ACL are
+# throwaway (an own CA, a random password); crlfile is dropped (TLS listener option, not changed by C4).
+# Run as root on the Pi (the broker drops to the mosquitto user). Exits 1 on any failure.
+# Expected today: check 4 FAILS with the production configuration on mosquitto 2.0.18
+# (per_listener_settings true queues nothing for offline durable clients; fixed upstream in 2.0.23).
+# Re-run it when the Ubuntu package reaches 2.0.23: a PASS means Telegraf's session then covers restarts.
+set -u
+CONF=${1:?usage: broker-config-test CONF}
+[ -r "$CONF" ] || { echo "FAIL cannot read $CONF"; exit 1; }
+CONF=$(readlink -f "$CONF")
+[ "$EUID" -eq 0 ] || { echo "run as root"; exit 1; }
+W=$(mktemp -d /run/broker-test.XXXXXX); chmod 0755 "$W"
+PID=""; trap '[ -n "$PID" ] && kill $PID 2> /dev/null; rm -rf "$W"' EXIT
+fails=0
+check() { if [ "$2" = 0 ]; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+cd "$W" || exit 1
+# Throwaway CA, server and device certificates
+openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -days 1 -subj "/CN=test-ca" -keyout ca.key -out ca.crt 2> /dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=localhost" -keyout srv.key -out srv.csr 2> /dev/null
+printf 'subjectAltName=IP:127.0.0.1\nextendedKeyUsage=serverAuth\n' > srv.ext
+openssl x509 -req -in srv.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 -extfile srv.ext -out srv.crt 2> /dev/null
+openssl req -newkey ec -pkeyopt ec_paramgen_curve:P-256 -nodes -subj "/CN=esp32-deadbeef" -keyout dev.key -out dev.csr 2> /dev/null
+printf 'extendedKeyUsage=clientAuth\n' > dev.ext
+openssl x509 -req -in dev.csr -CA ca.crt -CAkey ca.key -CAcreateserial -days 1 -extfile dev.ext -out dev.crt 2> /dev/null
+P=t$RANDOM$RANDOM$RANDOM   # throwaway password, this test only
+mosquitto_passwd -c -b passwd telegraf-bridge "$P" > /dev/null
+printf 'user telegraf-bridge\ntopic read iot/#\n\nuser esp32-deadbeef\ntopic write iot/esp32-deadbeef/sensors\n' > acl
+chown mosquitto: srv.key passwd acl; chmod 0600 srv.key passwd acl
+# The candidate configuration with throwaway paths and ports
+sed -E -e "s#^listener 8883 .*#listener 18883 127.0.0.1#" -e "s#^listener 1883 .*#listener 11883 127.0.0.1#" \
+  -e "s#^(certfile\s+).*#\1$W/srv.crt#" -e "s#^(keyfile\s+).*#\1$W/srv.key#" -e "s#^(cafile\s+).*#\1$W/ca.crt#" \
+  -e "/^crlfile/d" -e "s#^(password_file\s+).*#\1$W/passwd#" -e "s#^(acl_file\s+).*#\1$W/acl#" \
+  "$CONF" > broker.conf
+grep -q '^listener 18883 127.0.0.1' broker.conf && grep -q '^listener 11883 127.0.0.1' broker.conf \
+  || { echo "FAIL the candidate has no listener 8883 and 1883 to test"; exit 1; }
+printf 'persistence false\nlog_dest file %s/broker.log\nlog_type all\n' "$W" >> broker.conf
+touch broker.log; chown mosquitto: broker.log
+mosquitto -c broker.conf > start.log 2>&1 & PID=$!
+sleep 1
+kill -0 $PID 2> /dev/null || { echo "FAIL broker did not start: $(tail -3 start.log broker.log)"; exit 1; }
+T=(--cafile ca.crt -h 127.0.0.1 -p 18883)
+L=(-h 127.0.0.1 -p 11883 -u telegraf-bridge -P "$P")
+# Durable subscriber registers its session, then goes offline
+mosquitto_sub "${L[@]}" -i telegraf-test -c -q 1 -t 'iot/#' -E
+mosquitto_pub "${T[@]}" --cert dev.crt --key dev.key -i esp32-deadbeef -q 1 -t iot/esp32-deadbeef/sensors -m first; check "device certificate connects and publishes on the TLS listener" $?
+mosquitto_pub "${T[@]}" -i nocert -q 1 -t iot/esp32-deadbeef/sensors -m x 2> /dev/null; r=$?; check "client without certificate refused on the TLS listener" $(( r == 0 ))
+mosquitto_pub "${T[@]}" --cert dev.crt --key dev.key -i esp32-deadbeef -q 1 -t iot/esp32-00000000/sensors -m foreign
+for i in $(seq 1 15); do mosquitto_pub "${T[@]}" --cert dev.crt --key dev.key -i esp32-deadbeef -q 1 -t iot/esp32-deadbeef/sensors -m "m$i"; sleep 1; done
+got=$(timeout 3 mosquitto_sub "${L[@]}" -i telegraf-test -c -q 1 -t 'iot/#' -F '%t %p')
+q=$(printf '%s\n' "$got" | grep -c ' m[0-9]')
+check "durable loopback client offline for 15 s got $q of 15 queued messages" $(( q != 15 ))
+printf '%s\n' "$got" | grep -q 'esp32-00000000'; check "a device cannot publish another device's topic" $(( $? == 0 ))
+mosquitto_sub "${L[@]}" -i telegraf-test -t 'none' -E > /dev/null 2>&1
+echo
+[ "$fails" = 0 ] && { echo "broker-config-test PASS"; exit 0; } || { echo "broker-config-test FAIL: $fails"; tail -5 broker.log; exit 1; }

@@ -41,28 +41,39 @@ Unit tests: `cd ansible/roles/observability_core/files/prometheus/tests && promt
 
 ## MQTT sessions and point time (C4, 2026-11-22)
 
-Before C4 both `mqtt_consumer` inputs subscribed with QoS 0, without a session: every message published
-while Telegraf was stopped was lost (five stops of 2 to 20 minutes on 2026-11-21/22), and every
-reconnection stored the retained `status` message of each device again, at the reconnection time with
-a `ts` days old (6 false points a day per device).
+Before C4 both `mqtt_consumer` inputs subscribed with QoS 0, without a session: messages Telegraf had
+received but not yet written were lost at each stop, every reconnection stored the retained `status`
+message of each device again, at the reconnection time with a `ts` days old (6 false points a day per
+device), and readings a device buffered offline were stored at their arrival time.
 
 | Input | client_id | Session | QoS | Point time |
 |---|---|---|---|---|
 | sensors, status, ems (`iot_sensors`) | `telegraf-sensors` | persistent | 1 | device `ts` when plausible (`homepi_time.conf`), else arrival |
 | NILM (`nilm_readings`) | `telegraf-nilm` | persistent | 1 | arrival |
 
-- Devices publish sensors and NILM with QoS 1 (homepi-firmware `sensors.c`, `nilm_bridge.c`): the
-  broker queues them for the persistent session while Telegraf is down. Telegraf acknowledges a message
-  only after InfluxDB accepted it, so an InfluxDB outage loses nothing either.
-- Queue: the Mosquitto default, 1000 messages per client: about 2 hours of sensors, about 32 minutes of
-  NILM (0.5 message/s). A longer Telegraf outage drops the oldest NILM messages. Raising
-  `max_queued_messages` is a broker change (role `pki` only verifies `homepi_iot.conf`).
+- Devices publish sensors and NILM with QoS 1 (homepi-firmware `sensors.c`, `nilm_bridge.c`).
+  Telegraf acknowledges a message only after InfluxDB accepted it: messages in flight when Telegraf or
+  InfluxDB stops are delivered again (proven 2026-11-22: five NILM points measured before a stop were
+  stored at the restart).
+- What is published while Telegraf is away is NOT queued. Proven on the production binary: mosquitto
+  2.0.18 with `per_listener_settings true` queued 0 of 20 messages for an offline durable client in a
+  throwaway broker, 20 of 20 without that option (`ansible/roles/pki/tests/broker-config-test`; upstream
+  fix in 2.0.23, "Fix handling of disconnected sessions for per_listener_settings true"). Ubuntu 24.04
+  ships 2.0.18, 26.04 ships 2.0.22.
+- Kept on purpose (C4 decision): dropping `per_listener_settings` would let a certificate named like a
+  service account (`homepi-api`) command every device over 8883; Docker for a newer broker would move
+  mTLS, CRL and ACL sync into a container. Both cost more than the gap they close: Telegraf stops while
+  the broker runs only when its configuration changes (a restart, about a second). The long outages
+  measured on 2026-11-21/22 were whole-Pi stops, when the broker was down too: those are covered by the
+  devices' offline buffer, which the time processor now stores at the right time.
+- Revisit when the Ubuntu package reaches 2.0.23: run `broker-config-test` on the production
+  configuration; a PASS on check 4 means the session also covers Telegraf restarts.
 - Telegraf 1.40.3 subscribes again at every connection (`onConnect`), session or not: retained status
   messages still arrive at each reconnection. Timed by their own `ts`, they rewrite their original
   point instead of adding one.
 - `ts` is in seconds. Two messages of one device in the same second become one point: 0.3 % of sensor
-  messages; 5.7 % of NILM messages, which is why NILM keeps the arrival time. Its queued messages are
-  therefore stored late by the length of the outage. Fix: a millisecond timestamp in the firmware
+  messages; 5.7 % of NILM messages, which is why NILM keeps the arrival time (redelivered messages are
+  stored a few seconds late). Fix: a millisecond timestamp in the firmware
   (OTA, reversible), then the same processor for NILM.
 - A `ts` before 2023-11-14 or more than 5 minutes ahead of the Pi clock (a device without NTP time)
   keeps the arrival time: `json_time_key` would have stored it in 1970, outside the retention.

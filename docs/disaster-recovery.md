@@ -95,9 +95,10 @@ vault, is about 360 GB stored and 6 GB a day uploaded, for data that grows by a 
 Rejected too: a shorter Object Lock for an hourly prefix: it needs `s3:PutObjectRetention` for the
 Pi's role, and a compromised Pi could then shorten the lock of its own backups.
 
-What the delta does not cover: points that never reached InfluxDB. Since C4 Telegraf holds a
-persistent MQTT session, so a restart no longer loses messages up to the broker queue (about 32 minutes
-of NILM, 2 hours of sensors; docs/runbooks/telegraf.md).
+What the delta does not cover: points that never reached InfluxDB. Since C4 messages in flight when
+Telegraf stops are delivered again, but what is published while Telegraf is away while the broker runs
+is lost (mosquitto 2.0.18 with per_listener_settings queues nothing for offline clients; in practice a
+one-second restart on configuration changes; docs/runbooks/telegraf.md).
 
 ## Added to the nightly archive (C1, 2026-11-15)
 
