@@ -171,7 +171,8 @@ phase_T0() {
   master "" || return 1
   m=$(disk_model) || return 1
   echo "running Pi root disk: $m"
-  [ -n "$m" ] && [ "$m" != "$MODEL" ] || { echo "the running Pi is not production: T0 powers off production"; return 1; }
+  # The model text is a part of the disk name ("990 PRO" in "Samsung SSD 990 PRO 1TB"), as in R1 and R7
+  [ -n "$m" ] && [[ "$m" != *"$MODEL"* ]] || { echo "the running Pi is not production: T0 powers off production"; return 1; }
   read -r -p "Type POWEROFF to power off production now (T0): " ans < /dev/tty
   [ "$ans" = POWEROFF ] || { echo "not confirmed"; return 1; }
   setvar T0 "$(now)"
@@ -221,7 +222,7 @@ phase_BOOTCHECK() {
   local m
   m=$(disk_model) || return 1
   echo "root disk: $m"
-  [ "$m" = "$MODEL" ] || { echo "the rebuilt system does not run from the $MODEL"; return 1; }
+  [[ "$m" == *"$MODEL"* ]] || { echo "the rebuilt system does not run from the $MODEL"; return 1; }
   ssh "$PI" 'findmnt -no SOURCE /var/lib/influxdb /mnt/data' < /dev/null || { echo "data volumes not mounted"; return 1; }
 }
 
