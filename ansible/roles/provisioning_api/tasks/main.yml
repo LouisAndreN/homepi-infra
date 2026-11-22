@@ -33,6 +33,25 @@
         executable: /bin/bash
       changed_when: true
 
+# WAL needs devices.db-wal and devices.db-shm, and SQLite creates them in the database directory,
+# which homepi-api cannot write. On production they exist since the API first ran; a restored Pi
+# has none (R3 restores the .db only), so every access as homepi-api failed with "attempt to write
+# a readonly database" (C3, 2026-11-21). Empty files owned by the API user are valid side files;
+# SQLite cannot unlink them here, so they stay. Existing files are left as they are.
+- name: WAL side files of the device database exist, owned by the API user
+  ansible.builtin.file:
+    path: "{{ api_db }}-{{ item }}"
+    state: touch
+    owner: homepi-api
+    group: homepi-api
+    mode: "0644"
+    access_time: preserve
+    modification_time: preserve
+  loop: [wal, shm]
+# Here, before the virtualenv rebuild restarts the API: with the API down nothing holds the
+# database open, and a root sqlite3 closing the last connection (the nightly backup is one) may
+# remove both files. After the failed v0.1.145 rebuilds both were gone and the API could not start.
+
 # Package upgrades (security fixes): the virtualenv follows requirements.lock. A running Pi used to
 # keep its packages verified-only, so a lock change could only fail as drift. When the installed
 # packages differ, the virtualenv is rebuilt in place (console scripts such as bin/uvicorn embed the
@@ -179,22 +198,6 @@
     label: "{{ item.dest }}"
   check_mode: true
   register: api_code_probe
-
-# WAL needs devices.db-wal and devices.db-shm, and SQLite creates them in the database directory,
-# which homepi-api cannot write. On production they exist since the API first ran; a restored Pi
-# has none (R3 restores the .db only), so every access as homepi-api failed with "attempt to write
-# a readonly database" (C3, 2026-11-21). Empty files owned by the API user are valid side files;
-# SQLite cannot unlink them here, so they stay. Existing files are left as they are.
-- name: WAL side files of the device database exist, owned by the API user
-  ansible.builtin.file:
-    path: "{{ api_db }}-{{ item }}"
-    state: touch
-    owner: homepi-api
-    group: homepi-api
-    mode: "0644"
-    access_time: preserve
-    modification_time: preserve
-  loop: [wal, shm]
 
 - name: Database schema version (read-only, as the API user)
   ansible.builtin.command:
