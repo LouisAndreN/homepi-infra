@@ -232,7 +232,10 @@ setup_luks_lvm() {
   log "volume group: $(vgs --noheadings --units g -o vg_size,vg_free vg-main | xargs) (size, free)"
   install -d /run/homepi-r1-btrfs
   mount -t btrfs /dev/vg-main/lv-data /run/homepi-r1-btrfs
-  for sv in $BTRFS_SUBVOLUMES; do btrfs subvolume create "/run/homepi-r1-btrfs/$sv" > /dev/null; done
+  # umask 022: a subvolume root takes the umask, and under this script's 077 every subvolume came out
+  # 0700 root, so the influxdb user could not reach /mnt/data/backups (influx-lp backup, C4, 2026-11-22)
+  (umask 022; for sv in $BTRFS_SUBVOLUMES; do btrfs subvolume create "/run/homepi-r1-btrfs/$sv" > /dev/null; done)
+  for sv in $BTRFS_SUBVOLUMES; do [ "$(stat -c %a "/run/homepi-r1-btrfs/$sv")" = 755 ] || die "subvolume $sv is not 0755"; done
   umount /run/homepi-r1-btrfs
 }
 
