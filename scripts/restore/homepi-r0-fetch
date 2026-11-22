@@ -102,7 +102,10 @@ for key in $DELTA_KEYS; do
   DEST_SAVED=$DEST; DEST=$DEST/deltas
   fetch "$key"
   file="$DEST/$(basename "$key")"
-  age -d -i "$AGE_KEY" "$file" | tar -t | grep -qxF manifest.txt || die "cannot decrypt or read $(basename "$key")"
+  # The listing is read whole before grep: grep -q would exit at the first entry, tar and age would get
+  # SIGPIPE, and pipefail would report a valid archive as unreadable (C4, first run)
+  entries=$(age -d -i "$AGE_KEY" "$file" | tar -t) || die "cannot decrypt or read $(basename "$key")"
+  printf '%s\n' "$entries" | grep -qxF manifest.txt || die "$(basename "$key") holds no manifest.txt"
   DEST=$DEST_SAVED; ND=$((ND + 1))
 done
 if [ "$ND" = 0 ]; then
