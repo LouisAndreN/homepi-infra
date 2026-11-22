@@ -218,18 +218,37 @@ so the production disk should come back as it left. The procedure, after R7 on t
    reserved one. Without SSH there is no clean shutdown (the case button needs pironman5): pull the
    power only after the disk activity stops.
 4. On the Pi: `systemctl is-system-running`, then R6 (`homepi-r6-verify 7`) on production.
+   Every tag released during the drill went to the spare's bare repository: push the tags alone to
+   `pi` (`git push pi refs/tags/v0.1.N ...`). Pushing `main` to `pi` relays it to GitHub `main`
+   (C4: four laptop commits reached GitHub without the typed MERGE).
 5. Off-site: `systemctl start homepi-offsite.service`. Archives made by production while it was
    powered off do not exist; archives of the hours before T0 that were not uploaded yet go now.
 6. Laptop: remove the drill Pi key from `.sops.yaml` (exact match, checked first), then for every
    `ansible/secrets/*.sops.yaml`: `sops updatekeys -y`, `sops rotate -i`, `sops -d > /dev/null`.
    `updatekeys` alone only re-wraps the data key: the drill key, still on the spare disk, would open
    future versions encrypted with the same data key. Commit signed, then `release`; production applies
-   the tag through GitOps.
+   the tag through GitOps. Allow up to 30 minutes from `release` to the deployed tag: the precheck
+   runs the whole `site.yml` in check mode (8 to 10 min), the apply timer fires every 10 minutes and
+   skips a run while the hourly check holds the lock (C4: pushed 20:53, applied from 21:13).
 7. Delete `~/.ssh/known_hosts.drill-sd` and `~/.ssh/known_hosts.drill-new` on the laptop, and keep
    the spare disk powered off (R7 disabled its timers; a spare booted by mistake must stay silent).
 
-What the drill cannot bring back: the sensor data the rebuilt Pi collected stays on the spare. In a
-real failure the rebuilt Pi stays production, so this gap does not exist.
+What the drill does not bring back by itself: the sensor data the rebuilt Pi collected stays on the
+spare. Its hourly deltas are in S3, so `homepi-r5-deltas` could replay them into production (not done
+in C4). In a real failure the rebuilt Pi stays production, so this gap does not exist.
+
+After the drill the spare holds the drill age key, which opens the secrets of the tags released
+during the drill (v0.1.141 to v0.1.143 for C4). Keep it powered off, and wipe it
+(`cryptsetup erase`, then `blkdiscard`) once it is no longer the drill disk.
+
+## Known gap: no backup of the rebuilt system before R6 (C4 defect 15)
+
+R4 leaves the rebuilt Pi serving with no local backup and no off-site copy of itself until the next
+timers (03:30 to 04:15, line protocol on Sunday only). C4 found it through `BackupMetricsMissing` and
+`OffsiteMetricsMissing` four hours after T0. Until the orchestrator has a phase for it (R5B, before
+R6), run after R4: `systemctl start homepi-backup@state homepi-backup@influx-native
+homepi-backup@influx-lp` one at a time, then `systemctl start homepi-offsite.service`
+(C4: 1 s, 42 s, 95 s, then 26 s for about 700 MB).
 
 ## Known gap: pironman5
 

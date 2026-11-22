@@ -28,6 +28,11 @@ The `network` role (B2a) verifies the files and services in check mode and fails
 writes or reloads. Changes will go through the guarded tools of B2b (atomic table replacement, automatic
 rollback after 3 minutes unless confirmed), with physical access to the Pi.
 
+A failed network service is drift too, so the release precheck refuses every tag while it lasts,
+including the tag that fixes it (C4, 2026-11-22: dnsmasq down after a boot race refused v0.1.143,
+which carried the fix). Restore the service as an operation (`systemctl start <unit>`), check it,
+then release. Never bypass the precheck.
+
 ## IoT egress NAT: stays in netfilter-persistent
 
 The IoT masquerade stays in `/etc/iptables/rules.v4`. It worked; moving it to nftables would only
