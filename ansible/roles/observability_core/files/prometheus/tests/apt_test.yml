@@ -1,0 +1,59 @@
+# promtool test rules apt_test.yml (from this directory)
+# AptUpgradesNotRunning: a recorded run older than 3 days fires; "no run recorded" (0) fires only after
+# 3 days of uptime, so a freshly rebuilt Pi does not alert (C4, 2026-11-22).
+rule_files:
+  - ../rules/boot_chain.yml
+evaluation_interval: 1m
+tests:
+  - name: fresh rebuild, no run recorded, up 1 hour
+    interval: 1m
+    input_series:
+      - series: 'homepi_apt_unattended_last_run_timestamp_seconds{instance="pi",job="node"}'
+        values: '0x120'
+      - series: 'node_boot_time_seconds{instance="pi",job="node"}'
+        values: '-3600x120'
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: AptUpgradesNotRunning
+        exp_alerts: []
+  - name: no run recorded, up 4 days
+    interval: 1m
+    input_series:
+      - series: 'homepi_apt_unattended_last_run_timestamp_seconds{instance="pi",job="node"}'
+        values: '0x6000'
+      - series: 'node_boot_time_seconds{instance="pi",job="node"}'
+        values: '0x6000'
+    alert_rule_test:
+      - eval_time: 4d
+        alertname: AptUpgradesNotRunning
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: pi, job: node}
+            exp_annotations:
+              summary: "Unattended upgrades have not run for more than 3 days"
+              description: "Read: systemctl list-timers apt-daily-upgrade.timer"
+  - name: last run 4 days ago
+    interval: 1m
+    input_series:
+      - series: 'homepi_apt_unattended_last_run_timestamp_seconds{instance="pi",job="node"}'
+        values: '1x6000'
+      - series: 'node_boot_time_seconds{instance="pi",job="node"}'
+        values: '0x6000'
+    alert_rule_test:
+      - eval_time: 4d
+        alertname: AptUpgradesNotRunning
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: pi, job: node}
+            exp_annotations:
+              summary: "Unattended upgrades have not run for more than 3 days"
+              description: "Read: systemctl list-timers apt-daily-upgrade.timer"
+  - name: last run 1 day ago
+    interval: 1m
+    input_series:
+      - series: 'homepi_apt_unattended_last_run_timestamp_seconds{instance="pi",job="node"}'
+        values: '259200x6000'
+      - series: 'node_boot_time_seconds{instance="pi",job="node"}'
+        values: '0x6000'
+    alert_rule_test:
+      - eval_time: 4d
+        alertname: AptUpgradesNotRunning
+        exp_alerts: []

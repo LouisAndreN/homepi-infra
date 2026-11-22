@@ -61,8 +61,13 @@ groups:
         annotations:
           summary: "Unattended upgrades failing or dpkg half-configured: security updates are blocked"
           description: "Read: dpkg --audit; /var/log/unattended-upgrades/unattended-upgrades-dpkg.log"
+      # 0 means "no run recorded yet" (a rebuilt Pi, C4): it fires only once the Pi has been up 3 days
       - alert: AptUpgradesNotRunning
-        expr: time() - homepi_apt_unattended_last_run_timestamp_seconds > 3 * 86400
+        expr: >-
+          (homepi_apt_unattended_last_run_timestamp_seconds > 0
+            and time() - homepi_apt_unattended_last_run_timestamp_seconds > 3 * 86400)
+          or (homepi_apt_unattended_last_run_timestamp_seconds == 0
+            and on(instance) (time() - node_boot_time_seconds) > 3 * 86400)
         for: 1h
         labels:
           severity: warning
