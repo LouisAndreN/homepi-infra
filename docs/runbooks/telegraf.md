@@ -39,15 +39,36 @@ that its data is stored. Two rules watch InfluxDB's own write counter
 
 Unit tests: `cd ansible/roles/observability_core/files/prometheus/tests && promtool test rules pipeline_test.yml`.
 
-## Known gap: messages lost while Telegraf restarts (C4, open)
+## MQTT sessions and point time (C4, 2026-11-22)
 
-Both `mqtt_consumer` inputs subscribe with `qos = 0`, without `persistent_session` and without a
-`client_id`. The broker keeps nothing for such a client: every message published while Telegraf is
-stopped or reconnecting is lost, before any backup can see it. Measured 2026-11-21/22: five Telegraf
-stops, from 2 to 20 minutes. The output buffer (10 000 points, in memory) only covers InfluxDB being
-down while Telegraf runs (the Sunday export, 04:18: no loss).
+Before C4 both `mqtt_consumer` inputs subscribed with QoS 0, without a session: every message published
+while Telegraf was stopped was lost (five stops of 2 to 20 minutes on 2026-11-21/22), and every
+reconnection stored the retained `status` message of each device again, at the reconnection time with
+a `ts` days old (6 false points a day per device).
 
-A fix needs all of: a distinct `client_id` per input (they share the `telegraf-bridge` account),
-`persistent_session = true` and `qos = 1`; a broker queue that holds about 20 minutes (QoS 0
-publishers need `queue_qos0_messages`, or the devices publish with QoS 1); and the device `ts` field as
-the point time (`json_time_key`), or late messages are stored at their arrival time.
+| Input | client_id | Session | QoS | Point time |
+|---|---|---|---|---|
+| sensors, status, ems (`iot_sensors`) | `telegraf-sensors` | persistent | 1 | device `ts` when plausible (`homepi_time.conf`), else arrival |
+| NILM (`nilm_readings`) | `telegraf-nilm` | persistent | 1 | arrival |
+
+- Devices publish sensors and NILM with QoS 1 (homepi-firmware `sensors.c`, `nilm_bridge.c`): the
+  broker queues them for the persistent session while Telegraf is down. Telegraf acknowledges a message
+  only after InfluxDB accepted it, so an InfluxDB outage loses nothing either.
+- Queue: the Mosquitto default, 1000 messages per client: about 2 hours of sensors, about 32 minutes of
+  NILM (0.5 message/s). A longer Telegraf outage drops the oldest NILM messages. Raising
+  `max_queued_messages` is a broker change (role `pki` only verifies `homepi_iot.conf`).
+- Telegraf 1.40.3 subscribes again at every connection (`onConnect`), session or not: retained status
+  messages still arrive at each reconnection. Timed by their own `ts`, they rewrite their original
+  point instead of adding one.
+- `ts` is in seconds. Two messages of one device in the same second become one point: 0.3 % of sensor
+  messages; 5.7 % of NILM messages, which is why NILM keeps the arrival time. Its queued messages are
+  therefore stored late by the length of the outage. Fix: a millisecond timestamp in the firmware
+  (OTA, reversible), then the same processor for NILM.
+- A `ts` before 2023-11-14 or more than 5 minutes ahead of the Pi clock (a device without NTP time)
+  keeps the arrival time: `json_time_key` would have stored it in 1970, outside the retention.
+- Readings a device buffered offline (`data_buffer_flush`, QoS 0, `buffered: true`) now land at their
+  own time; as QoS 0 they are still lost if Telegraf is down at that moment.
+
+The role's test run sets `TELEGRAF_MQTT_TEST=-test` and `TELEGRAF_MQTT_PERSISTENT=false`: another
+client id and no session. With the production id it would take over the session of the running
+Telegraf, and acknowledge (and drop) its queued messages.
