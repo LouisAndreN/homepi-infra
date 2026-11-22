@@ -105,18 +105,40 @@ Tested offline (`scripts/restore/tests` style, fake archive): selection, wildcar
 database, /opt exclusions, database owners and modes; stray files, fstab and unlisted /etc files are
 not restored; a missing required path, an unknown owner and an empty stdin stop it.
 
+## R3.5: start what R3 stopped (`ansible/restore-services.yml`, laptop)
+
+    ansible-playbook restore-services.yml
+
+R3 stops the services that own restored files, and the verify-only roles (network, pki) never start
+anything. C3 (2026-11-21) did this phase by hand. The playbook refuses the Micron, builds the IoT
+driver for every installed kernel (`wifi_driver`), unmasks hostapd, loads nftables after `nft -c`,
+reloads `netfilter-persistent` from the restored `rules.v4`/`rules.v6` (IoT NAT, NetBird DNS DNAT),
+restarts NetBird after the firewall, and enables step-ca and its renewal timers. nginx is started by
+its own role in R4, once its site files are in place.
+
 ## R4: new Pi age key and full apply
 
 1. On the Pi: `age-keygen -o /etc/homepi-gitops/age.key` (root 0600), print the public key only.
 2. On the laptop: **add** that key to `.sops.yaml` and `sops updatekeys` every `*.sops.yaml`. Add,
    never replace: the production Pi (Micron) must still decrypt the repository when it comes back.
-   After the drill, remove the drill key the same way.
-3. `ansible-playbook site.yml` from the laptop (after R5: the influxdb role checks the restored
-   state with the restored tokens): every role applies, the verify-only roles prove the restored
-   files, `provisioning_api` rebuilds the API virtualenv from `requirements.lock` (the archive
-   excludes virtualenvs). Then a signed tag, and GitOps on the rebuilt Pi takes over.
+3. Boot-critical storage files (the `storage` role in `site.yml` only verifies them):
 
-Order on the drill: R1, R2, R3, **R5, then R4**, R6, R7.
+       ansible-playbook storage.yml --check --diff
+       ansible-playbook storage.yml
+
+4. Full apply with the GitOps timers **off**:
+
+       ansible-playbook site.yml -e gitops_timers_enabled=false
+
+   C3: the first pass enabled the timers and the rebuilt Pi applied the restored, older tag every
+   10 minutes in parallel with the laptop runs (defect 41). After R5: the influxdb role checks the
+   restored state with the restored tokens; `provisioning_api` rebuilds the API virtualenv from
+   `requirements.lock`.
+5. Signed tag (`release` in `scripts/lib.sh`: precheck on the Pi, signed tag, push), then start
+   `homepi-gitops@apply.service` once on the Pi. That apply runs `site.yml` with the default
+   `gitops_timers_enabled: true`: GitOps takes over from there.
+
+Order on the drill: R1, R2, R3, **R5, R3.5, then R4**, R6, R7, R8.
 
 ## R5: InfluxDB (`scripts/restore/homepi-r5-influx`, Pi)
 
