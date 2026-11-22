@@ -72,14 +72,22 @@
   no_log: true
   diff: false
 
-- name: New configuration authenticates to the broker (test run, nothing written)
-  ansible.builtin.command:
-    argv: [systemd-run, --quiet, --wait, --pipe, --collect, -p, User=telegraf,
-           -p, "EnvironmentFile=/var/lib/secrets/telegraf.env",
-           # Another client id and no session: the test must not take over the production session
-           -p, "Environment=TELEGRAF_MQTT_TEST=-test", -p, "Environment=TELEGRAF_MQTT_PERSISTENT=false",
-           /usr/bin/telegraf, --config, /etc/telegraf/telegraf.conf, --config-directory, /etc/telegraf/telegraf.d,
-           --test, --test-wait, "10", --input-filter, mqtt_consumer]
+# The test runs on a copy with another client id and no session: with the production client id it would
+# take over the session of the running Telegraf and acknowledge (drop) its queued messages (C4).
+# Environment variables cannot do this: Telegraf 1.38+ substitutes them inside strings only.
+- name: New configuration authenticates to the broker (test run on a copy, nothing written)
+  ansible.builtin.shell: |
+    set -eu
+    d=$(mktemp -d /run/telegraf-test.XXXXXX)
+    trap 'rm -rf "$d"' EXIT
+    cp /etc/telegraf/telegraf.d/*.conf "$d/"
+    sed -i -E 's/^(\s*client_id\s*=\s*"[^"]*)"/\1-test"/; s/^(\s*persistent_session\s*=\s*)true/\1false/' "$d"/*.conf
+    chgrp -R telegraf "$d"; chmod 0750 "$d"; chmod 0640 "$d"/*.conf
+    systemd-run --quiet --wait --pipe --collect -p User=telegraf -p EnvironmentFile=/var/lib/secrets/telegraf.env \
+      /usr/bin/telegraf --config /etc/telegraf/telegraf.conf --config-directory "$d" \
+      --test --test-wait 10 --input-filter mqtt_consumer
+  args:
+    executable: /bin/bash
     chdir: /
   register: telegraf_test
   changed_when: false

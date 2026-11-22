@@ -69,6 +69,8 @@ a `ts` days old (6 false points a day per device).
 - Readings a device buffered offline (`data_buffer_flush`, QoS 0, `buffered: true`) now land at their
   own time; as QoS 0 they are still lost if Telegraf is down at that moment.
 
-The role's test run sets `TELEGRAF_MQTT_TEST=-test` and `TELEGRAF_MQTT_PERSISTENT=false`: another
-client id and no session. With the production id it would take over the session of the running
-Telegraf, and acknowledge (and drop) its queued messages.
+The role's test run works on a copy in `/run` where `client_id` gets `-test` and `persistent_session`
+is `false`. With the production id it would take over the session of the running Telegraf, and
+acknowledge (and drop) its queued messages. Environment variables cannot do this: since Telegraf 1.38
+they are substituted inside strings only (strict handling), so `persistent_session = ${...}` is not
+valid TOML; the first attempt failed exactly so in the C4 preflight.
