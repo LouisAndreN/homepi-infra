@@ -202,8 +202,8 @@ phase_R1() {
 }
 
 phase_BOOT() {
-  human BOOT "Once the power LED is off: unplug, REMOVE THE microSD, power on.
-If the boot waits for the cryptdata passphrase, unlock it as in C3."
+  # cryptdata opens by itself at boot with the keyfile R1 installed (C3: nothing to type)
+  human BOOT "Once the power LED is off: unplug, REMOVE THE microSD, power on."
 }
 
 phase_BOOTCHECK() {

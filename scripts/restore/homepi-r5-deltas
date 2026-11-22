@@ -34,6 +34,7 @@ for bucket in iot-hot iot-archives; do
   [ "$n" = "$points" ] || die "$bucket: $n lines in the file, the manifest says $points"
   if [ "$points" != 0 ]; then
     # The token goes through the environment, never argv
+    # influx write also reads stdin when it is not a terminal: here stdin is the pipe, and only the pipe
     gzip -dc "$W/$bucket.lp.gz" | influx_env influx write --host "$HOST" --org "$ORG" --bucket "$bucket" --precision ns \
       || die "$bucket: influx write failed"
   fi
