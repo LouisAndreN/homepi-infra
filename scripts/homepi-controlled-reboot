@@ -99,7 +99,13 @@ REMOTE
 echo "$POST"
 echo "=== storage drift (from the laptop)"
 # The full output is kept: a check that hides why it produced nothing is no check
-# (C4, 2026-11-22: "no drift report" twice, the reason was thrown away by the grep)
+# (C4, 2026-11-22: "no drift report" twice, the reason, an unreachable host, was thrown away by the grep)
+# ansible.cfg uses BatchMode over the ~/.ssh/cm-homepi master socket (no agent, the passphrase is
+# typed by hand). The reboot killed that master: open a new one first, or ansible gets
+# "Permission denied (publickey)" without ever asking (C4, 2026-11-22).
+ssh -o ControlMaster=auto -o ControlPersist=2h -o ControlPath=~/.ssh/cm-homepi "$HOST" true < /dev/null \
+  || POST="$POST
+FAIL ssh master for ansible could not be opened"
 SLOG=$(mktemp /tmp/homepi-storage-check.XXXXXX.log)
 (cd "$REPO/ansible" && LC_ALL=C.UTF-8 ansible-playbook storage.yml --check) > "$SLOG" 2>&1
 SRC=$?
