@@ -9,7 +9,7 @@
     owner: root
     group: root
     mode: "0755"
-  loop: [mosquitto, telegraf, step-renew, step-renew-mosquitto]
+  loop: [mosquitto, telegraf, step-renew, step-renew-mosquitto, dnsmasq]
 
 - name: Mosquitto waits for the IoT access point address
   ansible.builtin.template:
@@ -39,10 +39,21 @@
   loop: [step-renew, step-renew-mosquitto]
   register: service_ordering_step
 
+- name: dnsmasq starts after the access point and keeps retrying
+  ansible.builtin.copy:
+    src: dnsmasq-after-hostapd.conf
+    dest: /etc/systemd/system/dnsmasq.service.d/20-after-hostapd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  register: service_ordering_dnsmasq
+
 - name: Reload systemd after a boot-ordering drop-in change
   ansible.builtin.systemd_service:
     daemon_reload: true
-  when: service_ordering_mosquitto is changed or service_ordering_telegraf is changed or service_ordering_step is changed
+  when: >-
+    service_ordering_mosquitto is changed or service_ordering_telegraf is changed
+    or service_ordering_step is changed or service_ordering_dnsmasq is changed
 
 # Telegraf is started by its own role, after its configuration exists: started here, a rebuilt Pi
 # had no output configured yet and Telegraf failed ("no outputs found", C3, R4, 2026-11-21).
