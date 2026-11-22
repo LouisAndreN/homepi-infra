@@ -42,8 +42,9 @@
     - ota_rollout
     # Applies: power metrics and the hardware watchdog (v0.1.122, docs/runbooks/power.md)
     - power_metrics
-    - hardening
     - auditd
     # Verify only: the storage role fails on drift and never changes boot-critical files
     - storage
     - dashboard
+    # Verify only, last: it checks trees that other roles create (the dashboard releases, the API venv)
+    - hardening

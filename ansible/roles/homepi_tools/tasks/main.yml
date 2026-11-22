@@ -18,6 +18,7 @@
     - homepi-cli-check
     - homepi-docker-check
     - homepi-kernel-trial
+    - homepi-sqlite-write-probe
     - homepi-netbird-check
     - homepi-telegraf-check
     - homepi-triage

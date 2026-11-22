@@ -1,7 +1,8 @@
 #!/bin/bash
 # homepi-authelia-check: Authelia, the 2FA portal in front of every HomePi web service, is healthy.
 # Exit 0 only if the service is active, /api/health answers 200, an anonymous visit through nginx is
-# redirected to auth.homepi.internal, and the installed binary accepts the configuration.
+# redirected to auth.homepi.internal, Authelia can write its database, and the installed binary
+# accepts the configuration.
 set -u
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 CFG=/etc/authelia/configuration.yml
@@ -16,6 +17,8 @@ case "$r" in
   "302 https://auth.homepi.internal/"*) ok "anonymous visit redirected to the portal" ;;
   *) bad "anonymous visit: $r" ;;
 esac
+# A read-only check passed while every write failed (C3, 2026-11-21): TOTP codes were refused
+if w=$(homepi-sqlite-write-probe /var/lib/authelia/db.sqlite3 authelia 2>&1); then ok "database writable by authelia"; else bad "database: $(printf '%s\n' "$w" | head -1)"; fi
 ENVF=$(systemctl show authelia -p EnvironmentFiles --value | awk '{print $1}')
 # The success message is not the last line (validate-config ends with an empty line): match it anywhere
 v=$( ( set -a; [ -f "$ENVF" ] && . "$ENVF"; set +a; timeout 60 runuser -u authelia -- authelia validate-config --config "$CFG" 2>&1 ) )

@@ -163,3 +163,12 @@
     - name: Report the rollback
       ansible.builtin.fail:
         msg: "Authelia change failed and was rolled back to the previous files. See docs/runbooks/authelia.md."
+
+# Outside the rollback block: a write failure comes from owners or modes, not from the files above.
+# A read-only check passed while Authelia could not write (C3, 2026-11-21): TOTP codes were refused.
+- name: Authelia can write its database (write transaction as authelia, rolled back)
+  ansible.builtin.command:
+    argv: [/usr/local/sbin/homepi-sqlite-write-probe, /var/lib/authelia/db.sqlite3, authelia]
+    chdir: /
+  changed_when: false
+  when: not ansible_check_mode

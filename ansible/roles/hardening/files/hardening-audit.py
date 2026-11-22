@@ -6,8 +6,9 @@ local account can reach (every parent directory traversable by others). An
 entry under a parent closed to others is contained, not exposed.
 
 venvs: for each virtualenv, installed files whose sha256 does not match any
-RECORD entry for that path. Read with the system Python, without importing code
-from the virtualenv. A path recorded by two packages (RPi.GPIO overwriting
+RECORD entry for that path, whether the venv exists and how many files were
+checked (the role fails on a required venv that is absent or empty). Read with
+the system Python, without importing code from the virtualenv. A path recorded by two packages (RPi.GPIO overwriting
 rpi-lgpio) matches when it equals either record.
 """
 import base64
@@ -73,6 +74,8 @@ def venv_audit(venv):
                     if len(row) >= 2 and row[1].startswith("sha256="):
                         path = os.path.normpath(os.path.join(sp, row[0]))
                         records.setdefault(path, set()).add(row[1][7:])
+    if not os.path.isdir(venv):
+        return {"present": False, "checked": 0, "modified": [], "missing": [], "shared_paths": 0}
     checked, modified, missing = 0, [], []
     for path, hashes in sorted(records.items()):
         try:
@@ -83,9 +86,13 @@ def venv_audit(venv):
         checked += 1
         if got not in hashes:
             modified.append(path)
-    return {"checked": checked, "modified": modified, "missing": missing,
+    return {"present": True, "checked": checked, "modified": modified, "missing": missing,
             "shared_paths": sum(1 for h in records.values() if len(h) > 1)}
 
 
-venvs = json.loads(sys.argv[1]) if len(sys.argv) > 1 else []
-print(json.dumps({"exposed": world_writable(), "venvs": {v: venv_audit(v) for v in venvs}}))
+# Each venv is a path or {"path": ..., "required": ...}; a bare path is required
+venvs = {}
+for v in (json.loads(sys.argv[1]) if len(sys.argv) > 1 else []):
+    path, required = (v, True) if isinstance(v, str) else (v["path"], bool(v.get("required", True)))
+    venvs[path] = dict(venv_audit(path), required=required)
+print(json.dumps({"exposed": world_writable(), "venvs": venvs}))

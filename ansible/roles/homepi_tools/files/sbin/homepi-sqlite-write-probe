@@ -1,0 +1,31 @@
+#!/bin/bash
+# homepi-sqlite-write-probe DB USER: USER can write the SQLite database DB, without changing it.
+# A read-only check missed two C3 failures (2026-11-21): a root-owned Authelia state directory (no
+# journal, so no write) and missing WAL side files of the API database. This probe checks the files
+# that the journal mode of DB needs, then runs a write transaction as USER and rolls it back.
+# Exit 0 only if every check passes. Prints one line per failure, or one ok line.
+set -u
+export LC_ALL=C PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+[ $# -eq 2 ] || { echo "usage: homepi-sqlite-write-probe DB USER"; exit 2; }
+db=$1 user=$2 dir=$(dirname "$1") fail=0
+cd / || exit 1
+bad() { echo "FAIL $*"; fail=1; }
+can_write() { runuser -u "$user" -- test -w "$1"; }
+[ -f "$db" ] || { echo "FAIL $db missing"; exit 1; }
+id "$user" > /dev/null 2>&1 || { echo "FAIL no account $user"; exit 1; }
+mode=$(runuser -u "$user" -- sqlite3 -readonly "$db" "PRAGMA journal_mode;" 2>&1) || { echo "FAIL $user cannot read $db: $(echo "$mode" | head -n 1)"; exit 1; }
+can_write "$db" || bad "$user cannot write $db"
+# A side file that exists must be writable; a missing one must be creatable in the directory
+need() { if [ -e "$1" ]; then can_write "$1" || bad "$user cannot write $1"; else can_write "$dir" || bad "$1 missing and $user cannot create it in $dir"; fi; }
+case "$mode" in
+  wal) need "$db-wal"; need "$db-shm" ;;
+  delete) can_write "$dir" || bad "$user cannot create the rollback journal in $dir" ;;
+  truncate|persist) need "$db-journal" ;;
+  *) ;;
+esac
+# BEGIN IMMEDIATE takes the write lock; CREATE TABLE changes a page, which opens the rollback journal
+# (or the WAL write lock). ROLLBACK leaves the database as it was.
+out=$(runuser -u "$user" -- sqlite3 -cmd ".timeout 5000" "$db" "BEGIN IMMEDIATE; CREATE TABLE homepi_write_probe (x INTEGER); ROLLBACK;" 2>&1) \
+  || bad "write transaction as $user: $(echo "$out" | head -n 1)"
+[ "$fail" = 0 ] && echo "ok   $user can write $db (journal mode $mode, probe rolled back)"
+exit "$fail"

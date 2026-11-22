@@ -1,8 +1,11 @@
 ---
 # Verify only (v0.1.65): today's containment must not regress. See docs/runbooks/hardening.md.
+# required: false only for pironman5, which no role builds (docs/runbooks/restore.md, known gap).
+# Absent is then fine, nothing runs from it; present, it must verify. A required venv that is absent
+# or has no recorded file fails: before C4, a missing venv passed with 0 files checked.
 hardening_venvs:
-  - /opt/pironman5/venv
-  - /opt/homepi/api-venv
+  - {path: /opt/pironman5/venv, required: false}
+  - {path: /opt/homepi/api-venv, required: true}
 hardening_absent:
   - /opt/homepi-dashboard
   - /usr/local/bin/deploy-dashboard

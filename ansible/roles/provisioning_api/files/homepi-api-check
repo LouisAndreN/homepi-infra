@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Check the HomePi API: each surface answers on its unix socket and refuses the other one, no
-OpenAPI document, nginx's user reaches both sockets and other users neither, no TCP listener left.
+OpenAPI document, nginx's user reaches both sockets and other users neither, no TCP listener left,
+and the API user can write the device database (a read-only check missed missing WAL files in C3).
 Usage: homepi-api-check DEVICE_ID. Exits 1 on any failure."""
 import http.client
 import socket
@@ -56,6 +57,9 @@ for user, want in (("www-data", True), ("nobody", False)):
         r = subprocess.run(["runuser", "-u", user, "--", "curl", "-s", "-o", "/dev/null", "--unix-socket", SOCK[surface], "http://localhost/"],
                            capture_output=True, text=True, cwd="/")
         check("%s reaches the %s socket: %s" % (user, surface, "yes" if want else "no"), (r.returncode == 0) == want, "curl rc %d" % r.returncode)
+w = subprocess.run(["/usr/local/sbin/homepi-sqlite-write-probe", "/var/lib/homepi/devices.db", "homepi-api"],
+                   capture_output=True, text=True, cwd="/")
+check("device database writable by homepi-api", w.returncode == 0, (w.stdout or w.stderr).strip().splitlines()[-1:] or "no output")
 tcp = subprocess.run(["ss", "-Hltn", "( sport = :8090 or sport = :8091 )"], capture_output=True, text=True).stdout.strip()
 check("no TCP listener on 8090 or 8091", tcp == "", "none" if not tcp else tcp.splitlines()[0])
 sys.exit(0 if all(res) else 1)

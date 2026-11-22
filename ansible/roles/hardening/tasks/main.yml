@@ -27,6 +27,7 @@
     label: "{{ item.path }}"
   register: hardening_owned_state
 
+# A missing tree made find fail and print nothing, which passed (failed_when: false): rc is checked too
 - name: Files not owned by root in root trees
   ansible.builtin.command:
     argv: [find, "{{ item }}", -xdev, "(", "!", -user, root, -o, "!", -group, root, ")", -print, -quit]
@@ -43,6 +44,9 @@
       {%- set a = hardening_audit.stdout | from_json -%}
       {%- for p in a.exposed -%}{%- set _ = d.append(p ~ ' is world-writable') -%}{%- endfor -%}
       {%- for v, r in a.venvs.items() -%}
+      {%- if r.required and not r.present -%}{%- set _ = d.append(v ~ ' missing (required venv)') -%}
+      {%- elif r.present and r.checked == 0 -%}{%- set _ = d.append(v ~ ' has no recorded file to check') -%}
+      {%- endif -%}
       {%- for p in r.modified -%}{%- set _ = d.append(p ~ ' differs from its RECORD') -%}{%- endfor -%}
       {%- for p in r.missing -%}{%- set _ = d.append(p ~ ' missing from ' ~ v) -%}{%- endfor -%}
       {%- endfor -%}
@@ -52,13 +56,14 @@
       {%- elif r.stat.pw_name != r.item.owner or r.stat.gr_name != r.item.group or r.stat.mode != r.item.mode -%}{%- set _ = d.append(r.item.path ~ ' is ' ~ r.stat.pw_name ~ ':' ~ r.stat.gr_name ~ ' ' ~ r.stat.mode) -%}
       {%- endif -%}
       {%- endfor -%}
+      {%- for r in hardening_trees_state.results if r.rc != 0 -%}{%- set _ = d.append(r.item ~ ' cannot be checked: ' ~ (r.stderr | default('') | trim | truncate(120))) -%}{%- endfor -%}
       {%- for r in hardening_trees_state.results if r.stdout -%}{%- set _ = d.append(r.item ~ ' holds ' ~ r.stdout ~ ' (not root:root)') -%}{%- endfor -%}
       {{ d }}
 
 - name: Show hardening drift
   ansible.builtin.debug:
     msg: >-
-      hardening: {{ (hardening_audit.stdout | from_json).venvs | dict2items | map(attribute='value.checked') | sum }} venv files checked;
+      hardening: {% for v, r in (hardening_audit.stdout | from_json).venvs.items() %}{{ v }} {{ r.checked if r.present else 'absent' }}{{ ', ' if not loop.last }}{% endfor %} (venv files checked);
       drift: {{ hardening_drift | join(' | ') if hardening_drift else 'none' }}
 
 - name: Fail on hardening drift

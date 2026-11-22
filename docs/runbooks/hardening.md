@@ -11,12 +11,18 @@ regresses. It changes nothing.
   installed file against the sha256 of its package RECORD, read with the system
   Python (no code imported from the venv). A path recorded by two packages
   matches either (RPi.GPIO overwrites rpi-lgpio's `RPi/GPIO/__init__.py`).
+  Since C4, the API venv is required: absent, or with no recorded file, it
+  fails (before, it passed with 0 files checked). The pironman5 venv is not
+  required, as no role builds it (restore.md, known gap): absent is fine,
+  present it must verify.
 - Retired paths stay absent: `/opt/homepi-dashboard`,
   `/usr/local/bin/deploy-dashboard`, `/opt/homepi/crl_sync.sh`, mosquitto
   `99-debug.conf` (archives in `/root/homepi-removed`).
 - Owners: `/opt/pironman5` and `/opt/homepi/scripts` root:root 0755; no file
   owned by another account under /opt/pironman5, /opt/homepi/scripts, the API
-  code and virtualenv, and the dashboard releases.
+  code and virtualenv, and the dashboard releases. A tree that `find` cannot
+  read (missing) fails; before C4 it passed. The role runs last in `site.yml`,
+  after the roles that create these trees.
 
 Why: on 2026-11-08 `/opt/pironman5` was 777 while a root service runs its
 virtualenv (any local account could become root), the dashboard web root was
