@@ -147,6 +147,13 @@
     daemon_reload: "{{ aws_edge_offsite_units is changed }}"
   when: not (ansible_check_mode and aws_edge_offsite_units is changed)
 
+# A running timer keeps the next elapse it computed from the old schedule: restart it on a change
+- name: Off-site timer restarted on a new schedule
+  ansible.builtin.systemd:
+    name: homepi-offsite.timer
+    state: restarted
+  when: aws_edge_offsite_units is changed and not ansible_check_mode
+
 # Security logs off the host (roadmap D2c): every 5 minutes into log-archive, write-only role
 - name: Install the name of the Pi logs bucket (holds the log-archive account ID)
   vars:
