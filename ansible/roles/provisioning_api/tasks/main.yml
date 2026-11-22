@@ -26,6 +26,7 @@
     - name: Create the virtualenv and install the locked packages
       ansible.builtin.shell: |
         set -e
+        umask 022
         python3 -m venv /opt/homepi/api-venv
         /opt/homepi/api-venv/bin/pip install --no-input --disable-pip-version-check -q -r /opt/homepi/api-requirements.lock
       args:
@@ -79,6 +80,9 @@
     - name: Keep the previous virtualenv aside and build the new one at its path
       ansible.builtin.shell: |
         set -euo pipefail
+        # The GitOps unit runs with umask 077: without this the venv is 0700 root and the API user
+        # cannot start uvicorn (v0.1.145, 2026-11-22: services stuck in activating, rolled back)
+        umask 022
         rm -rf /opt/homepi/api-venv.previous
         mv /opt/homepi/api-venv /opt/homepi/api-venv.previous
         python3 -m venv /opt/homepi/api-venv
@@ -98,6 +102,12 @@
         that: (api_freeze_after.stdout_lines | sort) == api_lock_lines
         fail_msg: "rebuilt virtualenv differs from requirements.lock (an unpinned dependency?)"
         quiet: true
+
+    - name: The API user can run the rebuilt virtualenv
+      ansible.builtin.command:
+        argv: [runuser, -u, homepi-api, --, /opt/homepi/api-venv/bin/python, -c, "import fastapi, starlette, uvicorn, cryptography, multipart"]
+        chdir: /
+      changed_when: false
 
     - name: Start the API services on the rebuilt virtualenv
       ansible.builtin.systemd_service:
