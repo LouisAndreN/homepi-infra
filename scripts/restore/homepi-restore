@@ -5,7 +5,9 @@
 # not reconstructed from shell history (C3, 2026-11-21).
 #
 #   scripts/restore/homepi-restore start [--day YYYY-MM-DD] [--devices N] [--model "990 PRO"]
-#   scripts/restore/homepi-restore resume      continue a drill after a stop (failed phase first)
+#   scripts/restore/homepi-restore resume [--sd-addr IP]   continue a drill (failed phase first);
+#                                     --sd-addr: the microSD system's DHCP address (C4: not the Pi's
+#                                     static production address), used for SDCHECK and R1 only
 #   scripts/restore/homepi-restore report      print the timeline and the RTO/RPO of the drill
 #   scripts/restore/homepi-restore plan        list the phases, run nothing
 #
@@ -103,7 +105,12 @@ human() {
 }
 
 # ---------------------------------------------------------------- SSH
-pi_addr() { ssh -G "$PI" | awk '$1 == "hostname" {print $2; exit}'; }
+# The microSD system takes a DHCP address (its own netplan, its own client id), not the static
+# production address of the alias: SDCHECK and R1 use SD_ADDR when given (C4, first run)
+pi_addr() {
+  if [ -n "${SD_ADDR:-}" ] && [ "${IN_SD_PHASE:-0}" = 1 ]; then echo "$SD_ADDR"; return; fi
+  ssh -G "$PI" | awk '$1 == "hostname" {print $2; exit}'
+}
 
 # The sshd banner answers without any login: a passphrase-protected key cannot log in in BatchMode
 wait_banner() {
@@ -114,7 +121,7 @@ wait_banner() {
     # OpenSSH only: an initramfs unlock server (dropbear) also says SSH-2.0, with another host key
     b=$(timeout 5 bash -c "exec 3<> /dev/tcp/$a/22 && head -c 15 <&3" 2>&1) || true
     [ "$b" = "SSH-2.0-OpenSSH" ] && { log "sshd answers on $a:22 after $(hms $(( $(now) - t0 )))"; return 0; }
-    [ $(( ($(now) - t0) % 60 )) -lt 5 ] && log "waiting for sshd on $a:22 ($(hms $(( $(now) - t0 ))))"
+    [ $(( ($(now) - t0) % 60 )) -lt 5 ] && log "waiting for sshd on $a:22 ($(hms $(( $(now) - t0 )))); microSD on another address? Ctrl-C, then resume --sd-addr IP"
     sleep 5
   done
 }
@@ -125,8 +132,9 @@ wait_banner() {
 master() {
   local kh=$1
   ssh -O check "$PI" > /dev/null 2>&1 && return 0
+  # The master is opened on the address of the phase; later "ssh homepi" calls reuse it (fixed ControlPath)
   if [ -n "$kh" ]; then
-    ssh -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=accept-new "$PI" true < /dev/tty
+    ssh -o HostName="$(pi_addr)" -o UserKnownHostsFile="$kh" -o StrictHostKeyChecking=accept-new "$PI" true < /dev/tty
   else
     ssh "$PI" true < /dev/tty
   fi
@@ -178,6 +186,7 @@ insert the $MODEL and the microSD, power on."
 }
 
 phase_SDCHECK() {
+  IN_SD_PHASE=1
   wait_banner && master "$KH_SD" || return 1
   local root disks
   root=$(ssh "$PI" 'findmnt -no SOURCE /' < /dev/null)
@@ -191,6 +200,7 @@ phase_SDCHECK() {
 }
 
 phase_R1() {
+  IN_SD_PHASE=1
   master "$KH_SD" || return 1
   git -C "$REPO" archive --format=tar HEAD \
     | ssh "$PI" 'sudo rm -rf /root/r1 && sudo install -d -m 0700 /root/r1/homepi-infra && sudo tar -x -C /root/r1/homepi-infra' || return 1
@@ -403,7 +413,12 @@ main() {
       log "drill $DRILL" ;;
     resume)
       [ "$(hostname)" = "DESKTOP-581OMPC" ] || die "run this on the laptop"
-      load_drill ;;
+      load_drill
+      if [ "${1:-}" = --sd-addr ]; then
+        [[ "${2:-}" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}$ ]] || die "--sd-addr needs an IPv4 address"
+        setvar SD_ADDR "$2"
+        log "microSD system address: $SD_ADDR (SDCHECK and R1)"
+      fi ;;
     *) usage ;;
   esac
   for c in age sops ansible-playbook git scp ssh timeout; do command -v "$c" > /dev/null || die "missing command: $c"; done
