@@ -32,6 +32,131 @@
         executable: /bin/bash
       changed_when: true
 
+# Package upgrades (security fixes): the virtualenv follows requirements.lock. A running Pi used to
+# keep its packages verified-only, so a lock change could only fail as drift. When the installed
+# packages differ, the virtualenv is rebuilt in place (console scripts such as bin/uvicorn embed the
+# venv path, so it is never built elsewhere and moved), checked against the lock and through both
+# sockets, and the previous virtualenv comes back on any failure. Check mode reports the rebuild as a
+# change instead of failing, so the precheck accepts the tag that carries the new lock.
+- name: Installed API packages (read-only)
+  ansible.builtin.command: "{{ api_pip }} freeze"
+  check_mode: false
+  changed_when: false
+  register: api_freeze_before
+  when: api_venv_python.stat.exists or not ansible_check_mode
+
+- name: API packages to install (requirements.lock, comments and blank lines ignored)
+  ansible.builtin.set_fact:
+    api_lock_lines: "{{ lookup('ansible.builtin.file', 'requirements.lock').splitlines() | map('trim') | reject('match', '^(#|$)') | list | sort }}"
+
+- name: API packages differ from requirements.lock
+  ansible.builtin.set_fact:
+    api_packages_outdated: "{{ (api_freeze_before.stdout_lines | default([]) | sort) != api_lock_lines }}"
+
+- name: API virtualenv would be rebuilt from requirements.lock (check mode only)
+  ansible.builtin.debug:
+    msg: "API packages differ from requirements.lock: the apply rebuilds the virtualenv"
+  changed_when: true
+  when: ansible_check_mode and api_packages_outdated | bool
+
+- name: Rebuild the API virtualenv from requirements.lock, rolling back on any failure
+  when: api_packages_outdated | bool and not ansible_check_mode
+  block:
+    - name: Copy requirements.lock for the rebuild
+      ansible.builtin.copy:
+        src: requirements.lock
+        dest: /opt/homepi/api-requirements.lock
+        owner: root
+        group: root
+        mode: "0644"
+
+    - name: Stop the API services for the rebuild
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+      loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
+
+    - name: Keep the previous virtualenv aside and build the new one at its path
+      ansible.builtin.shell: |
+        set -euo pipefail
+        rm -rf /opt/homepi/api-venv.previous
+        mv /opt/homepi/api-venv /opt/homepi/api-venv.previous
+        python3 -m venv /opt/homepi/api-venv
+        /opt/homepi/api-venv/bin/pip install --no-input --disable-pip-version-check -q -r /opt/homepi/api-requirements.lock
+        chown -R root:root /opt/homepi/api-venv
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Installed packages after the rebuild
+      ansible.builtin.command: "{{ api_pip }} freeze"
+      changed_when: false
+      register: api_freeze_after
+
+    - name: The rebuilt virtualenv matches requirements.lock exactly
+      ansible.builtin.assert:
+        that: (api_freeze_after.stdout_lines | sort) == api_lock_lines
+        fail_msg: "rebuilt virtualenv differs from requirements.lock (an unpinned dependency?)"
+        quiet: true
+
+    - name: Start the API services on the rebuilt virtualenv
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
+
+    - name: Both API sockets answer on the rebuilt virtualenv
+      ansible.builtin.uri:
+        url: "{{ item.url }}"
+        unix_socket: "{{ item.socket }}"
+        status_code: 200
+      loop:
+        - {socket: /run/homepi-api/device.sock, url: "http://localhost/api/devices/{{ api_health_device }}/status"}
+        - {socket: /run/homepi-api/admin.sock, url: "http://localhost/api/admin/devices"}
+      loop_control:
+        label: "{{ item.socket }}"
+      register: api_venv_health
+      retries: 15
+      delay: 2
+      until: api_venv_health.status == 200
+
+    - name: Remove the previous virtualenv
+      ansible.builtin.file:
+        path: /opt/homepi/api-venv.previous
+        state: absent
+
+  rescue:
+    - name: Stop the API services before the rollback
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        state: stopped
+      loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
+
+    - name: Put the previous virtualenv back
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if [ -d /opt/homepi/api-venv.previous ]; then
+          rm -rf /opt/homepi/api-venv
+          mv /opt/homepi/api-venv.previous /opt/homepi/api-venv
+        fi
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Start the API services on the previous virtualenv
+      ansible.builtin.systemd_service:
+        name: "{{ item }}"
+        enabled: true
+        state: started
+      loop: [homepi-api.socket, homepi-api-admin.socket, homepi-api, homepi-api-admin]
+
+    - name: Report the virtualenv rollback
+      ansible.builtin.fail:
+        msg: >-
+          API virtualenv rebuild failed and the previous one is back:
+          {{ ansible_failed_result.msg | default('see the failed task above') }}
+
 - name: API code from apps/api differs from the Pi? (check mode only)
   ansible.builtin.copy:
     src: "{{ item.src }}"
@@ -304,7 +429,7 @@
       {%- elif r.stat.pw_name != r.item.owner or r.stat.gr_name != r.item.group or r.stat.mode != r.item.mode -%}{%- set _ = d.append(r.item.path ~ ' is ' ~ r.stat.pw_name ~ ':' ~ r.stat.gr_name ~ ' ' ~ r.stat.mode) -%}
       {%- endif -%}
       {%- endfor -%}
-      {%- if (api_pip_freeze.stdout_lines | sort) != (lookup('ansible.builtin.file', 'requirements.lock').splitlines() | sort) -%}{%- set _ = d.append('Python packages differ from requirements.lock') -%}{%- endif -%}
+      {%- if (api_pip_freeze.stdout_lines | sort) != api_lock_lines and not (ansible_check_mode and api_packages_outdated | bool) -%}{%- set _ = d.append('Python packages differ from requirements.lock') -%}{%- endif -%}
       {%- for r in api_services_state.results if r is changed -%}{%- set _ = d.append('service ' ~ r.item) -%}{%- endfor -%}
       {{ d }}
 

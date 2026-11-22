@@ -14,6 +14,11 @@
   `x5c-enrolled` and `renew` answer 403 until the API enforces mTLS or pre-registration.
 - Python packages: `roles/provisioning_api/files/requirements.lock` (pip freeze of `/opt/homepi/api-venv`;
   no requirements file existed). `devices.db` is copied by `homepi-backup-state` (sqlite `.backup`).
+  Since 2026-11-22 the role applies the lock: when the installed packages differ, it rebuilds the
+  virtualenv in place (the old one kept as `api-venv.previous`), checks it against the lock and through
+  both sockets, and puts the old one back on any failure. Check mode reports the rebuild as a change.
+  A package upgrade is a lock change plus a release (first one: cryptography 50.0.2, starlette 1.3.1,
+  python-multipart 0.0.34, anyio 4.14.2, for the advisories found by `pip-audit`).
 
 ## Known flaws (open)
 
@@ -44,7 +49,7 @@
 Role `nginx` applies the main site and the client CA chain (nginx -t, reload, checks, rollback) and
 verifies the rest; `provisioning_api` deploys the API code from `apps/api` (database migration,
 automatic rollback of code and database) and verifies the rest: files byte for byte, TLS files and secrets by presence,
-owner and mode, `nginx -t`, the Python packages against `requirements.lock`, the services. Fixes go
+owner and mode, `nginx -t`, the services, and applies the Python packages of `requirements.lock`. Fixes go
 through a release, never by hand.
 
 ## One source of truth for the API code (v0.1.55)
