@@ -1,0 +1,16 @@
+# Managed by Ansible (boot_chain). sha256 of the boot chain at the start of this boot.
+[Unit]
+Description=HomePi boot chain record (sha256 of the files this boot started from)
+RequiresMountsFor=/boot/firmware /etc
+After=local-fs.target
+Before=homepi-boot-chain-metrics.service apt-daily-upgrade.service unattended-upgrades.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=true
+ExecStart=/usr/local/sbin/homepi-boot-chain-record
+ProtectHome=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

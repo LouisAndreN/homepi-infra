@@ -2,17 +2,35 @@
 # Managed by Ansible (boot_chain). Is the next boot the one that was already tested?
 # A boot-critical file changed after the current boot means the next boot, power cut included,
 # runs an untested chain (2026-11-06: unattended-upgrades rebuilt the initramfs silently).
+# "Changed" compares the sha256 to the record taken at the start of this boot
+# (homepi-boot-chain-record). Without a record (first deployment, before the next reboot) it falls
+# back to the mtime test, which a FAT timezone change can fool (C4, 2026-11-22).
 set -u
-OUT=/var/lib/node_exporter/textfile_collector/homepi_boot_chain.prom
+OUT="${HOMEPI_BOOT_CHAIN_OUT:-/var/lib/node_exporter/textfile_collector/homepi_boot_chain.prom}"
+RECORD="${HOMEPI_BOOT_CHAIN_RECORD:-/run/homepi-boot-chain.sha256}"
+FILES="${HOMEPI_BOOT_CHAIN_FILES:-/boot/firmware/vmlinuz /boot/firmware/initrd.img /boot/firmware/cmdline.txt /boot/firmware/config.txt /etc/crypttab /etc/fstab}"
 BOOT=$(date -d "$(uptime -s)" +%s)
+REC=0
+[ -f "$RECORD" ] && [ "$(awk '$1=="boot_id"{print $2}' "$RECORD")" = "$(cat /proc/sys/kernel/random/boot_id)" ] && REC=1
+changed() {
+  if [ "$REC" = 1 ]; then
+    [ -f "$1" ] || return 0
+    [ "$(awk -v f="$1" '$2==f{print $1}' "$RECORD")" != "$(sha256sum "$1" | awk '{print $1}')" ]
+  else
+    [ ! -e "$1" ] || [ "$(stat -c %Y "$1")" -ge "$BOOT" ]
+  fi
+}
 TMP=$(mktemp "$OUT.XXXXXX")
 {
   echo "# HELP homepi_boot_chain_changed_since_boot 1 if the file changed after the current boot (next boot untested)"
   echo "# TYPE homepi_boot_chain_changed_since_boot gauge"
-  for f in /boot/firmware/vmlinuz /boot/firmware/initrd.img /boot/firmware/cmdline.txt /boot/firmware/config.txt /etc/crypttab /etc/fstab; do
-    if [ -e "$f" ]; then [ "$(stat -c %Y "$f")" -ge "$BOOT" ] && v=1 || v=0; else v=1; fi
+  for f in $FILES; do
+    changed "$f" && v=1 || v=0
     echo "homepi_boot_chain_changed_since_boot{file=\"$f\"} $v"
   done
+  echo "# HELP homepi_boot_chain_boot_record 1 if changes are measured against the sha256 record of this boot, 0 if by mtime"
+  echo "# TYPE homepi_boot_chain_boot_record gauge"
+  echo "homepi_boot_chain_boot_record $REC"
   KV=$( (zcat /boot/firmware/vmlinuz 2>/dev/null || cat /boot/firmware/vmlinuz) | strings | grep -m 1 -oE 'Linux version [^ ]+' | awk '{print $3}')
   IV=$(lsinitramfs /boot/firmware/initrd.img 2>/dev/null | grep -m 1 -oE 'lib/modules/[^/]+' | cut -d/ -f3)
   [ -n "$KV" ] && [ "$KV" = "$IV" ] && c=1 || c=0

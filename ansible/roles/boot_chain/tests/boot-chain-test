@@ -1,0 +1,34 @@
+#!/bin/bash
+# Offline test of homepi-boot-chain-record and homepi-boot-chain-metrics (no root, temp files only).
+# Reproduces C4 (2026-11-22): a file dated in the future must not count as changed when its content
+# matches the boot record; a real content change must.
+set -u
+D=$(cd "$(dirname "$0")/../files" && pwd)
+W=$(mktemp -d); trap 'rm -rf "$W"' EXIT
+FAIL=0
+check() { if [ "$2" = "$3" ]; then echo "ok   $1"; else echo "FAIL $1 (got $2, want $3)"; FAIL=1; fi; }
+val() { awk -v f="$1" -F'[{}" ]+' '$1=="homepi_boot_chain_changed_since_boot" && $3==f {print $NF}' "$W/out.prom"; }
+mkdir "$W/fs"; for n in vmlinuz initrd.img cmdline.txt; do echo "$n v1" > "$W/fs/$n"; done
+export HOMEPI_BOOT_CHAIN_FILES="$W/fs/vmlinuz $W/fs/initrd.img $W/fs/cmdline.txt $W/fs/absent"
+export HOMEPI_BOOT_CHAIN_RECORD="$W/record" HOMEPI_BOOT_CHAIN_OUT="$W/out.prom"
+run() { bash "$D/homepi-boot-chain-metrics" > /dev/null; }
+# 1. no record: mtime fallback, a file dated 9 h in the future counts as changed
+touch -d '+9 hours' "$W/fs/vmlinuz"; run
+check "no record: fallback reported" "$(awk '$1=="homepi_boot_chain_boot_record"{print $2}' "$W/out.prom")" 0
+check "no record: future mtime counts as changed" "$(val "$W/fs/vmlinuz")" 1
+# 2. record of this boot: same content with a future mtime is not a change
+bash "$D/homepi-boot-chain-record" > /dev/null; run
+check "record: used" "$(awk '$1=="homepi_boot_chain_boot_record"{print $2}' "$W/out.prom")" 1
+check "record: future mtime, same content -> 0" "$(val "$W/fs/vmlinuz")" 0
+check "record: untouched file -> 0" "$(val "$W/fs/cmdline.txt")" 0
+check "record: absent file -> 1" "$(val "$W/fs/absent")" 1
+# 3. a real content change is a change, mtime set to the past
+echo "initrd v2" > "$W/fs/initrd.img"; touch -d '-3 days' "$W/fs/initrd.img"; run
+check "record: changed content, old mtime -> 1" "$(val "$W/fs/initrd.img")" 1
+# 4. the record is written once per boot and kept
+before=$(sha256sum "$W/record"); bash "$D/homepi-boot-chain-record" > /dev/null
+check "record: kept on a second run" "$(sha256sum "$W/record")" "$before"
+# 5. a record of another boot is ignored (fallback)
+sed -i 's/^boot_id .*/boot_id 00000000-0000-0000-0000-000000000000/' "$W/record"; run
+check "stale record: fallback" "$(awk '$1=="homepi_boot_chain_boot_record"{print $2}' "$W/out.prom")" 0
+[ "$FAIL" = 0 ] && echo "PASS" || { echo "FAILED"; exit 1; }

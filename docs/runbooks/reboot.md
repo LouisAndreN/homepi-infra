@@ -23,6 +23,15 @@ only after `REBOOT-HOMEPI` is typed, then checks the system state, the seven mou
 the services, the Prometheus targets, DNS, the ESP32 reconnections and that the boot chain is now
 tested. Exit code 0 means PASS.
 
+"Changed since boot" compares each file's sha256 to `/run/homepi-boot-chain.sha256`, written once
+at the start of every boot by `homepi-boot-chain-record.service`. It is not an mtime test: on the FAT
+`/boot/firmware` a timestamp is a local time read with the kernel timezone of the current boot. In
+the C4 drill (2026-11-22) a kernel installed at 15:37 in a boot that had just set `Asia/Tokyo` read
+back as 00:37 the next day after the reboot, so the chain stayed "untested" for 9 hours whatever the
+number of reboots. Without a record of the current boot (the role was just deployed), the metric
+and the script fall back to mtime and say so (`homepi_boot_chain_boot_record 0`); the post-reboot
+check fails if the new boot has no record. Offline test: `ansible/roles/boot_chain/tests/boot-chain-test`.
+
 ## When it fails
 
 - A `FAIL service ...` line: read the boot order with `journalctl -b -u <unit> -o short-monotonic`;

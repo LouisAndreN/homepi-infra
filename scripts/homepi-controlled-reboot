@@ -10,7 +10,16 @@ REPO="$(cd "$(dirname "$0")/.." && pwd)"
 echo "=== preflight (read-only)"
 PRE=$(ssh "$HOST" 'sudo -H bash -s' << 'REMOTE'
 BOOT=$(date -d "$(uptime -s)" +%s); KR=$(uname -r); SAFE=1
-changed() { [ "$(stat -c %Y "$1")" -ge "$BOOT" ]; }
+# sha256 against the record of this boot (homepi-boot-chain-record); mtime only without one:
+# FAT mtimes depend on the kernel timezone of the boot that wrote them (C4, 2026-11-22)
+REC=/run/homepi-boot-chain.sha256
+if [ -f "$REC" ] && [ "$(awk '$1=="boot_id"{print $2}' "$REC")" = "$(cat /proc/sys/kernel/random/boot_id)" ]; then
+  echo "change test: sha256 against the record of this boot"
+  changed() { [ ! -f "$1" ] || [ "$(awk -v f="$1" '$2==f{print $1}' "$REC")" != "$(sha256sum "$1" | awk '{print $1}')" ]; }
+else
+  echo "change test: mtime (no boot record yet, a FAT timezone change can fool it)"
+  changed() { [ "$(stat -c %Y "$1")" -ge "$BOOT" ]; }
+fi
 echo "booted: $(uptime -s), running kernel $KR"
 for f in /boot/firmware/cmdline.txt /boot/firmware/config.txt /etc/crypttab; do
   if changed "$f"; then echo "REFUSE: $f changed since boot, review it by hand first"; SAFE=0; else echo "unchanged since boot: $f"; fi
@@ -81,7 +90,8 @@ n=0; for i in $(seq 1 36); do n=$(ss -tnH state established '( sport = :8883 )' 
 F=/var/lib/node_exporter/textfile_collector/homepi_boot_chain.prom; BOOT=$(date -d "$(uptime -s)" +%s)
 for i in $(seq 1 48); do [ -f "$F" ] && [ "$(stat -c %Y "$F")" -ge "$BOOT" ] && break; sleep 5; done
 if [ -f "$F" ] && [ "$(stat -c %Y "$F")" -ge "$BOOT" ]; then
-  if grep -q '^homepi_boot_chain_changed_since_boot.* 1$' "$F"; then fail "boot chain still reported as changed"; else ok "boot chain tested (every file older than this boot)"; fi
+  if grep -q '^homepi_boot_chain_boot_record 1$' "$F"; then ok "boot chain measured against the sha256 record of this boot"; else fail "no boot chain record for this boot (homepi-boot-chain-record.service)"; fi
+  if grep -q '^homepi_boot_chain_changed_since_boot.* 1$' "$F"; then fail "boot chain still reported as changed"; else ok "boot chain tested (no file changed since this boot started)"; fi
   if grep -q '^homepi_boot_chain_consistent.* 1$' "$F"; then ok "kernel and initrd consistent"; else fail "kernel and initrd inconsistent"; fi
 else fail "boot chain metrics not published since boot"; fi
 REMOTE

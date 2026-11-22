@@ -1,0 +1,19 @@
+#!/bin/bash
+# Managed by Ansible (boot_chain). Record, once per boot, the sha256 of every boot-critical file
+# as it was when this boot started. homepi-boot-chain-metrics and homepi-controlled-reboot compare
+# the files to this record. An mtime test is not reliable on the FAT /boot/firmware: FAT stores a
+# local time read with the kernel timezone of the current boot. C4 drill, 2026-11-22: the kernel
+# installed at 15:37 JST (timezone set during that boot) read back as 00:37 the next day after the
+# reboot, so the chain looked "changed since boot" for 9 hours whatever the number of reboots.
+set -u
+RECORD="${HOMEPI_BOOT_CHAIN_RECORD:-/run/homepi-boot-chain.sha256}"
+FILES="${HOMEPI_BOOT_CHAIN_FILES:-/boot/firmware/vmlinuz /boot/firmware/initrd.img /boot/firmware/cmdline.txt /boot/firmware/config.txt /etc/crypttab /etc/fstab}"
+if [ -e "$RECORD" ]; then echo "boot record already present: $RECORD (kept)"; exit 0; fi
+TMP=$(mktemp "$RECORD.XXXXXX") || exit 1
+{
+  echo "boot_id $(cat /proc/sys/kernel/random/boot_id)"
+  for f in $FILES; do
+    if [ -f "$f" ]; then echo "$(sha256sum "$f" | awk '{print $1}') $f"; else echo "missing $f"; fi
+  done
+} > "$TMP" && chmod 0644 "$TMP" && mv "$TMP" "$RECORD" || { rm -f "$TMP"; exit 1; }
+echo "boot record written: $RECORD"
