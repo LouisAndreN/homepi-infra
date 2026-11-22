@@ -25,6 +25,8 @@ IMAGE_PATTERN='ubuntu-24\.04(\.[0-9]+)?-preinstalled-server-arm64\+raspi\.img\.x
 WORKDIR=/var/tmp/homepi-r1
 MNT=/mnt/homepi-r1
 HOSTNAME_NEW=homepi
+# The LAN router, the gateway of the static netplan: the only DNS a rebuilt Pi has before Unbound (R4)
+BOOTSTRAP_DNS=192.168.0.1
 OPERATOR=srvpi
 
 # Partition boundaries in MiB, as measured on the production disk (parted unit MiB print)
@@ -321,6 +323,13 @@ EOF
   grep -q "^127\.0\.1\.1 " "$MNT/etc/hosts" || echo "127.0.1.1 $HOSTNAME_NEW" >> "$MNT/etc/hosts"
   install -m 0600 "$REPO/ansible/roles/network/files/netplan-10-network.yaml" "$MNT/etc/netplan/10-network.yaml"
   rm -f "$MNT"/etc/netplan/50-cloud-init.yaml
+  # The static netplan names no DNS server (production resolves through Unbound, set up by the dns role
+  # in R4). Until then systemd-resolved needs an upstream, or R2 cannot reach the apt mirrors (C4).
+  # A resolved drop-in, not the netplan: the network role requires the netplan to match production.
+  install -d -m 0755 "$MNT/etc/systemd/resolved.conf.d"
+  printf '# Written by homepi-r1-layout: DNS until the dns role makes Unbound the system resolver (R4)\n[Resolve]\nDNS=%s\n' "$BOOTSTRAP_DNS" \
+    > "$MNT/etc/systemd/resolved.conf.d/10-homepi-bootstrap.conf"
+  chmod 0644 "$MNT/etc/systemd/resolved.conf.d/10-homepi-bootstrap.conf"
   # cloud-init would create the default user and rewrite the network: the production Pi runs without it
   touch "$MNT/etc/cloud/cloud-init.disabled"
   for u in $SUBVOLUME_UNITS; do install -m 0644 "$REPO/ansible/roles/storage/files/$u" "$MNT/etc/systemd/system/$u"; done
