@@ -47,3 +47,52 @@ which sees the peer's 100.x source and serves the `netbird` view (homepi.interna
 network role since v0.1.92. In use: the UDP counter rose from 11 to 12 between two reads on
 2026-11-10 (an earlier note called it dead). It moves to nftables with the IoT NAT, in the same
 guarded step (`scripts/homepi-nft-apply`) once the egress canary exists.
+
+## LAN address: static, reserved twice
+
+Since v0.1.134 eth0 has a static address (`ansible/roles/network/files/netplan-10-network.yaml`):
+192.168.0.151/24, default route via 192.168.0.1, no DHCP. The router also keeps a reservation for the
+Pi's MAC, so that it never hands the address to another device. Before, the address was a plain DHCP
+lease: after the disk change of the C3 game day (2026-11-21) the Pi came back on another address and,
+for a night, had no SSH from the LAN and no DNS at all (Unbound bound only to the missing address).
+
+What depends on the address, and how it now behaves when the address is missing:
+
+| Component | Binding | Without 192.168.0.151 |
+|---|---|---|
+| sshd (`ssh.socket`) | every address (no `ListenAddress`, role `sshd`) | still answers on every other address; nftables limits port 22 to the LAN and `wt0` |
+| Unbound | `interface: 127.0.0.1` and `192.168.0.151`, `ip-freebind: yes` | starts anyway; the system resolver (127.0.0.1) keeps working |
+| nftables, the DNS check, the house DNS setting | the literal address | broken until the address is back: this is why the address is static |
+
+### Changing the netplan file
+
+The `network` role never writes `/etc/netplan/10-network.yaml`; it fails on any difference. So the order
+is fixed: **production first, release second**. A release that changes the file before production has it
+is refused by `homepi-precheck` (network drift), as v0.1.134 was on its first try.
+
+1. Copy the new file to the Pi, keep the old one under `/root/netplan.before-<change>/` (root 0700).
+2. `sudo netplan generate`, then `sudo netplan try --timeout 120` and press Enter when asked. Without
+   Enter (the session froze), netplan reverts on its own; put the old file back and `netplan apply`.
+3. From the laptop, a new SSH connection and a DNS query must work.
+4. Then `release`: the precheck compares the live file with the repository and passes.
+
+A rebuilt Pi gets the file in R1 (`homepi-r1-layout`), before its first boot.
+
+## SSH (role `sshd`)
+
+`/etc/ssh/sshd_config` is managed since v0.1.134: keys only, `PermitRootLogin no`, no `ListenAddress`.
+Ubuntu 24.04 starts sshd through `ssh.socket`; `sshd-socket-generator` turns `ListenAddress` lines into
+`/run/systemd/generator/ssh.socket.d/addresses.conf` at `daemon-reload`. With no `ListenAddress` that
+file does not exist and the socket listens on `0.0.0.0:22` and `[::]:22`.
+
+The role is guarded: the file is checked with `sshd -t` before it replaces the live one, the socket is
+regenerated and restarted, then a new TCP connection must get the `SSH-2.0` banner on 127.0.0.1 and on
+every local IPv4 address. If one address does not answer, the previous file
+(`/root/sshd_config.before-role`, kept from the first run) comes back and the run fails. Open sessions
+survive the socket restart. The banner check does not test a login: before `PermitRootLogin no`, the
+journal showed no root login over SSH in 60 days and `/root/.ssh/authorized_keys` held no key.
+
+Manual rollback, from a console or an open session:
+
+    sudo cp /root/sshd_config.before-role /etc/ssh/sshd_config
+    sudo systemctl daemon-reload && sudo systemctl restart ssh.socket
