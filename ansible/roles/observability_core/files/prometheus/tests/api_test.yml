@@ -1,0 +1,31 @@
+# promtool test rules api_test.yml (from this directory)
+# HomepiApiDown: a service of the API not active for 5 minutes fires, one alert per unit;
+# a restart of 2 minutes does not (2026-11-23 incident, docs/incidents/2026-11-22-api-outage.md).
+rule_files:
+  - ../rules/alerts.yml
+evaluation_interval: 1m
+tests:
+  - name: device API in a restart loop for 10 minutes
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{instance="pi",job="node_exporter",name="homepi-api.service",state="active",type="simple"}'
+        values: '1 1 0x10'
+      - series: 'node_systemd_unit_state{instance="pi",job="node_exporter",name="homepi-api-admin.service",state="active",type="simple"}'
+        values: '1x12'
+    alert_rule_test:
+      - eval_time: 9m
+        alertname: HomepiApiDown
+        exp_alerts:
+          - exp_labels: {severity: critical, name: homepi-api.service}
+            exp_annotations:
+              summary: "homepi-api.service not active for 5 minutes: provisioning, OTA, MQTT ACL sync and the admin API are down"
+              description: "Check: systemctl status homepi-api.service; journalctl -u homepi-api.service -n 30; ls -l /var/lib/homepi/devices.db*. docs/runbooks/nginx-api.md"
+  - name: a 2-minute restart does not alert
+    interval: 1m
+    input_series:
+      - series: 'node_systemd_unit_state{instance="pi",job="node_exporter",name="homepi-api-admin.service",state="active",type="simple"}'
+        values: '1 0 0 1x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: HomepiApiDown
+        exp_alerts: []

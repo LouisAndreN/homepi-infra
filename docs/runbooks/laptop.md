@@ -14,3 +14,18 @@ Pi run different ansible-core versions.
 
 To change a version: edit the requirement file, release; the Pi installs it through `gitops_runtime`,
 then rebuild the laptop venv with the commands above.
+
+## When a released tag fails to apply
+
+GitOps retries the newest tag every 10 minutes (`homepi-gitops-apply.timer`). When each attempt has a
+cost (2026-11-22: every attempt stopped the provisioning API for a rebuild, docs/incidents/
+2026-11-22-api-outage.md), stop the retries first:
+
+1. `sudo systemctl stop homepi-gitops-apply.timer` on the Pi; let the running apply end
+   (`systemctl is-active homepi-gitops@apply`), its rescue restores the previous state.
+2. Bring the affected service back as an operation if the precheck needs it (a failed service is
+   drift too), and note what was done (`logger -t homepi-ops ...`).
+3. Fix in the repository, `release` (the precheck runs on a quiet system).
+4. `sudo systemctl start homepi-gitops@apply` (blocking, 6 to 10 minutes), check the result, then
+   `sudo systemctl start homepi-gitops-apply.timer`. The next apply also restarts the timer
+   (`gitops_runtime`), so a forgotten step 4 cannot leave GitOps off for good.
