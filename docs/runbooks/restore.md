@@ -224,6 +224,11 @@ which are in the public repository) and the LUKS keyfile. After R7, before R8:
 R9 does not count in the RTO (it ends at R6 PASS), but it extends the time production is off by about
 10 minutes. Without R9 the spare must be treated as a secret until it is erased.
 
+First run on the hardware, 2026-11-23, on its own (the spare still held the C4 drill): production
+powered off, spare and microSD in, R9, Micron back. Production off 12 minutes, the 990 PRO reported
+FNA 0x7 (cryptographic erase supported), `nvme format` succeeded, no GPT or LUKS header readable
+afterwards, no signature left; R6 PASS on production with the 7 devices back.
+
 ## R8: production back (`docs/game-days/2026-11-21-c3.md`)
 
 R8 was the hardest step of C3: the production disk came back on another LAN address, with SSH and DNS
