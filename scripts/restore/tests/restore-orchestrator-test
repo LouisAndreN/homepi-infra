@@ -37,6 +37,8 @@ check "RPO of the 03:30 state archive at T0 14:44 is 11h14m00s" 'printf "%s\n" "
 check "RPO of the 03:50 native backup is 10h54m00s" 'printf "%s\n" "$out" | grep -q "RPO influx-native-2026-11-21-0350.tar.age: 10h54m00s"'
 check "sensor RPO from the newest delta (14:07 at T0 14:44) is 0h37m00s" 'printf "%s\n" "$out" | grep -q "RPO sensor data (newest delta): 0h37m00s"'
 check "R5D runs after R5 and before R35" '[ "$(phase_ids | grep -n -x -e R5 -e R5D -e R35 | cut -d: -f2 | tr "\n" " ")" = "R5 R5D R35 " ]'
+check "R4SOPS runs after R4SITE, just before R4TAG (C4: no commit reorder after a failed R4)" '[ "$(phase_ids | grep -x -e R4SITE -e R4SOPS -e R4TAG | tr "\n" " ")" = "R4SITE R4SOPS R4TAG " ]'
+check "R5B runs after R4APPLY and just before R6 (C4 defect 15)" '[ "$(phase_ids | tail -n 3 | tr "\n" " ")" = "R4APPLY R5B R6 " ]'
 check "kinds: T0, SD and BOOT wait for a person" '[ "$(awk -F"\t" "\$2 == \"human\"" "$DRILL/timeline.tsv" | cut -f1 | sort -u | tr "\n" " ")" = "BOOT SD T0 " ]'
 check "next tag after v0.1.135" '[ "$(REPO=$T/r; mkdir -p $T/r; git -C $T/r init -q; git -C $T/r -c user.email=t@t -c user.name=t commit -q --allow-empty -m x; git -C $T/r tag v0.1.9; git -C $T/r tag v0.1.135; next_tag)" = v0.1.136 ]'
 echo

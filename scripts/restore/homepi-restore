@@ -13,7 +13,7 @@
 #
 # A drill lives in ~/homepi-restore/drill-<start>/ (timeline.tsv, drill.env, one log per phase).
 # Phases already "ok" in the timeline are skipped on resume; a failed phase is retried.
-# R7 and R8 stay manual: they end the drill and bring production back (restore.md).
+# R7, R9 and R8 stay manual: they end the drill, erase the spare and bring production back (restore.md).
 set -uo pipefail
 umask 077
 # C.UTF-8, not C: ansible-playbook refuses a locale whose encoding is not UTF-8 (C4, R2)
@@ -42,11 +42,12 @@ R5 auto InfluxDB native backup restored (homepi-r5-influx)
 R5D auto hourly sensor deltas replayed, oldest first (homepi-r5-deltas)
 R35 auto services started (restore-services.yml)
 R4KEY auto new age key on the Pi, public key only to the laptop
-R4SOPS auto drill key added to .sops.yaml, data keys updated, signed commit
 R4STORAGE auto boot-critical storage files (storage.yml)
 R4SITE auto full apply, GitOps timers off (site.yml)
+R4SOPS auto drill key added to .sops.yaml, data keys updated, signed commit
 R4TAG auto signed release tag, precheck on the rebuilt Pi
 R4APPLY auto GitOps applies the tag once, then owns the Pi
+R5B auto first backups of the rebuilt Pi, then the off-site upload
 R6 auto read-only verification (homepi-r6-verify)"
 
 die() { echo "STOPPED: $*" >&2; exit 1; }
@@ -284,6 +285,8 @@ phase_R4KEY() {
   log "drill Pi public key: $k"
 }
 
+# Just before the tag (C4): any fix made while R4STORAGE or R4SITE failed is committed first, so the
+# drill key commit is the one the tag points at and no commit has to be reordered
 phase_R4SOPS() {
   cd "$REPO" || return 1
   [ "$(git branch --show-current)" = main ] || { echo "the repository is not on main"; return 1; }
@@ -337,6 +340,20 @@ phase_R4APPLY() {
   deployed=$(ssh "$PI" 'sudo cat /var/lib/homepi-gitops/deployed' < /dev/null | awk '{print $1}')
   echo "GitOps result: $r, deployed: $deployed"
   [ "$r" = success ] && [ "$deployed" = "$DRILL_TAG" ]
+}
+
+# C4 defect 15: the rebuilt Pi served for four hours with no backup of itself, locally or off-site.
+# The restore ends when the restored system is protected: one run of each backup, then the upload.
+phase_R5B() {
+  master_rebuilt || return 1
+  ssh "$PI" 'set -u
+    for u in homepi-backup@state homepi-backup@influx-native homepi-backup@influx-lp homepi-offsite; do
+      t=$(date +%s)
+      sudo systemctl start "$u.service"
+      r=$(systemctl show -p Result --value "$u.service")
+      echo "$u: $r in $(( $(date +%s) - t )) s"
+      [ "$r" = success ] || { sudo journalctl -u "$u.service" -n 15 --no-pager; exit 1; }
+    done' < /dev/null
 }
 
 phase_R6() {
@@ -441,7 +458,7 @@ main() {
   echo
   report
   echo
-  echo "Next, by hand: R7 (homepi-r7-end-drill) and R8, production back (docs/runbooks/restore.md)."
+  echo "Next, by hand: R7 (homepi-r7-end-drill), R9 (erase the spare from the microSD) and R8, production back (docs/runbooks/restore.md)."
 }
 
 [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"

@@ -11,6 +11,11 @@
 #   sudo ./homepi-r1-layout --target /dev/nvme0n1 --expect-model "990 PRO" \
 #        --authorized-keys /root/r1/authorized_keys --repo /root/r1/homepi-infra
 #
+# The disk is first erased cryptographically (NVMe Format, SES=2), then laid out. At the end of a
+# drill (R9), the same script erases the spare and stops there:
+#
+#   sudo ./homepi-r1-layout --target /dev/nvme0n1 --expect-model "990 PRO" --erase-only
+#
 # The LUKS passphrase is typed twice by the operator; the keyfile is generated here.
 # Every step checks its precondition and stops with "STOPPED: ..." on the first problem.
 set -euo pipefail
@@ -49,10 +54,10 @@ EOF
 )
 BTRFS_SUBVOLUMES="@iot-hot @iot-archives @backups @personal"
 SUBVOLUME_UNITS="mnt-data-archives.mount mnt-data-backups.mount mnt-data-personal.mount"
-PACKAGES_HOST="cryptsetup lvm2 btrfs-progs xfsprogs dosfstools e2fsprogs parted gdisk rsync xz-utils curl gpgv"
+PACKAGES_HOST="cryptsetup lvm2 btrfs-progs xfsprogs dosfstools e2fsprogs parted gdisk rsync xz-utils curl gpgv nvme-cli"
 PACKAGES_TARGET="cryptsetup cryptsetup-initramfs lvm2 btrfs-progs xfsprogs systemd-zram-generator"
 
-TARGET="" EXPECT_MODEL="" AUTH_KEYS="" REPO=""
+TARGET="" EXPECT_MODEL="" AUTH_KEYS="" REPO="" ERASE_ONLY=0
 # The keyfile lives in RAM only until it is copied to the target (never on the microSD)
 KEYFILE=/run/homepi-r1-keyfile
 # Set by wipe_and_partition: from then on a failure leaves mounts, an open LUKS volume and an active
@@ -85,11 +90,16 @@ parse_args() {
       --expect-model) EXPECT_MODEL="$2"; shift 2 ;;
       --authorized-keys) AUTH_KEYS="$2"; shift 2 ;;
       --repo) REPO="$2"; shift 2 ;;
+      --erase-only) ERASE_ONLY=1; shift ;;
       *) die "unknown argument $1" ;;
     esac
   done
+  if [ "$ERASE_ONLY" = 1 ]; then
+    [ -n "$TARGET" ] && [ -n "$EXPECT_MODEL" ] || die "usage: $0 --target DEV --expect-model TEXT --erase-only"
+    return 0
+  fi
   [ -n "$TARGET" ] && [ -n "$EXPECT_MODEL" ] && [ -n "$AUTH_KEYS" ] && [ -n "$REPO" ] \
-    || die "usage: $0 --target DEV --expect-model TEXT --authorized-keys FILE --repo DIR"
+    || die "usage: $0 --target DEV --expect-model TEXT --authorized-keys FILE --repo DIR [--erase-only]"
 }
 
 # The model check is the main guard against wiping the wrong disk
@@ -102,8 +112,10 @@ check_model() {
   case "$model" in *Micron*) die "$TARGET is the production Micron: remove it from the Pi" ;; esac
 }
 
-preflight() {
-  local root_src b
+# The guards shared by R1 and the end-of-drill erase (R9): right disk, not the running system,
+# production disk absent
+disk_guards() {
+  local root_src
   [ "$EUID" -eq 0 ] || die "run as root"
   [ -b "$TARGET" ] || die "$TARGET is not a block device"
   check_model
@@ -117,11 +129,12 @@ preflight() {
   if lsblk -rpno NAME,FSTYPE | awk '$2 == "crypto_LUKS" {print $1}' | grep -v "^$TARGET" | grep -q .; then
     die "a LUKS partition exists outside $TARGET: remove the production disk"
   fi
-  [ -r "$AUTH_KEYS" ] && grep -qE '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) ' "$AUTH_KEYS" || die "$AUTH_KEYS holds no SSH public key"
-  for f in ansible/roles/network/files/netplan-10-network.yaml $(printf 'ansible/roles/storage/files/%s ' $SUBVOLUME_UNITS); do
-    [ -r "$REPO/$f" ] || die "missing $REPO/$f"
-  done
-  mountpoint -q "$MNT" && die "$MNT is already mounted (an earlier run?): unmount it first"
+  findmnt -rno SOURCE | grep -q "^$TARGET" && die "a partition of $TARGET is mounted"
+  return 0
+}
+
+install_host_packages() {
+  local b
   # The microSD system can be months old: refresh the package lists before installing anything
   for b in $PACKAGES_HOST; do
     dpkg -s "$b" > /dev/null 2>&1 && continue
@@ -130,6 +143,16 @@ preflight() {
     apt-get install -y -q $PACKAGES_HOST > /dev/null || die "cannot install $PACKAGES_HOST"
     break
   done
+}
+
+preflight() {
+  disk_guards
+  [ -r "$AUTH_KEYS" ] && grep -qE '^(ssh-ed25519|ssh-rsa|ecdsa-sha2-nistp256) ' "$AUTH_KEYS" || die "$AUTH_KEYS holds no SSH public key"
+  for f in ansible/roles/network/files/netplan-10-network.yaml $(printf 'ansible/roles/storage/files/%s ' $SUBVOLUME_UNITS); do
+    [ -r "$REPO/$f" ] || die "missing $REPO/$f"
+  done
+  mountpoint -q "$MNT" && die "$MNT is already mounted (an earlier run?): unmount it first"
+  install_host_packages
   "${CURL_GET[@]}" --max-time 15 -o /dev/null "$IMAGE_BASE/SHA256SUMS" || die "cannot reach $IMAGE_BASE"
 }
 
@@ -168,6 +191,34 @@ fetch_image() {
   echo "$sum  $WORKDIR/$name" | sha256sum -c --quiet - || die "checksum mismatch for $name"
   log "image verified: $name"
   IMAGE_XZ="$WORKDIR/$name"
+}
+
+# A cryptographic erase (NVMe Format, Secure Erase Setting 2): the controller drops its media key,
+# so every block becomes unreadable, the spare blocks the system never sees included. wipefs, mkfs
+# and luksFormat do not do that: after C4 the spare still held, in clear on p2 and p4, the drill
+# age key (it opens the SOPS files of the drill tags in the public repository) and the LUKS keyfile.
+secure_erase() {
+  local name ctrl fna lbaf
+  name=$(basename "$TARGET")
+  case "$name" in nvme[0-9]*n[0-9]*) ctrl="/dev/${name%n[0-9]*}" ;; *) die "$TARGET is not an NVMe namespace" ;; esac
+  command -v nvme > /dev/null || die "nvme-cli is not installed"
+  fna=$(nvme id-ctrl "$ctrl" | awk -F: '$1 ~ /^fna[[:space:]]*$/ {gsub(/[[:space:]]/, "", $2); print $2}')
+  [ -n "$fna" ] || die "cannot read the format attributes (FNA) of $ctrl"
+  (( (fna & 0x4) != 0 )) || die "$ctrl does not support a cryptographic erase (FNA $fna)"
+  lbaf=$(nvme id-ns "$TARGET" | sed -n 's/^lbaf *\([0-9]*\) .*(in use).*/\1/p')
+  [[ "$lbaf" =~ ^[0-9]+$ ]] || die "cannot read the LBA format in use on $TARGET"
+  log "cryptographic erase of $TARGET (FNA $fna, LBA format $lbaf kept)"
+  nvme format "$TARGET" --ses=2 --lbaf="$lbaf" --force || die "nvme format failed"
+  blockdev --rereadpt "$TARGET" || log "the kernel did not re-read the partition table (checked by content below)"
+  # Proof by content, not by the exit code: no GPT header in the first MiB, no LUKS2 header where p5
+  # began. Read into a file first: grep -q closing a pipe under pipefail reads as a failure (C4 defect 1)
+  local probe=/run/homepi-r1-probe
+  dd if="$TARGET" of="$probe" bs=1M count=1 status=none
+  grep -qa 'EFI PART' "$probe" && { rm -f "$probe"; die "a GPT header is still readable"; }
+  dd if="$TARGET" of="$probe" bs=1M skip="$P4_END" count=1 status=none
+  grep -qa 'LUKS' "$probe" && { rm -f "$probe"; die "a LUKS header is still readable at ${P4_END} MiB"; }
+  rm -f "$probe"
+  log "erase verified: no partition table, no LUKS header"
 }
 
 wipe_and_partition() {
@@ -440,9 +491,18 @@ unmount_target() {
 
 main() {
   parse_args "$@"
+  if [ "$ERASE_ONLY" = 1 ]; then
+    disk_guards
+    install_host_packages
+    confirm_wipe
+    secure_erase
+    log "done. $TARGET holds nothing readable. Power off, put the production disk back (R8)."
+    return 0
+  fi
   preflight
   fetch_image
   confirm_wipe
+  secure_erase
   wipe_and_partition
   setup_luks_lvm
   mount_target

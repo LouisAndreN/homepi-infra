@@ -11,6 +11,9 @@ bad() { echo "FAIL  $*"; fails=$((fails + 1)); }
 prom() { curl -fsS --max-time 10 "$PROM/api/v1/query" --data-urlencode "query=$1" | jq -r '.data.result[0].value[1] // empty'; }
 
 [ "$EUID" -eq 0 ] || { echo "STOPPED: run as root"; exit 1; }
+# Read-only on the system: the only writes are the check outputs, in RAM
+LOGS=/run/homepi-r6
+install -d -m 0700 "$LOGS"
 state=$(systemctl is-system-running 2> /dev/null)
 [ "$state" = running ] && ok "systemd: running" || bad "systemd: $state ($(systemctl --failed --no-legend --plain | awk '{print $1}' | tr '\n' ' '))"
 # Three checks take arguments from Ansible and are called below with the same ones. influx-check
@@ -28,7 +31,9 @@ for c in /usr/local/sbin/homepi-*-check; do
     homepi-influx-check) echo "skip  $name (needs the expected state from Ansible: proven by R4)"; continue ;;
     *) args=() ;;
   esac
-  if "$c" "${args[@]}" < /dev/null > /dev/null 2>&1; then ok "$name"; else bad "$name (run it for details)"; fi
+  # The output of a failing check is kept and shown (C4: homepi-alloy-check failed twice in R6 and
+  # passed when run alone; its output had been thrown away, the cause is still unknown)
+  if "$c" "${args[@]}" < /dev/null > "$LOGS/$name.log" 2>&1; then ok "$name"; else bad "$name (full output: $LOGS/$name.log)"; tail -n 8 "$LOGS/$name.log" | sed 's/^/        /'; fi
 done
 read -r tag _ < /var/lib/homepi-gitops/deployed 2> /dev/null && ok "GitOps deployed $tag" || bad "GitOps has deployed nothing"
 n=$(ss -Htn state established '( sport = :8883 )' | wc -l)

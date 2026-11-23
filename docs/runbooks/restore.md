@@ -1,6 +1,6 @@
 # Restore (C1): rebuild the platform on a blank NVMe
 
-Design: `docs/disaster-recovery.md`. Phases R0 to R7; this runbook grows phase by phase.
+Design: `docs/disaster-recovery.md`. Phases R0 to R9; this runbook grows phase by phase.
 
 ## Orchestrator (`scripts/restore/homepi-restore`, laptop)
 
@@ -18,7 +18,11 @@ separates the time waiting for a person from the machine time, and keeps every f
 RTO is the wall clock from T0 to the first R6 PASS, failures included. RPO is T0 minus the time in each
 archive name. Host keys: `~/.ssh/known_hosts.drill-sd` for the microSD system,
 `~/.ssh/known_hosts.drill-new` for the rebuilt system until R3 restores the production keys; the usual
-`known_hosts` is never changed. R7 and R8 stay manual.
+`known_hosts` is never changed. R7, R9 and R8 stay manual, in that order.
+
+Since C5 preparation (2026-11-23): R4SOPS runs after R4SITE, just before R4TAG, so a fix made while
+R4 failed never forces the drill key commit to be reordered; R5B, between R4APPLY and R6, takes the
+first backups of the rebuilt Pi and uploads them (C4 defect 15).
 
 Tested offline only (`scripts/restore/tests/restore-orchestrator-test`, every phase stubbed): order,
 timeline, resume after a failure, values carried between phases, RTO/RPO arithmetic. Each phase calls
@@ -67,7 +71,10 @@ What it does, in order, stopping at the first problem:
    an SSH public key to install, the repository files it needs, Ubuntu's server reachable.
 2. Downloads the newest Ubuntu 24.04 raspi server image and verifies it: `SHA256SUMS` signed by the
    Ubuntu CD image key (local keyring), then the image checksum.
-3. Asks the operator to type the device name, then wipes it.
+3. Asks the operator to type the device name, then erases it cryptographically (`nvme format
+   --ses=2`, the LBA format in use kept): the controller drops its media key, spare blocks
+   included. Proven by content: no GPT header in the first MiB, no LUKS header where p5 began.
+   Then the partition table and the first and last 100 MiB are cleared as before.
 4. Partitions with the production boundaries (MiB): p1 vfat BOOT 1G, p2 ext4 ROOT 100G, p3 swap 4G,
    p4 ext4 RECOVERY 5G, p5 LUKS2 for the rest.
 5. LUKS2 aes-xts-plain64 512-bit, 4096-byte sectors, argon2id, label `cryptdata`: the operator types
@@ -202,6 +209,21 @@ shipping, the GitOps timers and the heartbeat relay on the spare, checks each on
 archive nor competes with production. Then power off, production disk back before 03:30, and on
 the laptop remove the drill Pi key from `.sops.yaml` (`sops updatekeys`, signed tag).
 
+## R9: erase the spare (`homepi-r1-layout --erase-only`, Pi booted from the microSD)
+
+The spare holds, in clear on p2 and p4, the drill age key (it opens the SOPS files of the drill tags,
+which are in the public repository) and the LUKS keyfile. After R7, before R8:
+
+1. Power off the spare, insert the microSD (the spare stays in the slot), power on.
+2. From the laptop, on the microSD system: copy the repository as R1 does, then
+   `sudo scripts/restore/homepi-r1-layout --target /dev/nvme0n1 --expect-model "990 PRO" --erase-only`.
+   Same guards as R1 (model, not the running system, no production disk attached); type the device
+   name; the erase is checked by content.
+3. Power off, remove the microSD, then R8.
+
+R9 does not count in the RTO (it ends at R6 PASS), but it extends the time production is off by about
+10 minutes. Without R9 the spare must be treated as a secret until it is erased.
+
 ## R8: production back (`docs/game-days/2026-11-21-c3.md`)
 
 R8 was the hardest step of C3: the production disk came back on another LAN address, with SSH and DNS
@@ -237,18 +259,18 @@ What the drill does not bring back by itself: the sensor data the rebuilt Pi col
 spare. Its hourly deltas are in S3, so `homepi-r5-deltas` could replay them into production (not done
 in C4). In a real failure the rebuilt Pi stays production, so this gap does not exist.
 
-After the drill the spare holds the drill age key, which opens the secrets of the tags released
-during the drill (v0.1.141 to v0.1.143 for C4). Keep it powered off, and wipe it
-(`cryptsetup erase`, then `blkdiscard`) once it is no longer the drill disk.
+R9 erased the spare before R8. If it was skipped, the spare holds the drill age key, which opens the
+secrets of the tags released during the drill: keep it powered off and run R9 before anything else.
+(`cryptsetup erase` and `blkdiscard` are not enough: p2 and p4 are not encrypted.)
 
-## Known gap: no backup of the rebuilt system before R6 (C4 defect 15)
+## R5B: first backups of the rebuilt system (C4 defect 15, orchestrator phase since 2026-11-23)
 
 R4 leaves the rebuilt Pi serving with no local backup and no off-site copy of itself until the next
 timers (03:30 to 04:15, line protocol on Sunday only). C4 found it through `BackupMetricsMissing` and
-`OffsiteMetricsMissing` four hours after T0. Until the orchestrator has a phase for it (R5B, before
-R6), run after R4: `systemctl start homepi-backup@state homepi-backup@influx-native
-homepi-backup@influx-lp` one at a time, then `systemctl start homepi-offsite.service`
-(C4: 1 s, 42 s, 95 s, then 26 s for about 700 MB).
+`OffsiteMetricsMissing` four hours after T0. A restore ends when the restored system is protected, so
+the orchestrator now runs, after R4APPLY and before R6, one at a time and each checked by its systemd
+result: `homepi-backup@state`, `homepi-backup@influx-native`, `homepi-backup@influx-lp`, then
+`homepi-offsite` (C4, by hand: 1 s, 42 s, 95 s, then 26 s for about 700 MB). R5B counts in the RTO.
 
 ## Known gap: pironman5
 

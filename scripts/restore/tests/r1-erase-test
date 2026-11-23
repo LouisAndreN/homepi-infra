@@ -1,0 +1,67 @@
+#!/bin/bash
+# Offline test of secure_erase in homepi-r1-layout: run as root on a Linux host. nvme-cli is stubbed;
+# the disk is a sparse loop file named like an NVMe namespace. Checks that the erase refuses a
+# controller without cryptographic erase and a non-NVMe device, sends SES=2 with the LBA format in
+# use, and that the proof by content catches a format that left the GPT or the LUKS header readable.
+# The real erase is proven on the hardware (R1 of C5).
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+WORK=$(mktemp -d /var/tmp/r1-erase-test.XXXXXX)
+LINK=/dev/nvme9n1
+[ -e "$LINK" ] && { echo "SKIP: $LINK exists on this host"; exit 0; }
+truncate -s 1000204886016 "$WORK/disk.img"
+DEV=$(losetup -f --show "$WORK/disk.img")
+ln -s "$DEV" "$LINK"
+trap 'rm -f "$LINK"; losetup -d "$DEV"; rm -rf "$WORK"' EXIT
+# shellcheck source=/dev/null
+. "$HERE/../homepi-r1-layout"
+set +e
+fails=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+
+FNA=0x4 ERASES=1
+nvme() {
+  case "$1" in
+    id-ctrl) echo "vid       : 0x144d"; echo "fna       : $FNA" ;;
+    id-ns) printf 'lbaf  0 : ms:0   lbads:9  rp:0 (in use)\nlbaf  1 : ms:0   lbads:12 rp:0 \n' ;;
+    format)
+      echo "$*" > "$WORK/format.args"
+      # A real cryptographic erase leaves no header readable: zero the two places the proof reads
+      if [ "$ERASES" = 1 ]; then
+        dd if=/dev/zero of="$DEV" bs=1M count=1 conv=notrunc status=none
+        dd if=/dev/zero of="$DEV" bs=1M seek="$P4_END" count=1 conv=notrunc status=none
+      fi ;;
+  esac
+}
+blockdev() { return 0; }
+headers() {
+  dd if=/dev/zero of="$DEV" bs=1M count=1 conv=notrunc status=none
+  printf 'EFI PART' | dd of="$DEV" bs=1 seek=512 conv=notrunc status=none
+  printf 'LUKS\272\276' | dd of="$DEV" bs=1 seek=$((P4_END * 1048576)) conv=notrunc status=none
+}
+
+TARGET=$LINK
+headers; FNA=0x4 ERASES=1
+out=$( (secure_erase) 2>&1 ); rc=$?
+check "erase with crypto support succeeds and is verified" '[ "$rc" = 0 ] && printf "%s" "$out" | grep -q "erase verified"'
+check "SES=2, LBA format in use (0), forced" '[ "$(cat "$WORK/format.args")" = "format $LINK --ses=2 --lbaf=0 --force" ]'
+
+headers; FNA=0x1 ERASES=1; rm -f "$WORK/format.args"
+out=$( (secure_erase) 2>&1 ); rc=$?
+check "a controller without cryptographic erase (FNA 0x1) is refused before any format" '[ "$rc" != 0 ] && [ ! -e "$WORK/format.args" ]'
+
+headers; FNA=0x4 ERASES=0
+out=$( (secure_erase) 2>&1 ); rc=$?
+check "a format that leaves the GPT readable is caught" '[ "$rc" != 0 ] && printf "%s" "$out" | grep -q "GPT header is still readable"'
+
+dd if=/dev/zero of="$DEV" bs=1M count=1 conv=notrunc status=none
+printf 'LUKS\272\276' | dd of="$DEV" bs=1 seek=$((P4_END * 1048576)) conv=notrunc status=none
+out=$( (secure_erase) 2>&1 ); rc=$?
+check "a format that leaves the LUKS header readable is caught" '[ "$rc" != 0 ] && printf "%s" "$out" | grep -q "LUKS header is still readable"'
+
+TARGET=$DEV
+out=$( (secure_erase) 2>&1 ); rc=$?
+check "a device that is not an NVMe namespace is refused" '[ "$rc" != 0 ] && printf "%s" "$out" | grep -q "not an NVMe namespace"'
+
+echo
+[ "$fails" = 0 ] && echo "r1-erase-test PASS" || { echo "r1-erase-test FAIL: $fails"; exit 1; }
