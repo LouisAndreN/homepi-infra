@@ -143,8 +143,9 @@ through command-line arguments: environment files read by systemd, 0600 files or
 
 ## Status
 
-Running in production at home since 2026. Releases are signed tags (`v0.1.x`). Device firmware is
-in a separate repository: https://github.com/LouisAndreN/homepi-firmware
+Running in production at home since 2026. Releases are signed tags; the version rules, and what 1.0.0
+requires, are in `docs/versioning.md`. Device firmware is in a separate repository:
+https://github.com/LouisAndreN/homepi-firmware
 
 ## License
 

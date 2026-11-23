@@ -16,6 +16,12 @@ storage_mounts:
     fstab: "/dev/vg-main/lv-loki xfs defaults,noatime,inode64,nofail 0 2"
     mounted: "/dev/mapper/vg--main-lv--loki xfs"
     line: "/dev/vg-main/lv-loki       /var/lib/loki          xfs     defaults,noatime,inode64,nofail   0 2"
+# Mount points of the Btrfs subvolumes, checked 0755 root:root (C4 defect 16)
+storage_subvolume_roots:
+  - /mnt/data
+  - /mnt/data/backups
+  - /mnt/data/archives
+  - /mnt/data/personal
 storage_subvolume_units:
   - mnt-data-backups.mount
   - mnt-data-personal.mount

@@ -104,6 +104,19 @@
   check_mode: "{{ storage_verify_only | bool }}"
   register: storage_units_state
 
+# C4 defect 16: R1 created every subvolume root 0700 under umask 077 and InfluxDB could not write
+# under /mnt/data/backups. Production measured 2026-11-23: the four roots are 0755 root:root.
+- name: Subvolume roots 0755 root:root
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ storage_subvolume_roots }}"
+  check_mode: "{{ storage_verify_only | bool }}"
+  register: storage_roots
+
 - name: Collect storage drift
   ansible.builtin.set_fact:
     storage_drift: >-
@@ -114,7 +127,7 @@
       {%- for r in storage_mount_read.results if (r.stdout | trim) != r.item.mounted -%}
       {%- set _ = d.append('mount ' ~ r.item.target ~ ': ' ~ ((r.stdout | trim) or 'not mounted')) -%}
       {%- endfor -%}
-      {%- for n, v in [('subvolume mount units', storage_units), ('Loki drop-in directory', storage_loki_dropin_dir), ('Loki drop-in', storage_loki_dropin), ('Loki volume ownership', storage_loki_dir), ('subvolume units state', storage_units_state)] if v is changed -%}
+      {%- for n, v in [('subvolume mount units', storage_units), ('Loki drop-in directory', storage_loki_dropin_dir), ('Loki drop-in', storage_loki_dropin), ('Loki volume ownership', storage_loki_dir), ('subvolume units state', storage_units_state), ('subvolume root modes', storage_roots)] if v is changed -%}
       {%- set _ = d.append(n) -%}
       {%- endfor -%}
       {{ d }}

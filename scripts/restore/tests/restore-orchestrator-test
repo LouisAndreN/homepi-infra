@@ -41,5 +41,7 @@ check "R4SOPS runs after R4SITE, just before R4TAG (C4: no commit reorder after 
 check "R5B runs after R4APPLY and just before R6 (C4 defect 15)" '[ "$(phase_ids | tail -n 3 | tr "\n" " ")" = "R4APPLY R5B R6 " ]'
 check "kinds: T0, SD and BOOT wait for a person" '[ "$(awk -F"\t" "\$2 == \"human\"" "$DRILL/timeline.tsv" | cut -f1 | sort -u | tr "\n" " ")" = "BOOT SD T0 " ]'
 check "next tag after v0.1.135" '[ "$(REPO=$T/r; mkdir -p $T/r; git -C $T/r init -q; git -C $T/r -c user.email=t@t -c user.name=t commit -q --allow-empty -m x; git -C $T/r tag v0.1.9; git -C $T/r tag v0.1.135; next_tag)" = v0.1.136 ]'
+check "next tag after v0.2.0 is v0.2.1, not v0.1.136" '[ "$(REPO=$T/r; git -C $T/r tag v0.2.0; next_tag)" = v0.2.1 ]'
+check "next tag after v0.2.10 is v0.2.11 (version sort, not text)" '[ "$(REPO=$T/r; git -C $T/r tag v0.2.9; git -C $T/r tag v0.2.10; next_tag)" = v0.2.11 ]'
 echo
 [ "$fails" = 0 ] && echo "restore-orchestrator-test PASS" || { echo "restore-orchestrator-test FAIL: $fails"; exit 1; }
