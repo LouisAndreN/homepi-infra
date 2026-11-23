@@ -1,0 +1,75 @@
+#!/bin/bash
+# Test of the virtualenv rebuild path of the provisioning_api role (2026-11-22 incident: the rebuild
+# had only been tested in a local venv and in check mode, never under the GitOps umask).
+#
+#   venv-rebuild-test            static checks only (any host, no root): task order and umask
+#   sudo venv-rebuild-test --build   also run the role's own rebuild shell, under umask 077, into a
+#                                    scratch directory, and import the packages as homepi-api (Pi)
+#
+# The build reads the shell text from tasks/main.yml, so it tests the code GitOps runs, not a copy.
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+ROLE=$(cd "$HERE/.." && pwd)
+PY=python3
+[ -x /opt/homepi-gitops/venv/bin/python ] && PY=/opt/homepi-gitops/venv/bin/python
+fails=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fails=$((fails + 1)); }
+
+# One line per fact the static checks need, computed from the YAML (not from grep on text)
+facts=$("$PY" - "$ROLE/tasks/main.yml" << 'PYEOF'
+import sys, yaml
+tasks = yaml.safe_load(open(sys.argv[1]))
+names = [t.get("name", "") for t in tasks]
+def idx(prefix):
+    return next(i for i, n in enumerate(names) if n.startswith(prefix))
+side = idx("WAL side files of the device database")
+rebuild = idx("Rebuild the API virtualenv")
+block = tasks[rebuild]["block"]
+bnames = [t.get("name", "") for t in block]
+shell = next(t for t in block if t.get("name", "").startswith("Keep the previous virtualenv"))["ansible.builtin.shell"]
+first = next(t for t in tasks[idx("Build the API virtualenv")]["block"] if "ansible.builtin.shell" in t)["ansible.builtin.shell"]
+imp = next(i for i, n in enumerate(bnames) if n.startswith("The API user can run"))
+start = next(i for i, n in enumerate(bnames) if n.startswith("Start the API services on the rebuilt"))
+print("side_before_rebuild", int(side < rebuild))
+print("umask_before_venv", int("umask 022" in shell and shell.index("umask 022") < shell.index("python3 -m venv")))
+print("first_build_umask", int("umask 022" in first and first.index("umask 022") < first.index("python3 -m venv")))
+print("import_before_start", int(imp < start))
+print("has_rescue", int("rescue" in tasks[rebuild]))
+PYEOF
+) || { echo "FAIL cannot read $ROLE/tasks/main.yml"; exit 1; }
+fact() { printf '%s\n' "$facts" | awk -v k="$1" '$1 == k {print $2}'; }
+
+[ "$(fact side_before_rebuild)" = 1 ] && ok "WAL side files are created before the rebuild block" || bad "WAL side files task after the rebuild block"
+[ "$(fact umask_before_venv)" = 1 ] && ok "rebuild shell sets umask 022 before python3 -m venv" || bad "rebuild shell: no umask 022 before the venv"
+[ "$(fact first_build_umask)" = 1 ] && ok "first build sets umask 022 before python3 -m venv" || bad "first build: no umask 022 before the venv"
+[ "$(fact import_before_start)" = 1 ] && ok "the API user imports the packages before the services start" || bad "import check after the service start"
+[ "$(fact has_rescue)" = 1 ] && ok "the rebuild block has a rescue" || bad "the rebuild block has no rescue"
+
+if [ "${1:-}" = --build ]; then
+  [ "$EUID" -eq 0 ] || { echo "STOPPED: --build runs as root (runuser)"; exit 1; }
+  id homepi-api > /dev/null 2>&1 || { echo "STOPPED: no homepi-api user on this host"; exit 1; }
+  T=$(mktemp -d /var/tmp/venv-rebuild-test.XXXXXX); trap 'rm -rf "$T"' EXIT
+  chmod 0755 "$T"   # like /opt/homepi: the parent must be traversable by the API user
+  install -d -m 0755 "$T/venv"   # the shell moves the current venv aside first
+  # The role's shell, pointed at the scratch directory and at the lock of this repository
+  "$PY" - "$ROLE/tasks/main.yml" << 'PYEOF' > "$T/rebuild.sh"
+import sys, yaml
+tasks = yaml.safe_load(open(sys.argv[1]))
+t = next(t for t in tasks if t.get("name", "").startswith("Rebuild the API virtualenv"))
+print(next(b for b in t["block"] if b.get("name", "").startswith("Keep the previous virtualenv"))["ansible.builtin.shell"])
+PYEOF
+  sed -i -e "s|/opt/homepi/api-venv|$T/venv|g" -e "s|/opt/homepi/api-requirements.lock|$ROLE/files/requirements.lock|g" "$T/rebuild.sh"
+  grep -q "/opt/homepi" "$T/rebuild.sh" && { echo "STOPPED: the shell still points at /opt/homepi"; exit 1; }
+  echo "--- building under umask 077 (1 to 3 minutes)"
+  if (umask 077; bash "$T/rebuild.sh") > "$T/build.log" 2>&1; then ok "rebuild shell ran under umask 077"; else bad "rebuild shell failed"; tail -15 "$T/build.log"; fi
+  m=$(stat -c %a "$T/venv/bin/python3" "$T/venv/lib" | tr '\n' ' ')
+  echo "     modes: bin/python3 lib = $m"
+  if runuser -u homepi-api -- "$T/venv/bin/python" -c "import fastapi, starlette, uvicorn, cryptography, multipart" < /dev/null > "$T/import.log" 2>&1; then
+    ok "homepi-api imports the packages from a venv built under umask 077"
+  else
+    bad "homepi-api cannot import from the rebuilt venv"; tail -5 "$T/import.log"
+  fi
+fi
+echo
+[ "$fails" = 0 ] && echo "venv-rebuild-test PASS" || { echo "venv-rebuild-test FAIL: $fails"; exit 1; }

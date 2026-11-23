@@ -1,0 +1,37 @@
+# promtool test rules gitops_test.yml (from this directory)
+# GitopsTagHeld: a held tag alerts after 1 minute, next to GitopsApplyFailing; a normal failure
+# (not held yet) does not raise GitopsTagHeld.
+rule_files:
+  - ../rules/gitops.yml
+evaluation_interval: 1m
+tests:
+  - name: tag held after two failed applies
+    interval: 1m
+    input_series:
+      - series: 'homepi_gitops_apply_held{instance="pi",job="node_exporter"}'
+        values: '0 0 1x20'
+      - series: 'homepi_gitops_apply_success{instance="pi",job="node_exporter"}'
+        values: '0x22'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: GitopsTagHeld
+        exp_alerts:
+          - exp_labels: {severity: warning, instance: pi, job: node_exporter}
+            exp_annotations:
+              summary: "A release tag is held after repeated failed applies"
+              description: "GitOps no longer retries it; production stays on the deployed tag. Fix and release a newer tag, or fix the cause on the Pi and run: sudo homepi-gitops-sync retry (docs/runbooks/laptop.md)."
+      - eval_time: 20m
+        alertname: GitopsApplyFailing
+        exp_alerts:
+          - exp_labels: {severity: critical, instance: pi, job: node_exporter}
+            exp_annotations:
+              summary: "The Pi cannot apply its release tag"
+              description: "homepi-gitops-sync apply has failed for 15 minutes. Read: journalctl -u homepi-gitops@apply.service"
+  - name: one failed apply, not held
+    interval: 1m
+    input_series:
+      - series: 'homepi_gitops_apply_held{instance="pi",job="node_exporter"}'
+        values: '0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: GitopsTagHeld

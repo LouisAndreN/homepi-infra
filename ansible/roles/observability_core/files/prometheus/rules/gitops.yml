@@ -10,6 +10,18 @@ groups:
           summary: "The Pi cannot apply its release tag"
           description: "homepi-gitops-sync apply has failed for 15 minutes. Read: journalctl -u homepi-gitops@apply.service"
 
+      # A tag that failed twice in a row is no longer retried (homepi-gitops-sync, hold). Production stays
+      # on the deployed tag; nobody acts at night (docs/adr/0001-no-night-response.md), so the hold is
+      # what bounds the damage of a bad release, and this alert says why GitOps went quiet.
+      - alert: GitopsTagHeld
+        expr: homepi_gitops_apply_held == 1
+        for: 1m
+        labels:
+          severity: warning
+        annotations:
+          summary: "A release tag is held after repeated failed applies"
+          description: "GitOps no longer retries it; production stays on the deployed tag. Fix and release a newer tag, or fix the cause on the Pi and run: sudo homepi-gitops-sync retry (docs/runbooks/laptop.md)."
+
       - alert: GitopsUntrustedTag
         expr: homepi_gitops_untrusted_tags > 0
         for: 10m

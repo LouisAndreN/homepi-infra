@@ -135,7 +135,7 @@ ansible/     roles, site.yml (GitOps entry point), storage.yml (manual), SOPS se
 apps/        provisioning API (Python), NOC dashboard (React)
 terraform/   AWS organization, logging, backup vault, Pi edge resources, Grafana
 scripts/     restore phases, nftables apply, controlled reboot, helpers
-docs/        runbooks, incidents, game days, disaster recovery, known limits, roadmap
+docs/        runbooks, incidents, game days, ADRs, disaster recovery, known limits, versioning, roadmap
 ```
 
 Secrets are committed only as SOPS files encrypted with age. Tokens and passwords never go

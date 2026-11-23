@@ -5,6 +5,12 @@
 #   homepi-gitops-sync check   dry run of the deployed tag, to detect drift
 #   homepi-gitops-sync reconcile  apply the deployed tag again, its signature verified again, to
 #                                 undo a drift (a package upgrade resetting permissions, for example)
+#   homepi-gitops-sync retry   lift the hold on a failing tag (below), then apply
+#
+# A tag whose apply failed MAX_ATTEMPTS times in a row is held: the timer no longer retries it
+# until a newer tag is released or an operator runs "retry". On 2026-11-22 a failing tag was
+# retried every 10 minutes all night, each attempt stopping the provisioning API, and nobody
+# acts at night (docs/adr/0001-no-night-response.md).
 #
 # The trust anchor is /etc/homepi-gitops/allowed_signers: created by hand and
 # deliberately outside the repository that this script deploys.
@@ -23,6 +29,9 @@ GITHUB_KNOWN_HOSTS=/etc/homepi-gitops/github_known_hosts
 AGE_KEY=/etc/homepi-gitops/age.key
 RUNTIME=/opt/homepi-gitops
 METRICS_DIR=/var/lib/node_exporter/textfile_collector
+# "<tag> <commit> <failed attempts>" of the newest tag that failed to apply
+ATTEMPTS="$STATE_DIR/failed-attempts"
+MAX_ATTEMPTS="${HOMEPI_GITOPS_MAX_ATTEMPTS:-2}"
 TF_STATE_DIR=/var/lib/homepi-terraform
 
 log() { echo "homepi-gitops: $*"; }
@@ -39,13 +48,54 @@ write_metrics() {
 
 # Record a failure for the given mode, then stop
 fail() {
+  # Only an apply of a new tag counts towards the hold (not a reconcile of the deployed tag)
+  [ "$1" = apply ] && [ -n "${TAG:-}" ] && [ -n "${COMMIT:-}" ] && count_failure
   # A failed reconcile is reported as a failed apply, so that GitopsApplyFailing covers it
   [ "$1" = reconcile ] && set -- apply "$2"
   log "FAILED: $2"
+  local extra=()
+  [ "$1" = apply ] && extra=("homepi_gitops_apply_held $(held_now)")
   write_metrics "homepi_gitops_$1.prom" \
     "homepi_gitops_${1}_success 0" \
-    "homepi_gitops_${1}_timestamp_seconds $(date +%s)"
+    "homepi_gitops_${1}_timestamp_seconds $(date +%s)" \
+    "${extra[@]}"
   exit 1
+}
+
+# Failed attempts of the same tag and commit; another tag starts again at 1
+attempts_of() {
+  local t c n
+  [ -f "$ATTEMPTS" ] && read -r t c n < "$ATTEMPTS" || return 0
+  if [ "$t" = "$TAG" ] && [ "$c" = "$COMMIT" ] && [[ "$n" =~ ^[0-9]+$ ]]; then echo "$n"; else echo 0; fi
+}
+
+# 1 while some tag is held, whichever run writes the apply metrics (a failed reconcile of the
+# deployed tag must not clear the hold of a newer tag)
+held_now() {
+  local t c n
+  if [ -f "$ATTEMPTS" ] && read -r t c n < "$ATTEMPTS" && [[ "$n" =~ ^[0-9]+$ ]] && [ "$n" -ge "$MAX_ATTEMPTS" ]; then echo 1; else echo 0; fi
+}
+
+count_failure() {
+  local n
+  n=$(( $(attempts_of) + 1 ))
+  printf '%s %s %s\n' "$TAG" "$COMMIT" "$n" > "$ATTEMPTS"
+  log "failed attempt $n of $MAX_ATTEMPTS for $TAG"
+}
+
+# The tag failed MAX_ATTEMPTS times: do not run it again. The apply stays reported as failed
+# (GitopsApplyFailing keeps firing) and the hold is reported on its own (GitopsTagHeld).
+hold_if_failing() {
+  local n
+  n=$(attempts_of)
+  [ "${n:-0}" -ge "$MAX_ATTEMPTS" ] || return 0
+  log "HELD: $TAG failed $n times in a row; not retried until a newer tag or: homepi-gitops-sync retry"
+  write_metrics homepi_gitops_apply.prom \
+    "homepi_gitops_apply_success 0" \
+    "homepi_gitops_apply_timestamp_seconds $(date +%s)" \
+    "homepi_gitops_apply_held 1" \
+    "homepi_gitops_apply_held_info{tag=\"$TAG\"} 1"
+  exit 0
 }
 
 verify_tag() {
@@ -110,6 +160,7 @@ record_apply() {
   write_metrics homepi_gitops_apply.prom \
     "homepi_gitops_apply_success 1" \
     "homepi_gitops_apply_timestamp_seconds $(date +%s)" \
+    "homepi_gitops_apply_held 0" \
     "homepi_gitops_untrusted_tags ${UNTRUSTED:-0}" \
     "homepi_gitops_deployed_info{tag=\"$TAG\",commit=\"${COMMIT:0:12}\"} 1"
 }
@@ -195,9 +246,14 @@ fetch_sources() {
 
 main() {
   local mode="${1:-}"
-  case "$mode" in apply | check | reconcile) ;; *) echo "usage: $0 apply|check|reconcile" >&2; exit 2 ;; esac
+  case "$mode" in apply | check | reconcile | retry) ;; *) echo "usage: $0 apply|check|reconcile|retry" >&2; exit 2 ;; esac
   exec 9> /run/homepi-gitops.lock
   flock -n 9 || { log "another run is in progress"; exit 0; }
+  if [ "$mode" = retry ]; then
+    [ -f "$ATTEMPTS" ] && log "hold lifted: $(cat "$ATTEMPTS")"
+    rm -f "$ATTEMPTS"
+    mode=apply
+  fi
 
   [ -d "$WORK/.git" ] || git clone --quiet "$REMOTE" "$WORK" || fail "$mode" "cannot clone $REMOTE"
   fetch_sources "$mode"
@@ -212,9 +268,11 @@ main() {
 
   if [ "$mode" = apply ] && [ "$TAG" = "$CUR_TAG" ]; then
     log "tag $TAG is already deployed"
+    rm -f "$ATTEMPTS"
     record_apply
     exit 0
   fi
+  [ "$mode" = apply ] && hold_if_failing
 
   git -C "$WORK" checkout --quiet --force --detach "$COMMIT"
   log "$mode: $TAG ($COMMIT)"
@@ -223,6 +281,7 @@ main() {
 
   if [ "$mode" = apply ]; then
     printf '%s %s\n' "$TAG" "$COMMIT" > "$DEPLOYED"
+    rm -f "$ATTEMPTS"
     record_apply
   elif [ "$mode" = reconcile ]; then
     # Same tag and commit: nothing new is deployed, the apply metrics cover the run
@@ -236,4 +295,5 @@ main() {
   log "$mode finished: $TAG, changed tasks: ${CHANGED:-0}"
 }
 
-main "$@"
+# Sourcing the file (tests) defines the functions without running anything
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then main "$@"; fi

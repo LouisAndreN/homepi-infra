@@ -62,8 +62,8 @@ with the API stopped.
 |---|---|
 | Virtualenv built under `umask 022`; the API user must import its packages before the services start | done, v0.1.146 |
 | Side files created before any rebuild or restart | done, v0.1.146 |
-| `HomepiApiDown`: either API unit not active for 5 minutes, severity critical (promtool test `api_test.yml`) | this change |
-| node_exporter exports restart counters, so `SystemdServiceRestartLoop` can fire | this change |
-| Runbook: when an apply fails with a cost (here an outage per attempt), stop the apply timer, wait for the rescue, release the fix, start the apply and the timer | this change |
-| Test the role's rebuild path under `umask 077` with the API stopped before it reaches production | open |
-| Decide who or what acts on a critical alert at night (a phone push for `critical`, or accept morning response for a home platform) | open |
+| `HomepiApiDown`: either API unit not active for 5 minutes, severity critical (promtool test `api_test.yml`) | done, v0.1.147 |
+| node_exporter exports restart counters, so `SystemdServiceRestartLoop` can fire | done, v0.1.147 |
+| Runbook: when an apply fails with a cost (here an outage per attempt), stop the apply timer, wait for the rescue, release the fix, start the apply and the timer | done, v0.1.147; replaced by the hold, v0.2.1 |
+| Test the role's rebuild path under `umask 077` with the API stopped before it reaches production | done, v0.2.1: `ansible/roles/provisioning_api/tests/venv-rebuild-test` runs the role's own rebuild shell under umask 077 and imports as `homepi-api`; with the `umask 022` line removed it fails as production did (lib 0700) |
+| Decide who or what acts on a critical alert at night | done, v0.2.1: nobody, and a failing tag is held after two attempts (docs/adr/0001-no-night-response.md) |

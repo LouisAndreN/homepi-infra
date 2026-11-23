@@ -1,0 +1,46 @@
+#!/bin/bash
+# Offline test of the hold on a failing tag in homepi-gitops-sync (no git, no Ansible, no root):
+# the failure count per tag and commit, the hold after MAX_ATTEMPTS, a newer tag or a moved commit
+# starting again at 1, and the metrics written in each case.
+# Usage: ansible/roles/gitops_runtime/tests/gitops-hold-test
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+# shellcheck source=/dev/null
+. "$HERE/../files/homepi-gitops-sync"
+set +e
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+STATE_DIR=$T; ATTEMPTS=$T/failed-attempts; METRICS_DIR=$T/metrics; MAX_ATTEMPTS=2
+mkdir -p "$METRICS_DIR"
+fails=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+metric() { sed -n "s/^$1 //p" "$METRICS_DIR/homepi_gitops_apply.prom"; }
+
+TAG=v0.2.1 COMMIT=aaaa
+( fail apply "ansible-playbook failed" ) > /dev/null
+check "first failure counted" '[ "$(cat "$ATTEMPTS")" = "v0.2.1 aaaa 1" ]'
+check "a failed apply reports success 0 and held 0" '[ "$(metric homepi_gitops_apply_success)" = 0 ] && [ "$(metric homepi_gitops_apply_held)" = 0 ]'
+out=$( (hold_if_failing; echo "not held") 2>&1 )
+check "one failure does not hold" 'printf "%s" "$out" | grep -q "not held"'
+( fail apply "ansible-playbook failed" ) > /dev/null
+check "second failure counted" '[ "$(cat "$ATTEMPTS")" = "v0.2.1 aaaa 2" ]'
+out=$( (hold_if_failing; echo "not held") 2>&1 ); rc=$?
+check "two failures hold the tag (exit 0, nothing run after)" '[ "$rc" = 0 ] && ! printf "%s" "$out" | grep -q "not held" && printf "%s" "$out" | grep -q "HELD: v0.2.1"'
+check "held: success 0, held 1, held_info names the tag" '[ "$(metric homepi_gitops_apply_success)" = 0 ] && [ "$(metric homepi_gitops_apply_held)" = 1 ] && grep -q "homepi_gitops_apply_held_info{tag=\"v0.2.1\"} 1" "$METRICS_DIR/homepi_gitops_apply.prom"'
+TAG=v0.2.2 COMMIT=bbbb
+out=$( (hold_if_failing; echo "not held") 2>&1 )
+check "a newer tag is not held" 'printf "%s" "$out" | grep -q "not held"'
+( fail apply "ansible-playbook failed" ) > /dev/null
+check "a newer tag starts again at 1" '[ "$(cat "$ATTEMPTS")" = "v0.2.2 bbbb 1" ]'
+TAG=v0.2.2 COMMIT=cccc
+check "a moved commit under the same tag starts again at 0" '[ "$(attempts_of)" = 0 ]'
+TAG=v0.2.2 COMMIT=bbbb
+( fail check "drift" ) > /dev/null 2>&1
+( fail reconcile "drift" ) > /dev/null 2>&1
+check "check and reconcile failures do not count" '[ "$(cat "$ATTEMPTS")" = "v0.2.2 bbbb 1" ]'
+TAG=v0.2.2 COMMIT=bbbb; ( fail apply "x" ) > /dev/null
+check "the second failure of v0.2.2 makes held 1 in the failure metrics" '[ "$(metric homepi_gitops_apply_held)" = 1 ]'
+TAG=v0.2.1 COMMIT=aaaa; ( fail reconcile "drift" ) > /dev/null 2>&1
+check "a failed reconcile of the deployed tag keeps the hold of the newer tag visible" '[ "$(metric homepi_gitops_apply_held)" = 1 ]'
+check "the check metrics file has no held line (no duplicate series)" '! grep -q held "$METRICS_DIR/homepi_gitops_check.prom"'
+echo
+[ "$fails" = 0 ] && echo "gitops-hold-test PASS" || { echo "gitops-hold-test FAIL: $fails"; exit 1; }
