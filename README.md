@@ -52,15 +52,16 @@ flowchart LR
 | MQTT | Mosquitto mTLS on 8883, CRL enforced, ACL generated from the device registry | `ansible/roles/pki_crl`, `mqtt_acl` |
 | Enrolment | Zero-touch for pre-announced devices; unknown devices stay pending; the API holds no CA secret | `apps/api` |
 | OTA | Signed images, staged rollout with canary and abort | `ansible/roles/ota_rollout` |
-| Observability | 101 Prometheus rules in 17 files, rule unit tests, Loki with bounded labels, InfluxDB with per-consumer tokens, Grafana on a unix socket | `ansible/roles/observability_core`, `alloy`, `influxdb`, `grafana` |
+| Observability | 104 Prometheus rules in 17 files with promtool unit tests, Loki with bounded labels, InfluxDB with per-consumer tokens, Grafana on a unix socket | `ansible/roles/observability_core`, `alloy`, `influxdb`, `grafana` |
 | Alerting | Slack routing by severity, plus an independent dead man's switch: Watchdog → CloudWatch → e-mail | `terraform/aws/homepi/heartbeat.tf` |
 | Intrusion detection | CrowdSec + nftables bouncer, auditd rules scoped to login sessions | `ansible/roles/crowdsec`, `auditd` |
 | Web access | nginx as the only entry point, Authelia password + TOTP, per-path source allow lists | `ansible/roles/nginx`, `authelia` |
 | GitOps | Pull model: the Pi applies only signed tags from a trusted key, hourly drift check, release gate; nginx, Alloy, Authelia and the dashboard roll back automatically when their checks fail | `ansible/roles/gitops_runtime` |
 | AWS | Organization with management, workload, log-archive and backup-vault accounts; SCP guardrails; organization CloudTrail; cross-account backup vault; budget | `terraform/aws` |
-| Backups | Nightly state archive (age, two recipients) and native InfluxDB backup, uploaded off-site; restore scripts | `scripts/restore`, `docs/disaster-recovery.md` |
+| Backups | Nightly state archive and native InfluxDB backup, weekly line-protocol export, hourly sensor delta (RPO 1 h), all age-encrypted on the Pi and uploaded to S3 | `ansible/roles/homepi_tools`, `docs/disaster-recovery.md` |
+| Disaster recovery | One-command restore orchestrator from a blank disk (phases timed in `timeline.tsv`), rehearsed twice by removing the production disk | `scripts/restore`, `docs/runbooks/restore.md` |
 
-31 Ansible roles, applied by `ansible/site.yml`. Roles marked *verify only* never write
+33 Ansible roles, applied by `ansible/site.yml`. Roles marked *verify only* never write
 boot-critical or network files: they fail the run on drift, and a human applies the change.
 
 ## Design decisions
@@ -90,14 +91,23 @@ Written up in `docs/incidents` and `docs/game-days`, and in the articles.
 - **Re-enrolment loop.** Old firmware discarded its certificate after three MQTT disconnects:
   232 certificates signed in one day. Fixed in firmware; broker restarts now cause 0 signatures,
   and an alert fires on enrolment bursts.
-- **Drills:** dead man's switch (twice), drift detection, controlled reboot without manual action.
+- **2026-11-22/23, provisioning API down about 9 hours.** A security upgrade rebuilt the API
+  virtualenv under the GitOps umask (077): the API user could not read it. The rollback worked, but
+  the failing tag was retried every 10 minutes, and the database side files disappeared overnight.
+  Detected in 12 minutes, nobody acted before the morning. Telemetry was not affected. Fixes:
+  umask 022, side files first, a direct `HomepiApiDown` alert, restart counters in node_exporter.
+- **Full rebuild game days.** The production NVMe is removed and the Pi rebuilt on a spare disk
+  from this repository and the S3 archives only. C3 (2026-11-21): 5 h 18 min, 44 defects. C4
+  (2026-11-22): 4 h 24 min, 17 defects, sensor data loss 54 min. Both **FAIL** the 4-hour target
+  and are published as such; the recovery time of a clean run is not measured yet (C5).
+- **Other drills:** dead man's switch (twice), drift detection, controlled reboot without manual action.
 
 ## Known limits
 
 The full list is in `docs/known-limits.md`. The main ones:
 
-- **Single node.** No high availability. The full restore onto a blank disk is scripted but not
-  yet proven end to end; its recovery time is not measured yet.
+- **Single node.** No high availability: a dead disk is a full rebuild (see the game days above;
+  measured 4 h 24 min, target 4 h).
 - **Disk encryption does not protect against theft.** The data volume is LUKS2, but for a
   headless boot its key file sits on the unencrypted root partition
   (`docs/runbooks/disk-encryption.md`).
@@ -105,6 +115,18 @@ The full list is in `docs/known-limits.md`. The main ones:
   above); device certificates live one year.
 - **Not everything is managed yet.** A few units and files are still adopted by hand; they are
   listed in the docs.
+
+## How this project is built
+
+The code, the scripts and most of the diagnostics in this repository are written with Claude
+(Anthropic's AI model), which is why many commits show `Claude` as author. I (Louis) decide the
+architecture and the scope, approve every change that reaches production (a typed confirmation to
+merge, then a release tag signed with my key), do the physical operations, and run and check the
+game days. Nothing reaches the Pi without passing the Pi's own check-mode precheck and a signed tag.
+
+These guardrails exist because an AI makes mistakes like anyone else: the 2026-11-22 API outage
+came from AI-written code, and the rollback, the precheck and the alerts are what limited it. The
+incident reports say which mistakes were whose.
 
 ## Repository layout
 
