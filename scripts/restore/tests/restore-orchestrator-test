@@ -43,5 +43,12 @@ check "kinds: T0, SD and BOOT wait for a person" '[ "$(awk -F"\t" "\$2 == \"huma
 check "next tag after v0.1.135" '[ "$(REPO=$T/r; mkdir -p $T/r; git -C $T/r init -q; git -C $T/r -c user.email=t@t -c user.name=t commit -q --allow-empty -m x; git -C $T/r tag v0.1.9; git -C $T/r tag v0.1.135; next_tag)" = v0.1.136 ]'
 check "next tag after v0.2.0 is v0.2.1, not v0.1.136" '[ "$(REPO=$T/r; git -C $T/r tag v0.2.0; next_tag)" = v0.2.1 ]'
 check "next tag after v0.2.10 is v0.2.11 (version sort, not text)" '[ "$(REPO=$T/r; git -C $T/r tag v0.2.9; git -C $T/r tag v0.2.10; next_tag)" = v0.2.11 ]'
+# B11 runtime: the repository venv first, its ansible-core equal to the pin
+mkdir -p "$T/rt/.venv/bin" "$T/rt/ansible"; echo "ansible-core==2.20.11" > "$T/rt/ansible/requirements.txt"
+printf '#!/bin/sh\necho "ansible-playbook [core 2.20.11]"\n' > "$T/rt/.venv/bin/ansible-playbook"; chmod +x "$T/rt/.venv/bin/ansible-playbook"
+check "runtime: the venv matching the pin passes and comes first in PATH" '(REPO=$T/rt; runtime_check > /dev/null && [ "$(command -v ansible-playbook)" = "$T/rt/.venv/bin/ansible-playbook" ])'
+printf '#!/bin/sh\necho "ansible-playbook [core 2.20.1]"\n' > "$T/rt/.venv/bin/ansible-playbook"
+check "runtime: 2.20.1 against a 2.20.11 pin is refused" '(REPO=$T/rt; ! runtime_check > /dev/null)'
+check "runtime: no venv is refused" '(REPO=$T/none; ! runtime_check > /dev/null)'
 echo
 [ "$fails" = 0 ] && echo "restore-orchestrator-test PASS" || { echo "restore-orchestrator-test FAIL: $fails"; exit 1; }

@@ -107,6 +107,8 @@ ssh -o ControlMaster=auto -o ControlPersist=2h -o ControlPath=~/.ssh/cm-homepi "
   || POST="$POST
 FAIL ssh master for ansible could not be opened"
 SLOG=$(mktemp /tmp/homepi-storage-check.XXXXXX.log)
+# B11: the repository venv, never the system Ansible (C5 pre-flight, 2026-11-23: apt gave 2.20.1)
+[ -x "$REPO/.venv/bin/ansible-playbook" ] && export PATH="$REPO/.venv/bin:$PATH"
 (cd "$REPO/ansible" && LC_ALL=C.UTF-8 ansible-playbook storage.yml --check) > "$SLOG" 2>&1
 SRC=$?
 DRIFT=$(grep -oE 'storage drift: [^"]*' "$SLOG" | head -n 1)

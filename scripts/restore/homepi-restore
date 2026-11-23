@@ -364,6 +364,22 @@ phase_R6() {
   ssh -t "$PI" "sudo bash /tmp/homepi-r6-verify $DEVICES; rc=\$?; rm -f /tmp/homepi-r6-verify; exit \$rc"
 }
 
+# ---------------------------------------------------------------- runtime
+# B11: the repository venv first, never the system Ansible. C5 pre-flight (2026-11-23): the laptop
+# PATH gave /usr/bin/ansible-playbook, ansible-core 2.20.1 from apt, while the Pi and the venv run
+# 2.20.11. release() puts the venv first (lib.sh), so the tag precheck passed, but R2 to R4SITE call
+# ansible-playbook directly and would have run on the apt version.
+runtime_check() {
+  local want have
+  [ -x "$REPO/.venv/bin/ansible-playbook" ] || { echo "no $REPO/.venv: build it (docs/runbooks/laptop.md)"; return 1; }
+  export PATH="$REPO/.venv/bin:$PATH"
+  want=$(sed -n 's/^ansible-core==\([0-9][0-9.]*\).*/\1/p' "$REPO/ansible/requirements.txt")
+  have=$(ansible-playbook --version | sed -n '1s/.*\[core \([0-9][0-9.]*\)\].*/\1/p')
+  [ -n "$want" ] && [ "$have" = "$want" ] \
+    || { echo "ansible-playbook is ansible-core ${have:-unknown}, ansible/requirements.txt pins ${want:-nothing}"; return 1; }
+  log "runtime: ansible-core $have from $REPO/.venv"
+}
+
 # ---------------------------------------------------------------- report
 # The archive names carry the local time of the Pi (JST): homepi-state-YYYY-MM-DD-HHMM[SS].tar.age
 archive_epoch() {
@@ -451,6 +467,7 @@ main() {
       fi ;;
     *) usage ;;
   esac
+  runtime_check || die "laptop Ansible runtime"
   for c in age sops ansible-playbook git scp ssh timeout; do command -v "$c" > /dev/null || die "missing command: $c"; done
   [ -r "$AGE_KEY" ] || die "laptop age key not found ($AGE_KEY)"
   local p
