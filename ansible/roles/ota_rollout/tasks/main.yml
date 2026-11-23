@@ -19,6 +19,13 @@
     group: homepi-api
     mode: "0755"
 
+# Unsigned images from before v2.4.1 (v2.1.0, v2.3.2) were still served under /fw/esp32c3/. Signed
+# images live under /fw/<project>/ (provisioning_api.py), so nothing points here any more.
+- name: Legacy unsigned images removed
+  ansible.builtin.file:
+    path: /opt/homepi/firmware/esp32c3
+    state: absent
+
 - name: Rollout service and timer
   ansible.builtin.copy:
     src: "{{ item }}"
