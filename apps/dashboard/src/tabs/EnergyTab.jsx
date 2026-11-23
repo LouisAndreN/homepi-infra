@@ -259,8 +259,8 @@ export function EnergyTab(){
 
   // Predicted total
   const predTotal=currentKwh+avgKw*((1440-currentMin)/60)
-  // Hex literal ici (pas var()) : concaténé avec un suffixe alpha plus bas — même
-  // valeur que --ok/--danger/--text, dupliquée en hex par nécessité technique.
+  // Hex literal here (not var()): concatenated with an alpha suffix below; same
+  // value as --ok/--danger/--text, duplicated in hex out of technical necessity.
   const predictColor=predTotal<prevTotalKwh*0.95?'#1D9E75':predTotal>prevTotalKwh*1.05?'#E24B4A':'#eef0f7'
 
   // Cost
@@ -402,9 +402,9 @@ export function EnergyTab(){
 
       {subTab==='devices'&&(
       <div style={{flex:1,overflow:'auto'}}>
-        {/* Placeholder — sera remplacé par le vrai graphe une fois la
-            télémétrie NILM (Teensy -> ESP32-S3 -> MQTT -> InfluxDB) en place.
-            Voir useInflux.js / EnergyTab pour le point d'intégration prévu. */}
+        {/* Placeholder: will be replaced by the real chart once the
+            NILM telemetry (Teensy -> ESP32-S3 -> MQTT -> InfluxDB) is in place.
+            See useInflux.js / EnergyTab for the planned integration point. */}
         <div style={{padding:'var(--sp-4)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:300,gap:'var(--sp-2)',textAlign:'center'}}>
           <div style={{fontSize:32}}>🔌</div>
           <div style={{fontSize:'var(--fs-md)',fontWeight:700,color:'var(--text2)'}}>Per-device breakdown</div>

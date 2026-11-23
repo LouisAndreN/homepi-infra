@@ -68,7 +68,7 @@ export function StripPreview({ layers, numLeds = 50, height = 60, scrollable = f
     function frame(now) {
       const dt = Math.min((now - lastTime) / 1000, 0.2)
       lastTime = now
-      phase += 0.3 * dt   // ★ 0.3 unité/seconde — doit matcher exactement le firmware (speed * 0.3 * dt)
+      phase += 0.3 * dt   // ★ 0.3 unit/second: must match the firmware exactly (speed * 0.3 * dt)
 
       ctx.clearRect(0, 0, width, height)
       ctx.strokeStyle = '#1a1a1a'

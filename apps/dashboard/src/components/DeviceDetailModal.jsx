@@ -54,11 +54,11 @@ function LiveBadge({ isLive, lastSeen }) {
   )
 }
 
-// ── Barre chronologique de connectivité ─────────────────────────────────────
-// Segments dérivés de presenceWindow (count() par fenêtre, createEmpty:true).
-// Un segment "rouge" signifie absence de télémétrie — cause possible : le device
-// a perdu le réseau, OU une panne côté Pi (homepi-api/Telegraf/InfluxDB) a
-// empêché l'ingestion. Ce composant ne peut pas distinguer les deux cas.
+// ── Connectivity timeline bar ─────────────────────────────────────
+// Segments derived from presenceWindow (count() per window, createEmpty:true).
+// A "red" segment means no telemetry. Possible causes: the device
+// lost the network, OR a failure on the Pi (homepi-api/Telegraf/InfluxDB)
+// prevented ingestion. This component cannot tell the two apart.
 function PresenceTimeline({ deviceId, rangeKey, setRangeKey }) {
   const { segments, loading } = usePresenceWindow(deviceId, rangeKey)
   return (
@@ -98,8 +98,8 @@ function PresenceTimeline({ deviceId, rangeKey, setRangeKey }) {
   )
 }
 
-// ── Mini graphe axé métrique — version allégée d'AxisChart (FloorPlanEditor),
-// mêmes seuils/domaines partagés via hooks/thresholds.js, sans les marqueurs solaires.
+// ── Metric-focused mini chart: a light version of AxisChart (FloorPlanEditor),
+// same thresholds/domains shared through hooks/thresholds.js, without the solar markers.
 function MiniAxisChart({ series, metric, height = 130 }) {
   if (!series.length) return null
   const vals = series.map(p => p.v)
@@ -124,9 +124,9 @@ function MiniAxisChart({ series, metric, height = 130 }) {
   )
 }
 
-// ── Tabs par métrique — dérivées dynamiquement des champs réellement publiés
-// par CE device (readings), jamais d'une liste statique. Un SCD41 n'a pas de
-// pressure, un BME688 n'a pas de co2 — afficher un tab vide serait trompeur.
+// ── One tab per metric, derived from the fields THIS device actually publishes
+// (readings), never from a static list. An SCD41 has no
+// pressure, a BME688 has no co2: showing an empty tab would be misleading.
 function MetricTabs({ deviceId, readings, rangeKey }) {
   const METRICS = Object.keys(METRIC_LABEL).filter(m => readings?.[m] != null && readings[m] !== '')
   const [shown, setShown] = useState(METRICS[0] || null)
@@ -173,9 +173,9 @@ function MetricTabs({ deviceId, readings, rangeKey }) {
 }
 
 // ── Modal principal ──────────────────────────────────────────────────────────
-// Vue lecture seule : identité provisioning + statut live + graphes par métrique
-// + timeline de connectivité. Les actions (Confirm/Suspend/OTA) restent dans
-// FleetTab (expand inline), volontairement séparées de ce composant.
+// Read-only view: provisioning identity + live status + per-metric charts
+// + connectivity timeline. The actions (Confirm/Suspend/OTA) stay in
+// FleetTab (inline expand), deliberately separate from this component.
 export function DeviceDetailModal({ device, readings, onClose }) {
   const [rangeKey, setRangeKey] = useState('h24')
   if (!device) return null
@@ -204,7 +204,7 @@ export function DeviceDetailModal({ device, readings, onClose }) {
           }}>×</button>
         </div>
 
-        {/* Identité provisioning */}
+        {/* Provisioning identity */}
         <div style={{ background:'var(--bg3)', borderRadius:'var(--r-sm)', padding:'var(--sp-2) var(--sp-3)', marginBottom:'var(--sp-4)' }}>
           {[
             ['hw_model',  info.hw_model],
@@ -219,12 +219,12 @@ export function DeviceDetailModal({ device, readings, onClose }) {
           ))}
         </div>
 
-        {/* Graphes par métrique */}
+        {/* Per-metric charts */}
         <div style={{ marginBottom:'var(--sp-4)' }}>
           <MetricTabs deviceId={info.device_id} readings={readings} rangeKey={rangeKey}/>
         </div>
 
-        {/* Timeline de connectivité */}
+        {/* Connectivity timeline */}
         <PresenceTimeline deviceId={info.device_id} rangeKey={rangeKey} setRangeKey={setRangeKey}/>
       </div>
     </Modal>

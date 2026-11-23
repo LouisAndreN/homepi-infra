@@ -41,7 +41,7 @@ limits_config:
   ingestion_burst_size_mb: 8
   retention_period: 168h
   allow_structured_metadata: true
-# Configuration retention pour supprimer automatiquement les vieux chunks
+# Retention settings to delete old chunks automatically
 compactor:
   working_directory: /var/lib/loki/compactor
   compaction_interval: 10m

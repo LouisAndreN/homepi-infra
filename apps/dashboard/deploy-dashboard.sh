@@ -13,7 +13,7 @@ die()  { echo -e "${RED}✗${NC} $1"; exit 1; }
 
 echo "━━━ HomePi Dashboard Deploy ━━━"
 
-# 1. Vérifier le zip
+# 1. Check the zip
 [ -f "$ZIP" ] || die "homepi-dashboard.zip introuvable dans $HOME — copie-le d'abord via scp"
 ok "ZIP trouvé : $ZIP"
 
@@ -22,27 +22,27 @@ TMP=$(mktemp -d)
 unzip -q "$ZIP" -d "$TMP"
 ok "ZIP extrait"
 
-# 3. Sync sources (sans node_modules ni dist)
+# 3. Sync sources (without node_modules or dist)
 rsync -a --exclude=node_modules --exclude=dist "$TMP/" "$DEPLOY_DIR/"
 rm -rf "$TMP"
 ok "Sources synchronisées"
 
-# 4. npm install si package.json a changé
+# 4. npm install if package.json changed
 cd "$DEPLOY_DIR"
 npm install --silent
 ok "Dépendances installées"
 
-# 5. Build avec timestamp pour invalider le SW cache
+# 5. Build with a timestamp to invalidate the SW cache
 BUILD_TIME=$(date +%s)
 sed -i "s/const CACHE = 'homepi-[^']*'/const CACHE = 'homepi-$BUILD_TIME'/" public/sw.js
 npm run build --silent
 ok "Build production (cache: homepi-$BUILD_TIME)"
 
-# 6. Deploy vers Nginx
+# 6. Deploy to nginx
 rsync -a --delete dist/ "$WEB_DIR/"
 cp public/site.webmanifest public/sw.js "$WEB_DIR/"
 
-# Icônes
+# Icons
 mkdir -p "$WEB_DIR/icons"
 if ls public/icons/*.png &>/dev/null 2>&1; then
     cp public/icons/*.png "$WEB_DIR/icons/"

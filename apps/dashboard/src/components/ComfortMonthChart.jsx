@@ -1,8 +1,8 @@
 import { useComfortScoreDaily } from '../hooks/useComfortScore.js'
 
-// Une barre par jour — la seule vue qui a du sens sur 30 jours (une courbe
-// brute lissée sur cette échelle ne montrerait que le cycle jour/nuit répété
-// 30 fois, sans dire si la tendance globale s'améliore).
+// One bar per day: the only view that makes sense over 30 days (a raw smoothed
+// curve at this scale would only show the day/night cycle repeated
+// 30 times, without saying whether the overall trend is improving).
 export function ComfortMonthChart({ days=30, height=180 }) {
   const { daily, loading } = useComfortScoreDaily(days)
   if (loading) return <div style={{ height, display:'flex', alignItems:'center', justifyContent:'center', color:'var(--text3)', fontSize:12 }}>Chargement…</div>
@@ -16,8 +16,8 @@ export function ComfortMonthChart({ days=30, height=180 }) {
   const yOf = pct => PAD.top + (1 - pct/100)*ph
   const colorFor = pct => pct >= 85 ? 'var(--ok)' : pct >= 60 ? 'var(--warn)' : 'var(--danger)'
 
-  // Moyenne mobile 7 jours en ligne superposée — dégage la tendance du bruit
-  // jour-à-jour (météo, week-end vs semaine).
+  // 7-day moving average drawn as an overlaid line: separates the trend from the
+  // day-to-day noise (weather, weekend vs weekday).
   const trend = valid.map((d,i) => {
     const window = valid.slice(Math.max(0,i-6), i+1)
     return window.reduce((s,w)=>s+w.score,0)/window.length

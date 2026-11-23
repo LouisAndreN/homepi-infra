@@ -69,7 +69,7 @@ export function series(result, idx) { return result?.[idx]?.values?.map(v => par
 export function allSeries(result) {
   return result.map(r => ({
     labels: r.metric,
-    last: parseFloat(r.value?.[1] ?? 0),   // r.value, pas r.values
+    last: parseFloat(r.value?.[1] ?? 0),   // r.value, not r.values
   }))
 }
 

@@ -3,13 +3,13 @@ import { useState, useEffect, useCallback } from 'react'
 const INFLUX_ORG   = 'iot-org'
 const BASE         = '/influx'  // nginx adds the read-only token (v0.1.61)
 
-// Découpe UNE ligne CSV en respectant les champs entre guillemets (RFC 4180) —
-// une virgule à l'intérieur d'une paire de guillemets ("bme688,bh1750") ne doit
-// PAS être traitée comme séparateur de colonne. split(',') naïf décale toutes
-// les colonnes suivantes dès qu'un champ comme active_sensors contient une
-// virgule interne, ce qui corrompait device_id (ex: devenait littéralement
-// bh1750" avec le guillemet parasite) et fusionnait deux appareils physiques
-// distincts sous une seule clé dans byDevice en aval.
+// Splits ONE CSV line while respecting quoted fields (RFC 4180):
+// a comma inside a pair of quotes ("bme688,bh1750") must
+// NOT be treated as a column separator. A naive split(',') shifts all
+// following columns as soon as a field such as active_sensors contains an
+// inner comma, which corrupted device_id (e.g. it literally became
+// bh1750" with the stray quote) and merged two distinct physical devices
+// under a single key in byDevice downstream.
 function splitCsvLine(line) {
   const out = []
   let cur = ''
@@ -18,7 +18,7 @@ function splitCsvLine(line) {
     const c = line[i]
     if (inQuotes) {
       if (c === '"') {
-        // Guillemet doublé à l'intérieur d'un champ quoté = guillemet littéral échappé
+        // Doubled quote inside a quoted field = escaped literal quote
         if (line[i + 1] === '"') { cur += '"'; i++ }
         else inQuotes = false
       } else {
@@ -34,12 +34,12 @@ function splitCsvLine(line) {
   return out
 }
 
-// Parse la réponse InfluxDB CSV — gère plusieurs blocs annotés dans une même réponse.
-// Une requête groupée (ex. group(columns:["device_id","_field"])) peut produire des
-// tables aux colonnes hétérogènes ; InfluxDB répète alors une ligne d'en-tête
-// (",result,table,...") au début de chaque nouveau bloc. On adopte ce nouvel en-tête
-// à chaque fois qu'on le rencontre, qu'il s'agisse du tout premier bloc ou d'un bloc
-// ultérieur aux colonnes différentes.
+// Parses the InfluxDB CSV response: handles several annotated blocks in one response.
+// A grouped query (e.g. group(columns:["device_id","_field"])) can produce
+// tables with different columns; InfluxDB then repeats a header line
+// (",result,table,...") at the start of each new block. We adopt this new header
+// every time we meet it, whether it is the very first block or a later
+// block with different columns.
 function parseCSV(csv) {
   if (!csv?.trim()) return []
   const lines = csv.split('\n').filter(l => l.trim() && !l.startsWith('#'))
@@ -54,7 +54,7 @@ function parseCSV(csv) {
       headers = splitCsvLine(line).map(h => h.trim())
       continue
     }
-    if (!headers) continue // ligne de données avant tout en-tête connu — ne devrait pas arriver, mais on ignore plutôt que de deviner
+    if (!headers) continue // data row before any known header: should not happen, but we skip it rather than guess
     const vals = splitCsvLine(line)
     const row = {}
     headers.forEach((h, i) => { row[h] = vals[i]?.trim() ?? '' })
@@ -130,8 +130,8 @@ from(bucket: "${bucket}")
   |> last()
   |> group(columns: ["device_id", "_field"])`,
 
-  // Dernier point vu par device, tous champs confondus — alimente le badge "Live"
-  // temps réel (FleetTab / DeviceDetailModal).
+  // Last point seen per device, all fields together: feeds the real-time "Live"
+  // badge (FleetTab / DeviceDetailModal).
   lastSeenAll: (start = '-10m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
@@ -146,9 +146,9 @@ from(bucket: "${bucket}")
   |> last()
   |> keep(columns: ["device_id", "_time", "_field", "_value"])`,
 
-  // Segments présence/absence sur une fenêtre — alimente la barre chronologique
-  // du DeviceDetailModal. createEmpty:true est CRITIQUE : sans lui Flux omet les
-  // buckets vides et le gap de connectivité disparaît silencieusement.
+  // Presence/absence segments over a window: feed the timeline bar
+  // of DeviceDetailModal. createEmpty:true is CRITICAL: without it Flux drops the
+  // empty buckets and the connectivity gap disappears silently.
   presenceWindow: (deviceId, start = '-24h', every = '5m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
@@ -164,29 +164,29 @@ from(bucket: "${bucket}")
   |> filter(fn: (r) => r._field == "co2")
   |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)`,
 
-  // Température trend
+  // Temperature trend
   tempTrend: (start = '-6h', every = '5m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
   |> filter(fn: (r) => r._field == "temperature")
   |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)`,
 
-  // Humidité trend
+  // Humidity trend
   humidityTrend: (start = '-6h', every = '5m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
   |> filter(fn: (r) => r._field == "humidity")
   |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)`,
 
-  // Luminosité trend
+  // Light trend
   luxTrend: (start = '-6h', every = '5m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
   |> filter(fn: (r) => r._field == "lux")
   |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)`,
 
-  // Historique d'une métrique quelconque, groupé par device_id — utilisé par la barre
-  // chronologique du plan (FloorPlanEditor, heatmap scrubber) et par SensorsTab/DeviceDetailModal.
+  // History of any metric, grouped by device_id: used by the timeline
+  // bar of the plan (FloorPlanEditor, heatmap scrubber) and by SensorsTab/DeviceDetailModal.
   metricHistory: (field, start = '-24h', every = '5m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
@@ -194,10 +194,10 @@ from(bucket: "${bucket}")
   |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
   |> group(columns: ["device_id"])`,
 
-  // Historique de TOUTES les métriques disponibles pour UN device en une seule requête —
-  // alimente le graphe combiné normalisé du panneau de détail FloorPlanEditor. Une seule
-  // query plutôt qu'une par métrique : évite d'appeler useFlux() un nombre variable de
-  // fois selon le sensor cliqué (violerait les rules-of-hooks).
+  // History of ALL available metrics for ONE device in a single query:
+  // feeds the combined normalised chart of the FloorPlanEditor detail panel. One
+  // query rather than one per metric: avoids calling useFlux() a variable number of
+  // times depending on the clicked sensor (it would break the rules of hooks).
   metricsHistoryForDevice: (deviceId, start = '-24h', every = '5m', bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})
@@ -209,14 +209,14 @@ from(bucket: "${bucket}")
   |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false)
   |> keep(columns: ["_time", "_field", "_value"])`,
 
-  // Humidité 24h
+  // Humidity 24h
   humidity24h: (bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: -24h)
   |> filter(fn: (r) => r._field == "humidity")
   |> aggregateWindow(every: 15m, fn: mean, createEmpty: false)`,
 
-  // Comfort index (simplifié ASHRAE 55 comme dans ton Grafana)
+  // Comfort index (simplified ASHRAE 55, as in the Grafana dashboard)
   comfort: (bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: -10m)
@@ -242,10 +242,10 @@ from(bucket: "${bucket}")
   |> group(columns: ["device_id"])`,
 
 
-  // Historique multi-métriques TOUS DEVICES confondus sur une fenêtre — sert au
-  // calcul du score de confort composite temporel (comfortScorePct). Contrairement
-  // à metricsHistoryForDevice (un seul device), celle-ci ramène tout l'appart :
-  // le score composite doit refléter l'état global, pas un seul capteur.
+  // Multi-metric history of ALL DEVICES together over a window: used for the
+  // temporal composite comfort score (comfortScorePct). Unlike
+  // metricsHistoryForDevice (a single device), this one brings the whole flat:
+  // the composite score must reflect the global state, not one sensor.
   allMetricsHistory: (start='-24h', every='10m', bucket='iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: ${start})

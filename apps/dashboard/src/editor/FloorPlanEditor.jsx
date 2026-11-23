@@ -21,7 +21,7 @@ const mkId=()=>`e${Date.now()}${Math.random().toString(36).slice(2,5)}`
 const EMPTY_FLOOR={id:mkId(),name:'Ground Floor',level:0,wallThickness:10,orientationDeg:0,walls:[],openings:[],stairs:[],appliances:[],furniture:[],sensors:[]}
 const DEF_DB={buildings:[{id:mkId(),name:'My Home',apartments:[{id:mkId(),name:'Apartment',contractId:null,floors:[EMPTY_FLOOR]}]}]}
 
-// ─── Widgets déplaçables (boussole, D-pad, légende, barre d'échelle, chronologie) ──
+// ─── Draggable widgets (compass, D-pad, legend, scale bar, timeline) ──
 const WIDGET_POS_KEY='homepi_fp_widgetpos'
 function loadWidgetPos(key,fallback){
   try{
@@ -364,8 +364,8 @@ function AxisChart({values,label,metric,rangeKey='h24',height=76,lat,lon}){
   )
 }
 
-// Pondération spatiale partagée entre le rendu canvas, l'échantillonnage au
-// curseur ET le panneau d'analyse de zone (AnalysisPanel).
+// Spatial weighting shared by the canvas rendering, the sampling under the
+// cursor AND the zone analysis panel (AnalysisPanel).
 export function weightedSample(wx,wy,sd,walls){
   let wS=0,vS=0
   let nearCount=0
@@ -664,7 +664,7 @@ function FurnitureEl({f,isSelected,tool,onSelect,onStartDrag,onErase}){
   )
 }
 function SensorEl({s,isSelected,walls,tool,onSelect,onStartDrag,onErase}){
-  const color='#1D9E75' // vert fixe — cohérent avec appliances (bleu) et furniture (violet), une couleur par catégorie d'élément
+  const color='#1D9E75' // fixed green: consistent with appliances (blue) and furniture (purple), one colour per element category
   const handle=e=>{e.stopPropagation();if(tool==='erase')onErase(s.id);else onSelect(s,e)}
   return(
     <g onClick={handle}
@@ -685,7 +685,7 @@ function StairsEl({s,isSelected,tool,onSelect,onErase}){
   )
 }
 
-// ─── Graphique combiné normalisé avec axes réels par métrique ─────────────────
+// ─── Combined normalised chart with real axes per metric ─────────────────
 function NormalizedMultiChart({ deviceId, availableMetrics, rangeKey='h24', height=260, cursorTs=null, onScrub=null }) {
   const cfg = TIMELINE_RANGES[rangeKey]
   const hist = useFlux(deviceId ? FLUX.metricsHistoryForDevice(deviceId, cfg.start, cfg.every) : null, 60000)
@@ -1377,7 +1377,7 @@ function CompassWidget({deg,onChange,timeLabel,lat,lon,onSetGPS}){
   )
 }
 
-// ─── D-pad de précision ─────────────────────────────────────────────────────────
+// ─── Precision D-pad ─────────────────────────────────────────────────────────
 function DPad({onNudge}){
   const btn={width:34,height:34,display:'flex',alignItems:'center',justifyContent:'center',border:'0.5px solid var(--border)',background:'var(--bg2)',color:'var(--text2)',cursor:'pointer',fontSize:15,borderRadius:'var(--r-sm)',touchAction:'none'}
   const repeatRef=useRef(null),timeoutRef=useRef(null),activeRef=useRef(false)
@@ -1521,7 +1521,7 @@ export function FloorPlanEditor({deviceReadings={},onRangeChange}){
   const[heatCursor,setHeatCursor]=useState(null)
   const[staticCursor,setStaticCursor]=useState(null)
 
-  // ── Mode analyse de zone — rectangle(s) tracé(s) librement sur le plan ──
+  // ── Zone analysis mode: rectangle(s) drawn freely on the plan ──
   const[analysisRects,setAnalysisRects]=useState([])
   const[drawingAnalysis,setDrawingAnalysis]=useState(null)
 
@@ -1877,8 +1877,8 @@ export function FloorPlanEditor({deviceReadings={},onRangeChange}){
   function onMouseUp(e){
     if (drawingAnalysis?.active) {
       const {x0,y0,x1,y1} = drawingAnalysis
-      // Magnétisme sur les murs existants pour les 2 coins — aide à aligner le
-      // rectangle sur les limites réelles d'une pièce sans détection de contour.
+      // Snapping to existing walls for both corners: helps align the
+      // rectangle with the real limits of a room without edge detection.
       const corner1 = snapObstacles(x0,y0,floor.walls||[],[],30)
       const corner2 = snapObstacles(x1,y1,floor.walls||[],[],30)
       const rect = { x0:Math.min(corner1.x,corner2.x), y0:Math.min(corner1.y,corner2.y), x1:Math.max(corner1.x,corner2.x), y1:Math.max(corner1.y,corner2.y) }

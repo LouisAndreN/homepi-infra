@@ -17,8 +17,8 @@ function Section({ title, children }) {
   )
 }
 
-// Labels qualitatifs dérivés des MÊMES seuils que le Gauge/pastilles — pas de palette
-// séparée. Un seul point de vérité (hooks/thresholds.js) pour la couleur ET le libellé.
+// Qualitative labels derived from the SAME thresholds as the Gauge/chips: no separate
+// palette. A single source of truth (hooks/thresholds.js) for the colour AND the label.
 function qualLabel(metric, value) {
   const color = statusColorForValue(metric, value)
   if (color === 'var(--ok)') return 'Good'
@@ -56,8 +56,8 @@ function DeviceCard({ deviceId, readings, selected, onClick }) {
         <div style={{ width: 8, height: 8, borderRadius: '50%', background: 'var(--ok)' }}/>
       </div>
 
-      {/* Gauges — thresholds alignés sur hooks/thresholds.js (même bornes que la heatmap
-          FloorPlan et les pastilles FleetTab, pas de palette dupliquée). */}
+      {/* Gauges: thresholds aligned with hooks/thresholds.js (same bounds as the FloorPlan
+          heatmap and the FleetTab chips, no duplicated palette). */}
       <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', justifyContent: 'center' }}>
         {!isNaN(temp) && (
           <Gauge value={temp} min={15} max={35} unit="°C" label="Temp"
@@ -82,9 +82,9 @@ function DeviceCard({ deviceId, readings, selected, onClick }) {
         )}
       </div>
 
-      {/* Quality badges — couleur ET libellé dérivés de statusColorForValue, plus de
-          palette HEX locale ni de paliers différents (l'ancien co2Color allait jusqu'à
-          1500 avec un palier 'amber' intermédiaire qui n'existe pas dans STATUS_RANGES). */}
+      {/* Quality badges: colour AND label derived from statusColorForValue, no more
+          local HEX palette or different steps (the old co2Color went up to
+          1500 with an intermediate 'amber' step that does not exist in STATUS_RANGES). */}
       <div style={{ display: 'flex', gap: 'var(--sp-2)', marginTop: 'var(--sp-3)', flexWrap: 'wrap' }}>
         {!isNaN(co2) && (() => {
           const c = statusColorForValue('co2', co2)

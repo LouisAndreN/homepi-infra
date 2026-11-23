@@ -1,10 +1,10 @@
-// Détection automatique des zones (pièces) à partir de la géométrie des murs —
-// flood-fill sur grille discrétisée plutôt que reconstruction de polygones :
-// plus robuste aux imperfections d'un plan dessiné à la main (murs qui ne se
-// touchent pas exactement au pixel près, coins non fermés). Le coût est payé
-// une seule fois par changement de géométrie (murs/ouvertures), pas par frame.
+// Automatic detection of zones (rooms) from the wall geometry:
+// flood fill on a discretised grid rather than polygon reconstruction,
+// more robust to the flaws of a hand-drawn plan (walls that do not
+// meet exactly to the pixel, open corners). The cost is paid
+// once per geometry change (walls/openings), not per frame.
 
-const ZONE_GRID_STEP = 24 // plus grossier que HM_STEP (heatmap) — suffisant pour la topologie, moins de cellules à visiter
+const ZONE_GRID_STEP = 24 // coarser than HM_STEP (heatmap): enough for the topology, fewer cells to visit
 
 function segBlocked(x1,y1,x2,y2,walls,raySegIntersect,d2){
   const dist = d2(x1,y1,x2,y2)
@@ -18,7 +18,7 @@ function segBlocked(x1,y1,x2,y2,walls,raySegIntersect,d2){
   return false
 }
 
-// Calcule les zones connexes pour un étage donné. Retourne un tableau de zones,
+// Computes the connected zones for a given floor. Returns an array of zones,
 // chacune { id, cells:[{x,y}...], bounds:{minX,maxX,minY,maxY} }.
 export function detectZones(floor, raySegIntersect, d2) {
   const walls = floor.walls || []
@@ -30,7 +30,7 @@ export function detectZones(floor, raySegIntersect, d2) {
   const minY = Math.min(...ys)-40, maxY = Math.max(...ys)+40
   const cols = Math.ceil((maxX-minX)/ZONE_GRID_STEP)
   const rows = Math.ceil((maxY-minY)/ZONE_GRID_STEP)
-  if (cols*rows > 40000) return [] // garde-fou — plan anormalement grand, évite un calcul explosif
+  if (cols*rows > 40000) return [] // safeguard: abnormally large plan, avoids an explosive computation
 
   const cellX = i => minX + i*ZONE_GRID_STEP + ZONE_GRID_STEP/2
   const cellY = j => minY + j*ZONE_GRID_STEP + ZONE_GRID_STEP/2
@@ -43,7 +43,7 @@ export function detectZones(floor, raySegIntersect, d2) {
   for (let j=0;j<rows;j++) for (let i=0;i<cols;i++) {
     const k = idx(i,j)
     if (visited[k]) continue
-    // BFS depuis cette cellule
+    // BFS from this cell
     const queue = [k]
     visited[k] = 1
     const cells = []
@@ -61,7 +61,7 @@ export function detectZones(floor, raySegIntersect, d2) {
         queue.push(nk)
       }
     }
-    if (cells.length < 3) continue // bruit — cellule isolée coincée entre murs, pas une vraie pièce
+    if (cells.length < 3) continue // noise: an isolated cell stuck between walls, not a real room
     const zoneId = zones.length
     for (const c of cells) zoneOf[idx(c.i,c.j)] = zoneId
     const cxs = cells.map(c=>c.x), cys = cells.map(c=>c.y)
@@ -74,8 +74,8 @@ export function detectZones(floor, raySegIntersect, d2) {
   return zones
 }
 
-// Assigne chaque capteur à sa zone — recherche la cellule la plus proche de la
-// position du capteur parmi toutes les zones détectées.
+// Assigns each sensor to its zone: looks for the cell closest to the
+// sensor position among all detected zones.
 export function assignSensorsToZones(sensors, zones) {
   const assignment = {} // deviceId -> zoneId
   for (const s of sensors) {
@@ -91,8 +91,8 @@ export function assignSensorsToZones(sensors, zones) {
   return assignment
 }
 
-// Nom lisible par défaut pour une zone — basé sur sa taille relative, faute de
-// mieux (l'utilisateur pourra renommer manuellement plus tard si besoin).
+// Default readable name for a zone, based on its relative size for lack of
+// anything better (the user can rename it by hand later if needed).
 export function labelZones(zones) {
   return zones.map((z,i) => ({ ...z, label: `Zone ${i+1}` }))
 }

@@ -15,10 +15,10 @@ self.addEventListener('activate', e => {
   self.clients.claim()
 })
 
-// Network first — données temps réel, pas de cache sur les API
+// Network first: real-time data, no cache for the API
 self.addEventListener('fetch', e => {
   const url = new URL(e.request.url)
-  // API calls : toujours réseau
+  // API calls: always the network
   if (url.pathname.startsWith('/api/') ||
       url.pathname.startsWith('/prom-api/') ||
       url.pathname.startsWith('/loki-api/') ||

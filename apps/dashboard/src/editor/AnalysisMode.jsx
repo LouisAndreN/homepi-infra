@@ -2,9 +2,9 @@ import { useState, useRef, useMemo } from 'react'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
 import { comfortScorePct } from '../hooks/thresholds.js'
 
-// Barre temporelle avec fenêtre glissante et redimensionnable — sert à choisir
-// la période exacte à analyser pour la zone sélectionnée. Glisser le bloc entier
-// = déplacer la période sans changer sa durée. Glisser un bord = redimensionner.
+// Timeline bar with a sliding, resizable window: used to choose
+// the exact period to analyse for the selected zone. Dragging the whole block
+// = moving the period without changing its length. Dragging an edge = resizing.
 function AnalysisTimeWindow({ totalRangeMs, windowStart, windowMs, onChange, loading }) {
   const trackRef = useRef(null)
   const dragRef = useRef(null) // { mode:'move'|'left'|'right', startX, startWindowStart, startWindowMs }
@@ -68,7 +68,7 @@ function AnalysisTimeWindow({ totalRangeMs, windowStart, windowMs, onChange, loa
           onMouseDown={e=>{e.stopPropagation();startDrag('move',e.clientX)}}
           onTouchStart={e=>{e.stopPropagation();startDrag('move',e.touches[0].clientX)}}
           style={{position:'absolute',left:`${left}%`,width:`${width}%`,top:0,bottom:0,background:'var(--accent-soft)',border:'1px solid var(--accent-vivid)',borderRadius:'var(--r-sm)',cursor:'grab'}}/>
-        {/* Poignées de redimensionnement */}
+        {/* Resize handles */}
         <div onMouseDown={e=>{e.stopPropagation();startDrag('left',e.clientX)}} onTouchStart={e=>{e.stopPropagation();startDrag('left',e.touches[0].clientX)}}
           style={{position:'absolute',left:`calc(${left}% - 5px)`,width:10,top:0,bottom:0,cursor:'ew-resize',zIndex:2}}/>
         <div onMouseDown={e=>{e.stopPropagation();startDrag('right',e.clientX)}} onTouchStart={e=>{e.stopPropagation();startDrag('right',e.touches[0].clientX)}}
@@ -78,12 +78,12 @@ function AnalysisTimeWindow({ totalRangeMs, windowStart, windowMs, onChange, loa
   )
 }
 
-// Panneau d'analyse — reçoit un rectangle (en coordonnées monde du plan) et la
-// liste de tous les capteurs de l'étage ; filtre lui-même ceux dont la position
-// tombe dans le rectangle, puis calcule le score de confort composite sur la
-// fenêtre temporelle choisie.
+// Analysis panel: receives a rectangle (in plan world coordinates) and the
+// list of all sensors of the floor; filters by itself those whose position
+// falls in the rectangle, then computes the composite comfort score over the
+// chosen time window.
 export function AnalysisPanel({ selectionRect, sensors, onClose }) {
-  const [totalRangeMs] = useState(30*86400000) // 30 jours de plage totale navigable — la fenêtre elle-même peut être plus courte
+  const [totalRangeMs] = useState(30*86400000) // 30 days of total navigable range; the window itself can be shorter
   const [windowStart, setWindowStart] = useState(Date.now()-86400000)
   const [windowMs, setWindowMs] = useState(86400000)
 

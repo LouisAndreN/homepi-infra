@@ -1,12 +1,12 @@
 import { createPortal } from 'react-dom'
 
-// Portail générique — rend son contenu directement dans document.body plutôt
-// que dans l'arbre React courant. Nécessaire car App.jsx applique un
-// `transform:translateX` sur le conteneur des tabs pour le swipe horizontal ;
-// un transform sur un ancêtre piège tout `position:fixed` descendant à
-// l'intérieur de sa boîte, peu importe l'onglet actif, l'orientation ou la
-// taille d'écran. Le portail contourne ce piège une fois pour toutes — tout
-// modal de l'app doit passer par ici plutôt que rendre son overlay en place.
+// Generic portal: renders its content directly into document.body rather
+// than in the current React tree. Needed because App.jsx applies a
+// `transform:translateX` to the tab container for horizontal swipe;
+// a transform on an ancestor traps every descendant `position:fixed` inside
+// its box, whatever the active tab, the orientation or the
+// screen size. The portal avoids this trap once and for all: every
+// modal of the app must go through here rather than render its overlay in place.
 export function Modal({ children, onClose }) {
   return createPortal(
     <div onClick={onClose} style={{

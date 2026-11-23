@@ -71,9 +71,9 @@ def process_line(line, events, skip_ids, out):
     if rtype == "SYSCALL":
         kv = parse_kv(line)
         if kv.get("key") != TARGET_KEY:
-            # Pas notre règle exec (network_connect, mount_operations, etc.)
-            # → on ignore tout le groupe, y compris les lignes EXECVE/CWD
-            # qui suivront pour ce même audit_id.
+            # Not our exec rule (network_connect, mount_operations, etc.)
+            # -> skip the whole group, including the EXECVE/CWD lines
+            # that follow for the same audit_id.
             skip_ids.add(audit_id)
             events.pop(audit_id, None)
             return

@@ -2,18 +2,18 @@ import { useState, useMemo, useRef } from 'react'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
 import { COMFORT_METRICS, normalizeValue } from '../hooks/thresholds.js'
 
-// Grille dédiée à l'analyse — pas besoin de la finesse de la heatmap visuelle
-// (HM_STEP), juste une estimation statistique raisonnable sur une région.
+// Grid dedicated to analysis: no need for the resolution of the visual heatmap
+// (HM_STEP), just a reasonable statistical estimate over a region.
 const ANALYSIS_GRID_STEP = 20
 
-// Nombre max de pas de temps sur lesquels on relance le calcul spatial complet
-// (grille × métriques × occlusion par pixel) — au-delà, on sous-échantillonne
-// uniformément plutôt que de calculer sur chaque point Influx. Le calcul
-// spatial est le poste de coût dominant, pas la récupération des données —
-// Influx garde sa résolution 15m, seul le nombre d'évaluations spatiales est
-// plafonné. 24 pas sur une fenêtre de 24h = un point par heure en moyenne ;
-// sur 30 jours ça reste 24 points répartis sur tout le mois — suffisant pour
-// une moyenne représentative sans exploser le coût de calcul.
+// Maximum number of time steps on which the full spatial computation is rerun
+// (grid × metrics × per-pixel occlusion); beyond that, we subsample
+// uniformly rather than compute on every Influx point. The spatial
+// computation is the dominant cost, not fetching the data:
+// Influx keeps its 15m resolution, only the number of spatial evaluations is
+// capped. 24 steps over a 24h window = one point per hour on average;
+// over 30 days it is still 24 points spread over the month, enough for
+// a representative average without blowing up the computation cost.
 const MAX_ANALYSIS_SAMPLES = 24
 
 function throttleSeries(series, maxSamples) {
@@ -26,12 +26,12 @@ function throttleSeries(series, maxSamples) {
   return out
 }
 
-// Calcule le score composite moyen sur une (ou plusieurs) région(s) rectangulaire(s),
-// en réutilisant EXACTEMENT le même modèle spatial que la heatmap visuelle
-// (weightedSample par métrique + occlusion par les murs) — pas un filtrage de
-// capteurs par position. Un pixel sans ligne de vue vers aucun capteur est
-// naturellement exclu du calcul (weightedSample renvoie null), donc une
-// sélection qui déborde dans une pièce sans donnée n'y ajoute pas de fausse
+// Computes the average composite score over one (or several) rectangular region(s),
+// reusing EXACTLY the same spatial model as the visual heatmap
+// (weightedSample per metric + occlusion by walls), not a filtering of
+// sensors by position. A pixel with no line of sight to any sensor is
+// naturally excluded from the computation (weightedSample returns null), so a
+// selection that spills into a room without data adds no false
 // estimation.
 function computeZoneScore(rects, sensorsByMetric, walls, weightedSample) {
   let totalExcess = 0, validPixels = 0
@@ -47,7 +47,7 @@ function computeZoneScore(rects, sensorsByMetric, walls, weightedSample) {
           pixelActive++
           pixelExcess += Math.max(0, Math.abs(n)-1)
         }
-        if (pixelActive === 0) continue // aucune métrique estimable ici — pixel exclu, pas compté comme "bon" par défaut
+        if (pixelActive === 0) continue // no metric can be estimated here: pixel excluded, not counted as "good" by default
         totalExcess += pixelExcess / pixelActive
         validPixels++
       }
@@ -61,9 +61,9 @@ function computeZoneScore(rects, sensorsByMetric, walls, weightedSample) {
   }
 }
 
-// Barre temporelle avec fenêtre glissante et redimensionnable — sert à choisir
-// la période exacte à analyser pour la zone sélectionnée. Glisser le bloc entier
-// = déplacer la période sans changer sa durée. Glisser un bord = redimensionner.
+// Timeline bar with a sliding, resizable window: used to choose
+// the exact period to analyse for the selected zone. Dragging the whole block
+// = moving the period without changing its length. Dragging an edge = resizing.
 function AnalysisTimeWindow({ totalRangeMs, windowStart, windowMs, onChange, loading }) {
   const trackRef = useRef(null)
   const dragRef = useRef(null) // { mode:'move'|'left'|'right', startWindowStart, startWindowMs, startT }
@@ -139,10 +139,10 @@ function AnalysisTimeWindow({ totalRangeMs, windowStart, windowMs, onChange, loa
   )
 }
 
-// Panneau d'analyse — reçoit une liste de rectangles de sélection (en
-// coordonnées monde du plan) et calcule le score de confort composite sur ces
-// zones, en réutilisant le modèle spatial exact de la heatmap (weightedSample
-// + occlusion par les murs), pas un simple filtrage de capteurs.
+// Analysis panel: receives a list of selection rectangles (in
+// plan world coordinates) and computes the composite comfort score over these
+// zones, reusing the exact spatial model of the heatmap (weightedSample
+// + occlusion by walls), not a simple filtering of sensors.
 export function AnalysisPanel({ selectionRects, sensors, walls, weightedSample, onClose, onRemoveRect }) {
   const [totalRangeMs] = useState(30*86400000)
   const [windowStart, setWindowStart] = useState(Date.now()-86400000)
@@ -154,9 +154,9 @@ export function AnalysisPanel({ selectionRects, sensors, walls, weightedSample, 
     30000
   )
 
-  // Regroupe les lectures par timestamp puis par métrique, avec la position de
-  // chaque device — nécessaire pour reconstruire sensorsByMetric à chaque
-  // instant échantillonné dans la fenêtre temporelle choisie.
+  // Groups the readings by timestamp, then by metric, with the position of
+  // each device: needed to rebuild sensorsByMetric at each
+  // sampled instant in the chosen time window.
   const result = useMemo(() => {
     if (!data?.length || !selectionRects.length) return { series: [] }
     const byTs = {}

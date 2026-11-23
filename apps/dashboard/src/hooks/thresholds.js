@@ -1,6 +1,6 @@
-// Source unique de vérité pour les seuils vert/jaune/rouge par métrique.
-// Utilisé par FloorPlanEditor (heatmap + graphe normalisé), SensorsTab et FleetTab/DeviceDetailModal.
-// Toute modification de seuil se fait ICI UNIQUEMENT — ne jamais redéfinir localement.
+// Single source of truth for the green/yellow/red thresholds per metric.
+// Used by FloorPlanEditor (heatmap + normalised chart), SensorsTab and FleetTab/DeviceDetailModal.
+// Every threshold change is made HERE ONLY: never redefine one locally.
 
 export const STATUS_RANGES = {
   temperature: { lowRed:18, lowYellow:20, highYellow:26, highRed:30 },
@@ -20,8 +20,8 @@ export function statusColorForValue(metric, value) {
   return 'var(--ok)'
 }
 
-// Hex bruts correspondant aux tokens CSS --ok/--warn/--danger/--text3 — nécessaires
-// pour tout rendu pixel par pixel (canvas), où les CSS var() ne sont pas résolues.
+// Raw hex values matching the CSS tokens --ok/--warn/--danger/--text3: needed
+// for any pixel-by-pixel rendering (canvas), where CSS var() is not resolved.
 export const STATUS_HEX = { ok:'#1D9E75', warn:'#EF9F27', danger:'#E24B4A', neutral:'#656c8c' }
 
 export function statusHexForValue(metric, value) {
@@ -32,13 +32,13 @@ export function statusHexForValue(metric, value) {
   return STATUS_HEX.neutral
 }
 
-// Normalise une valeur en [-1, +1] par rapport aux limites acceptables de la métrique.
-// -1 = limite basse acceptable, +1 = limite haute acceptable (même convention que le
-// tableau de bord de référence). Quand la métrique n'a pas de lowRed défini (CO2, IAQ —
-// qui n'ont pas de "trop bas" physiquement significatif), le plancher du domaine
-// d'affichage (METRIC_DOMAIN) sert de repère bas, par convention d'affichage, pas comme
-// seuil réel. Léger dépassement autorisé au-delà de ±1 (clampé à ±1.5) pour visualiser
-// les dépassements, plutôt qu'un clamp strict qui écraserait l'info visuellement.
+// Normalises a value to [-1, +1] relative to the acceptable limits of the metric.
+// -1 = lower acceptable limit, +1 = upper acceptable limit (same convention as the
+// reference dashboard). When the metric has no lowRed defined (CO2, IAQ,
+// which have no physically meaningful "too low"), the floor of the display
+// domain (METRIC_DOMAIN) is used as the lower mark, as a display convention, not as a
+// real threshold. A slight overshoot beyond ±1 is allowed (clamped to ±1.5) to show
+// overshoots, rather than a strict clamp that would flatten the information visually.
 export function normalizeValue(metric, value) {
   const r = STATUS_RANGES[metric]
   if (!r || value == null || isNaN(value)) return null
@@ -54,9 +54,9 @@ export const METRIC_DOMAIN = { temperature:[15,32], humidity:[0,100], co2:[400,1
 export const METRIC_UNIT  = { temperature:'°C', humidity:'%', co2:'ppm', lux:'lx', iaq:'', pressure:'hPa' }
 export const METRIC_LABEL = { temperature:'Température', humidity:'Humidité', co2:'CO₂', lux:'Luminosité', iaq:'IAQ', pressure:'Pression' }
 
-// Palette fixe par métrique pour l'identité des séries dans les graphes multi-courbes
-// (NormalizedMultiChart) — distincte de statusColorForValue (qui code un statut de
-// dangerosité), ici c'est une identité visuelle constante par métrique.
+// Fixed palette per metric for series identity in multi-line charts
+// (NormalizedMultiChart), distinct from statusColorForValue (which encodes a
+// danger status); here it is a constant visual identity per metric.
 export const METRIC_SERIES_COLOR = {
   temperature: '#D85A30',
   humidity:    '#378ADD',
@@ -67,20 +67,20 @@ export const METRIC_SERIES_COLOR = {
 }
 
 
-// Métriques comptant pour le score de confort composite — luminosité exclue
-// (pas de "zone acceptable" universelle, sert à la détection d'événements,
-// pas au confort), pression exclue (suit la météo extérieure, non-actionnable
-// par l'occupant, ajoute du bruit au score sans info utile).
+// Metrics counted in the composite comfort score: light excluded
+// (no universal "acceptable zone", used for event detection,
+// not comfort), pressure excluded (follows the outdoor weather, not actionable
+// by the occupant, adds noise to the score without useful information).
 export const COMFORT_METRICS = ['co2','temperature','humidity','iaq']
 
 export const STATUS_HEX_COMPOSITE = { ok:'#1D9E75', warn:'#EF9F27', bad:'#E07B39', danger:'#E24B4A', neutral:'#3a3f52' }
 
-// Score de confort composite pour un point/pixel donné : moyenne de l'excès
-// au-delà des limites acceptables sur toutes les métriques de confort
-// disponibles à ce point. 0 = parfaitement dans les clous partout,
-// plus la valeur grimpe plus les dépassements sont sévères ou nombreux.
-// Pondéré par la gravité (pas juste un comptage binaire) pour éviter qu'un
-// léger dépassement isolé ne fasse basculer tout le score en alerte.
+// Composite comfort score for a given point/pixel: average of the excess
+// beyond the acceptable limits over all comfort metrics
+// available at this point. 0 = fully within limits everywhere;
+// the higher the value, the more severe or numerous the overshoots.
+// Weighted by severity (not just a binary count) so that a
+// slight isolated overshoot does not tip the whole score into alert.
 export function compositeExcess(valuesByMetric) {
   let total = 0, count = 0
   for (const m of COMFORT_METRICS) {
@@ -103,9 +103,9 @@ export function colorForExcess(excess) {
   return STATUS_HEX_COMPOSITE.danger
 }
 
-// % de temps (ou de mesures) où TOUTES les métriques de confort disponibles
-// sont simultanément dans leur zone acceptable — la mesure "CV" centrale.
-// points : tableau de { valuesByMetric } — une entrée par instant échantillonné.
+// % of time (or of measurements) when ALL available comfort metrics
+// are within their acceptable zone at once: the central "CV" measure.
+// points: array of { valuesByMetric }, one entry per sampled instant.
 export function comfortScorePct(points) {
   if (!points.length) return null
   let goodCount = 0, validCount = 0
@@ -113,7 +113,7 @@ export function comfortScorePct(points) {
     const excess = compositeExcess(p.valuesByMetric)
     if (excess == null) continue
     validCount++
-    if (excess < 0.05) goodCount++ // seuil "acceptable" = même seuil que le vert de la heatmap
+    if (excess < 0.05) goodCount++ // "acceptable" threshold = the same threshold as the heatmap green
   }
   if (validCount === 0) return null
   return (goodCount / validCount) * 100

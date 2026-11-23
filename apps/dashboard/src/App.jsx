@@ -23,7 +23,7 @@ const CSS = `
   ::-webkit-scrollbar-track{background:transparent;}
   ::-webkit-scrollbar-thumb{background:var(--border);border-radius:2px;}
 
-  /* Breakpoints — 3 régimes de navigation, pas de zone ambiguë */
+  /* Breakpoints: 3 navigation modes, no ambiguous zone */
   .hp-shell{ display:flex; height:100dvh; background:var(--bg); color:var(--text); }
   .hp-nav-desktop{ display:none; }
   .hp-nav-compact{ display:none; }
@@ -37,8 +37,8 @@ const CSS = `
     .hp-main{ padding-bottom: var(--bottomnav-h); }
   }
 
-  /* Tablette 768–1023 : sidebar compacte à icônes — une pleine sidebar
-     mangerait ~25% de la largeur utile en portrait pour du texte redondant */
+  /* Tablet 768–1023: compact icon sidebar; a full sidebar
+     would take ~25% of the usable width in portrait for redundant text */
   @media (min-width: 768px) and (max-width: 1023px){
     .hp-nav-compact{ display:flex; }
     .hp-topbar{ display:flex; }
@@ -61,7 +61,7 @@ const TABS_META=[
   {id:'settings', icon:'⚙',color:'#8b90a8'},
 ]
 
-// ─── Sidebar pleine (desktop ≥1024px) — rétractable ────────────────────────
+// ─── Full sidebar (desktop ≥1024px), collapsible ────────────────────────
 function SidebarDesktop({ tabs, active, onSelect, collapsed, onToggleCollapse }) {
   return (
     <nav className="hp-nav-desktop" style={{
@@ -107,7 +107,7 @@ function SidebarDesktop({ tabs, active, onSelect, collapsed, onToggleCollapse })
   )
 }
 
-// ─── Sidebar compacte icônes (tablette 768–1023px) ─────────────────────────
+// ─── Compact icon sidebar (tablet 768–1023px) ─────────────────────────
 function SidebarCompact({ tabs, active, onSelect }) {
   return (
     <nav className="hp-nav-compact" style={{
@@ -157,7 +157,7 @@ function NavMobile({ tabs, active, onSelect }) {
   )
 }
 
-// ─── Logo — badge simple, pas de gradient décoratif ────────────────────────
+// ─── Logo: plain badge, no decorative gradient ────────────────────────
 function Logo(){
   return (
     <div style={{
@@ -169,7 +169,7 @@ function Logo(){
   )
 }
 
-// ─── Topbar — mobile + tablette uniquement ──────────────────────────────────
+// ─── Top bar: mobile and tablet only ──────────────────────────────────
 function Topbar({ current }){
   return (
     <div className="hp-topbar" style={{

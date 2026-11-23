@@ -47,10 +47,10 @@ function StatusBadge({ status }) {
   )
 }
 
-// ── Pastilles de métriques temps réel — une par field disponible pour ce device.
-// Couleur ET seuils dérivés de hooks/thresholds.js, contour fermé (border plein,
-// pas de dash). Passe en gris si le device est silencieux (isLive=false) : une
-// valeur périmée ne doit jamais afficher une couleur de statut trompeuse.
+// ── Real-time metric chips: one per field available for this device.
+// Colour AND thresholds derived from hooks/thresholds.js, closed outline (solid border,
+// no dash). Turns grey if the device is silent (isLive=false): a
+// stale value must never show a misleading status colour.
 const METRIC_KEYS = ['temperature','humidity','co2','lux','iaq','pressure']
 
 function MetricPills({ readings, isLive }) {
@@ -223,14 +223,14 @@ function RolloutPanel({ onBack }) {
 export function FleetTab() {
   const [devices,         setDevices]         = useState([])
   const [showDeployments, setShowDeployments] = useState(false)
-  const [expanded,        setExpanded]        = useState(null) // actions provisioning (Confirm/Suspend/OTA) — séparé du modal détail
-  const [detailDevice,    setDetailDevice]    = useState(null) // device pour DeviceDetailModal (lecture seule, télémétrie)
+  const [expanded,        setExpanded]        = useState(null) // provisioning actions (Confirm/Suspend/OTA): separate from the device
+  const [detailDevice,    setDetailDevice]    = useState(null) // detail modal, DeviceDetailModal (read-only, telemetry)
   const [filter,          setFilter]          = useState('all')
   const [loading,         setLoading]         = useState(false)
   const [error,           setError]           = useState(null)
   const [actBusy,         setActBusy]         = useState(false)
 
-  // ── Télémétrie temps réel — statut live + dernières valeurs par device_id ──
+  // ── Real-time telemetry: live status + latest values per device_id ──
   const { byDevice: liveStatus } = useDeviceLiveStatus()
   const allLast = useFlux(FLUX.allLast(), 10000)
   const readingsByDevice = useMemo(() => {
@@ -388,7 +388,7 @@ export function FleetTab() {
                 transition:'background .1s'
               }}>
 
-              {/* Zone cliquable → ouvre le modal détail (télémétrie, lecture seule) */}
+              {/* Clickable area -> opens the detail modal (telemetry, read-only) */}
               <div onClick={() => setDetailDevice(d)} style={{ cursor:'pointer' }}>
                 {/* Row 1 : device_id + badges */}
                 <div style={{
@@ -447,14 +447,14 @@ export function FleetTab() {
                   ))}
                 </div>
 
-                {/* Row 4 : pastilles de métriques temps réel — vert/jaune/rouge selon
-                    hooks/thresholds.js, gris si silencieux (isLive=false) */}
+                {/* Row 4: real-time metric chips, green/yellow/red according to
+                    hooks/thresholds.js, grey if silent (isLive=false) */}
                 <MetricPills readings={readingsByDevice[d.device_id]} isLive={live?.isLive}/>
               </div>
 
-              {/* Actions de provisioning — expand séparé du modal détail, déclenché
-                  par un bouton dédié pour ne pas mélanger "voir les données" et
-                  "agir sur le device" dans le même geste. */}
+              {/* Provisioning actions: an expand separate from the detail modal, opened
+                  by a dedicated button so as not to mix "see the data" and
+                  "act on the device" in the same gesture. */}
               <div style={{ marginTop:8 }}>
                 <button onClick={e => { e.stopPropagation(); setExpanded(isExpanded ? null : d.device_id) }}
                   style={{
@@ -529,7 +529,7 @@ export function FleetTab() {
         })}
       </div>
 
-      {/* Modal détail — lecture seule : identité provisioning + statut live + graphes + timeline */}
+      {/* Detail modal, read-only: provisioning identity + live status + charts + timeline */}
       {detailDevice && (
         <DeviceDetailModal
           device={{ info: detailDevice, liveInfo: liveStatus[detailDevice.device_id] }}

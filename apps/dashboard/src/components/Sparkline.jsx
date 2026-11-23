@@ -1,6 +1,6 @@
 /**
- * Sparkline SVG — graphique de tendance léger
- * Aucune dépendance externe
+ * SVG sparkline: a light trend chart
+ * No external dependency
  */
 export function Sparkline({ data, color = '#378ADD', width = 200, height = 48, unit = '' }) {
   if (!data || data.length < 2) {

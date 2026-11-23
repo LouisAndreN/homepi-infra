@@ -1,8 +1,8 @@
 /**
  * HomePi Dashboard — Configuration centrale
- * Modifie uniquement ce fichier pour adapter à ton environnement.
+ * Edit only this file to adapt to your environment.
  *
- * GRAFANA UIDs : trouve-les dans l'URL quand tu ouvres un dashboard
+ * GRAFANA UIDs: find them in the URL when you open a dashboard
  * Exemple : /grafana/d/AbCdEfGh/mon-dashboard → uid = "AbCdEfGh"
  */
 
@@ -13,7 +13,7 @@ export const GRAFANA_DASHBOARDS = {
   // system: {
   //   uid:   'iogjbsq',   // Dashboard Pi + NVMe
   //   slug:  'pi-system',
-  //   label: 'Système',
+  //   label: 'System',
   // },
   security: {
     uid:   'ioxg69q', // Dashboard CrowdSec + Auditd
@@ -21,7 +21,7 @@ export const GRAFANA_DASHBOARDS = {
     label: 'Sécurité',
   },
   sensors: {
-    uid:   'io2k8lp', // Dashboard IoT capteurs
+    uid:   'io2k8lp', // IoT sensors dashboard
     slug:  'iot-sensors',
     label: 'Capteurs',
   },
@@ -33,9 +33,9 @@ export const API_BASE = ''
 // Prometheus (proxied via Nginx sous /metrics-proxy)
 export const PROMETHEUS_BASE = '/metrics-proxy'
 
-// Pairing window duration (secondes) — doit correspondre à SESSION_TTL dans provisioning_api.py
+// Pairing window duration (seconds): must match SESSION_TTL in provisioning_api.py
 
-// Plan d'appartement — adapte les pièces et appareils à ton logement
+// Flat floor plan: adapt the rooms and appliances to your home
 export const ROOMS = [
   { id: 'salon',    label: 'Salon',      x: 40,  y: 40,  w: 220, h: 180 },
   { id: 'chambre',  label: 'Chambre',    x: 280, y: 40,  w: 160, h: 180 },

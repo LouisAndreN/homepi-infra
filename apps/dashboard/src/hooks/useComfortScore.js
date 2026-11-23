@@ -3,11 +3,11 @@ import { useFlux, FLUX } from './useInflux.js'
 import { comfortScorePct, compositeExcess } from './thresholds.js'
 import { detectZones, assignSensorsToZones } from '../editor/zoneDetection.js'
 
-// Regroupe les lignes CSV par timestamp arrondi (bucket d'agrégation), moyenne
-// tous les devices ensemble pour chaque métrique à cet instant — approxime
-// "l'état moyen de l'appart" à ce moment-là. Simplification assumée : ne
-// distingue pas les pièces, un futur raffinement pourrait pondérer par device
-// le plus représentatif d'une zone plutôt qu'une moyenne plate.
+// Groups the CSV rows by rounded timestamp (aggregation bucket), averages
+// all devices together for each metric at that instant: approximates
+// "the average state of the flat" at that moment. Accepted simplification: it does not
+// distinguish rooms; a future refinement could weight by the device
+// most representative of a zone rather than a flat average.
 function groupByTimestamp(rows) {
   const byTs = {}
   for (const r of rows) {
@@ -25,8 +25,8 @@ function groupByTimestamp(rows) {
   }).sort((a,b)=>a.t-b.t)
 }
 
-// Score de confort composite sur une fenêtre glissante — % du temps où toutes
-// les métriques de confort sont simultanément dans leur zone acceptable.
+// Composite comfort score over a sliding window: % of the time when all
+// comfort metrics are within their acceptable zone at once.
 export function useComfortScore(start='-24h', every='10m', interval=60000) {
   const { data, loading } = useFlux(FLUX.allMetricsHistory(start, every), interval)
   const points = useMemo(() => groupByTimestamp(data ?? []), [data])
@@ -34,10 +34,10 @@ export function useComfortScore(start='-24h', every='10m', interval=60000) {
   return { score, points, loading }
 }
 
-// Agrégation journalière — une valeur de score par jour, sur les N derniers
-// jours. Nécessaire pour le graphe mensuel : la métrique brute lissée sur 30
-// jours ne dit rien (cycles jour/nuit noient tout), l'agrégat journalier du
-// score composite, lui, montre une vraie tendance.
+// Daily aggregation: one score value per day over the last N
+// days. Needed for the monthly chart: the raw metric smoothed over 30
+// days says nothing (day/night cycles drown everything), whereas the daily aggregate of the
+// composite score shows a real trend.
 export function useComfortScoreDaily(days=30) {
   const { data, loading } = useFlux(FLUX.allMetricsHistory(`-${days}d`, '15m', 300000), 300000)
   const daily = useMemo(() => {
@@ -52,8 +52,8 @@ export function useComfortScoreDaily(days=30) {
       day,
       t: new Date(day).getTime(),
       score: comfortScorePct(pts),
-      // Écart-type des excès du jour — donne une idée de la stabilité intra-journée,
-      // affichable comme bande autour de la ligne principale.
+      // Standard deviation of the day's excesses: gives an idea of the within-day stability,
+      // can be drawn as a band around the main line.
       stdExcess: (() => {
         const excesses = pts.map(p=>compositeExcess(p.valuesByMetric)).filter(e=>e!=null)
         if (excesses.length < 2) return null
@@ -66,9 +66,9 @@ export function useComfortScoreDaily(days=30) {
   return { daily, loading }
 }
 
-// Score de confort filtré sur les devices d'une zone donnée. zoneDeviceIds :
-// liste de device_id appartenant à la zone (calculée une fois via
-// assignSensorsToZones, passée en dépendance stable — pas recalculée ici).
+// Comfort score filtered on the devices of a given zone. zoneDeviceIds:
+// list of device_id belonging to the zone (computed once via
+// assignSensorsToZones, passed as a stable dependency, not recomputed here).
 export function useComfortScoreForZone(zoneDeviceIds, start='-24h', every='10m', interval=60000) {
   const { data, loading } = useFlux(FLUX.allMetricsHistory(start, every), interval)
   const points = useMemo(() => {

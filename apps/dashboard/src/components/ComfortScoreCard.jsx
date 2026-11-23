@@ -1,9 +1,9 @@
 import { useComfortScore } from '../hooks/useComfortScore.js'
 
-// Le chiffre central du dashboard — "quelle proportion du temps mon appart
-// est-il dans un état de confort acceptable, sur toutes les métriques
-// simultanément". Score global (tout l'appart) — le filtrage par zone se fait
-// désormais via le mode Analyse (AnalysisPanel), pas ici.
+// The central number of the dashboard: "what share of the time is my flat
+// in an acceptable comfort state, on all metrics
+// at once". Global score (whole flat); filtering by zone is now done
+// through Analysis mode (AnalysisPanel), not here.
 export function ComfortScoreCard({ start='-24h', every='10m', label='24h' }) {
   const { score, loading } = useComfortScore(start, every)
   const color = score == null ? 'var(--text3)' : score >= 85 ? 'var(--ok)' : score >= 60 ? 'var(--warn)' : 'var(--danger)'

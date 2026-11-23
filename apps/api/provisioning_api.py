@@ -828,7 +828,7 @@ async def reorder_led_presets(req: ReorderRequest):
     presets = load_led_presets()
     by_id = {p["id"]: p for p in presets}
     reordered = [by_id[i] for i in req.ordered_ids if i in by_id]
-    # Garde toute entrée oubliée par sécurité, à la fin
+    # Keep any forgotten entry, for safety, at the end
     reordered += [p for p in presets if p["id"] not in req.ordered_ids]
     save_led_presets(reordered)
     return {"status": "reordered"}
