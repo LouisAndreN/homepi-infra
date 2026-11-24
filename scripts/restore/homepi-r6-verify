@@ -42,8 +42,12 @@ signs=$(prom 'homepi_stepca_requests{endpoint="sign",window="1h"}')
 [ "${signs:-0}" = 0 ] && ok "no certificate signed in the last hour (devices reconnected without re-enrolment)" || bad "$signs certificates signed in the last hour: a device re-enrolled"
 w=$(prom 'sum(rate(http_api_requests_total{job="influxdb",path="/api/v2/write",user_agent="Telegraf",status="2XX"}[5m]))')
 awk -v w="${w:-0}" 'BEGIN {exit !(w > 0)}' && ok "Telegraf writes accepted by InfluxDB: ${w}/s" || bad "no Telegraf write accepted by InfluxDB in 5 min"
-firing=$(curl -fsS --max-time 10 "$PROM/api/v1/alerts" | jq -r '[.data.alerts[] | select(.state == "firing") | .labels.alertname] | map(select(. != "Watchdog")) | unique | join(" ")')
-[ -z "$firing" ] && ok "no alert firing (Watchdog aside)" || bad "alerts firing: $firing"
+alerts=$(curl -fsS --max-time 10 "$PROM/api/v1/alerts")
+# SLO alerts (label slo) report spent error budget: history, not the health of the platform now
+firing=$(echo "$alerts" | jq -r '[.data.alerts[] | select(.state == "firing" and .labels.slo == null) | .labels.alertname] | map(select(. != "Watchdog")) | unique | join(" ")')
+[ -z "$firing" ] && ok "no alert firing (Watchdog and SLO budget alerts aside)" || bad "alerts firing: $firing"
+slo=$(echo "$alerts" | jq -r '[.data.alerts[] | select(.state == "firing" and .labels.slo != null) | .labels.alertname] | unique | join(" ")')
+[ -z "$slo" ] || echo "info  SLO alerts firing (not counted): $slo"
 up=$(prom 'count(up == 0)')
 [ -z "$up" ] && ok "every Prometheus target up" || bad "$up Prometheus target(s) down"
 echo

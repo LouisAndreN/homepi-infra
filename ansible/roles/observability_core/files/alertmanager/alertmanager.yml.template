@@ -106,3 +106,14 @@ inhibit_rules:
       - alertname = InfluxDBDown
     target_matchers:
       - alertname = InfluxWritesStopped
+  # A fast SLO burn is the same outage as the alert of its cause, once that alert fires (docs/slo.md):
+  # the burn alert detects first and catches flapping; the slow burn and the spent budget stay
+  - source_matchers:
+      - alertname = HomepiApiDown
+      - name = homepi-api.service
+    target_matchers:
+      - alertname = SloApiBurnFast
+  - source_matchers:
+      - alertname =~ "InfluxDBDown|InfluxWritesStopped"
+    target_matchers:
+      - alertname = SloIngestBurnFast

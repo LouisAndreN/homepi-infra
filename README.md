@@ -52,7 +52,8 @@ flowchart LR
 | MQTT | Mosquitto mTLS on 8883, CRL enforced, ACL generated from the device registry | `ansible/roles/pki_crl`, `mqtt_acl` |
 | Enrolment | Zero-touch for pre-announced devices; unknown devices stay pending; the API holds no CA secret | `apps/api` |
 | OTA | Signed images, staged rollout with canary and abort | `ansible/roles/ota_rollout` |
-| Observability | 104 Prometheus rules in 17 files with promtool unit tests, Loki with bounded labels, InfluxDB with per-consumer tokens, Grafana on a unix socket | `ansible/roles/observability_core`, `alloy`, `influxdb`, `grafana` |
+| Observability | 127 Prometheus rules (alerts and SLO recording rules) in 18 files with promtool unit tests, Loki with bounded labels, InfluxDB with per-consumer tokens, Grafana on a unix socket | `ansible/roles/observability_core`, `alloy`, `influxdb`, `grafana` |
+| SLOs | Ingestion 99.5% and device API 99% over 28 days, error budgets, multiwindow burn-rate alerts, a release policy when a budget is spent (`docs/slo.md`) | `observability_core/files/prometheus/rules/slo.yml` |
 | Alerting | Slack routing by severity, plus an independent dead man's switch: Watchdog → CloudWatch → e-mail | `terraform/aws/homepi/heartbeat.tf` |
 | Intrusion detection | CrowdSec + nftables bouncer, auditd rules scoped to login sessions | `ansible/roles/crowdsec`, `auditd` |
 | Web access | nginx as the only entry point, Authelia password + TOTP, per-path source allow lists | `ansible/roles/nginx`, `authelia` |

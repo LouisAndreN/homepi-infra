@@ -52,6 +52,17 @@ SCENARIOS = [
     ("device metrics missing alone still alerts",
      [("DevicesMetricsMissing", "warning", {})],
      set()),
+    ("API down: the fast SLO burn is the same outage, the slow burn and the budget stay",
+     [("HomepiApiDown", "critical", API), ("SloApiBurnFast", "critical", {"slo": "api"}),
+      ("SloApiBurnSlow", "warning", {"slo": "api"}), ("SloApiBudgetExhausted", "warning", {"slo": "api"})],
+     {"SloApiBurnFast"}),
+    ("API flapping: no HomepiApiDown, the fast burn is the only alert",
+     [("SloApiBurnFast", "critical", {"slo": "api"})],
+     set()),
+    ("ingestion stopped: the cause hides the fast ingest burn, not the API one",
+     [("InfluxWritesStopped", "critical", {}), ("SloIngestBurnFast", "critical", {"slo": "ingest"}),
+      ("SloApiBurnFast", "critical", {"slo": "api"})],
+     {"SloIngestBurnFast"}),
 ]
 
 

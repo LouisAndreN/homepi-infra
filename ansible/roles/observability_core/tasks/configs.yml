@@ -16,7 +16,7 @@
     group: root
     mode: "0644"
     validate: /usr/local/bin/promtool check rules %s
-  loop: [alerts.yml, gitops.yml, backups.yml, aws_edge.yml, meta.yml, capacity.yml, offsite.yml, heartbeat.yml, gitops_github.yml, clock.yml, prometheus_self.yml, boot_chain.yml, pki.yml, devices.yml, power.yml, pipeline.yml, logship.yml]
+  loop: [alerts.yml, gitops.yml, backups.yml, aws_edge.yml, meta.yml, capacity.yml, offsite.yml, heartbeat.yml, gitops_github.yml, clock.yml, prometheus_self.yml, boot_chain.yml, pki.yml, devices.yml, power.yml, pipeline.yml, logship.yml, slo.yml]
   notify: Reload prometheus
 
 - name: Validate the Prometheus configuration and rules

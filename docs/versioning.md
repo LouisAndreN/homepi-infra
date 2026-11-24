@@ -43,6 +43,7 @@ is ADR 0001.
 - v0.3.0: the return of production becomes a script (`homepi-r8-return`), after C5.
 - v0.4.0: every passphrase typed once before T0, the microSD found by its host key, after C6.
 - v1.0.0: C8, the first drill without any error.
+- v1.1.0: SLOs and error budgets (docs/slo.md): a release policy, and R6 no longer fails on SLO alerts.
 
 After 1.0.0 the same rules hold: a minor that changes the restore procedure is followed by a drill,
 and its report is published whether it is clean or not.
