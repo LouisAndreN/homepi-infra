@@ -29,6 +29,9 @@ waits for the next one. C5 (2026-11-24) needed a fix. C6 (2026-11-24) had no def
 change but two operator errors (a step redone, a phase run twice); the criterion was tightened after
 C6, by decision, to cover them, so C6 does not count either. C7 (2026-11-24) ran R0 to R6 without an
 error in 49 min, but R8 had to be run twice (a DNS check too early after the boot): not clean.
+C8 (2026-11-24) ran without any error from R0 to the SOPS step of R8, RTO 48 min 08 s: 1.0.0
+(docs/game-days/2026-11-24-c8.md). The follow-up of C7 was closed in v0.4.3, and the night answer
+is ADR 0001.
 
 ## History
 
@@ -37,6 +40,12 @@ error in 49 min, but R8 had to be run twice (a DNS check too early after the boo
 - v0.2.0: first release under these rules. It marks the restore procedure changed in v0.1.149 (R1
   erases the disk cryptographically, R9 erases the spare after a drill, R5B backs the rebuilt
   system up before R6), which under these rules is a minor change. C5 runs on this baseline.
+- v0.3.0: the return of production becomes a script (`homepi-r8-return`), after C5.
+- v0.4.0: every passphrase typed once before T0, the microSD found by its host key, after C6.
+- v1.0.0: C8, the first drill without any error.
+
+After 1.0.0 the same rules hold: a minor that changes the restore procedure is followed by a drill,
+and its report is published whether it is clean or not.
 
 Tooling that computes a tag (the restore orchestrator, `next_tag`) raises the patch of the highest
 tag; a minor or major is always chosen by hand in `release`.
