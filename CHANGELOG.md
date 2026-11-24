@@ -12,6 +12,7 @@ out of SOPS, without a code change, a phase run twice or a step redone
 rebuilds came before it: C3 5 h 18 min with 44 defects, C4 4 h 24 min, C5 1 h 03 min, then C6 and
 C7, both under 1 h 30 min but not clean.
 
+- `v1.0.1` 2026-11-25: Alerts inhibited by real dependency only; alert tests run in every release precheck
 - `v1.0.0` 2026-11-25: C8: first restore drill without any error, RTO 48 min 08 s (major)
 
 ## 0.4

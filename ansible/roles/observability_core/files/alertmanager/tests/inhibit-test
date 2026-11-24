@@ -1,0 +1,150 @@
+#!/usr/bin/env python3
+"""Test of the Alertmanager inhibit rules, on the real binary and the real template.
+
+    inhibit-test [ALERTMANAGER_DIR]     default /opt/alertmanager (the Pi); any host, no root
+
+Each scenario starts a scratch Alertmanager (loopback, random port, no cluster, temporary storage)
+from alertmanager.yml.template with placeholder webhooks, posts the alerts of the scenario and reads
+back which ones are inhibited. Nothing reaches Slack: the placeholder hosts do not resolve. The
+production Alertmanager is not touched.
+"""
+import json
+import os
+import re
+import shutil
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+TEMPLATE = os.path.join(HERE, "..", "alertmanager.yml.template")
+AM_DIR = sys.argv[1] if len(sys.argv) > 1 else "/opt/alertmanager"
+
+API = {"name": "homepi-api.service"}
+ADMIN = {"name": "homepi-api-admin.service"}
+
+# (scenario, alerts posted as (alertname, severity, extra labels), alertnames expected inhibited)
+SCENARIOS = [
+    ("2026-11-22 incident: device API down",
+     [("HomepiApiDown", "critical", API), ("DevicesMetricsMissing", "warning", {}),
+      ("SystemdUnitFailed", "warning", API), ("SystemdServiceRestartLoop", "warning", API),
+      ("MqttAclSyncFailing", "critical", {}), ("GitopsApplyFailing", "critical", {})],
+     {"DevicesMetricsMissing", "SystemdUnitFailed", "SystemdServiceRestartLoop"}),
+    ("admin API down: the device metrics do not depend on it",
+     [("HomepiApiDown", "critical", ADMIN), ("DevicesMetricsMissing", "warning", {})],
+     set()),
+    ("a unit failed alone still alerts",
+     [("NginxDown", "critical", {"name": "nginx.service"}),
+      ("SystemdUnitFailed", "warning", {"name": "unbound.service"})],
+     set()),
+    ("nginx down hides the device metrics it proxies",
+     [("NginxDown", "critical", {"name": "nginx.service"}),
+      ("SystemdUnitFailed", "warning", {"name": "nginx.service"}),
+      ("DevicesMetricsMissing", "warning", {})],
+     {"SystemdUnitFailed", "DevicesMetricsMissing"}),
+    ("InfluxDB down hides the write counters, not the backups",
+     [("InfluxDBDown", "critical", {"name": "influxdb.service"}),
+      ("InfluxWritesStopped", "critical", {}), ("BackupFailing", "warning", {})],
+     {"InfluxWritesStopped"}),
+    ("device metrics missing alone still alerts",
+     [("DevicesMetricsMissing", "warning", {})],
+     set()),
+]
+
+
+def free_port():
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        return s.getsockname()[1]
+
+
+def render(path):
+    text = open(TEMPLATE).read()
+    # The real file is rendered by envsubst at each start; here every webhook is a host that does not resolve
+    text = re.sub(r"\$\{(SLACK_[A-Z_]+)\}", "https://hooks.slack.invalid/inhibit-test", text)
+    text = re.sub(r"\$\{[A-Z_]+\}", "", text)
+    open(path, "w").write(text)
+
+
+def call(port, method, path, body=None):
+    req = urllib.request.Request(f"http://127.0.0.1:{port}/api/v2{path}", method=method,
+                                 data=json.dumps(body).encode() if body is not None else None,
+                                 headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=5) as r:
+        return json.loads(r.read() or "null")
+
+
+def start(work, i):
+    port = free_port()
+    store = tempfile.mkdtemp(dir=work)
+    proc = subprocess.Popen([os.path.join(AM_DIR, "alertmanager"), f"--config.file={work}/am.yml",
+                             f"--storage.path={store}", f"--web.listen-address=127.0.0.1:{port}",
+                             "--cluster.listen-address="],
+                            stdout=subprocess.DEVNULL, stderr=open(f"{work}/am-{i}.log", "w"))
+    for _ in range(50):
+        try:
+            call(port, "GET", "/status")
+            return proc, port
+        except OSError:
+            time.sleep(0.2)
+    proc.terminate()
+    raise RuntimeError(f"Alertmanager {i} did not start: {open(f'{work}/am-{i}.log').read()[-500:]}")
+
+
+def inhibited(port):
+    return {x["labels"]["alertname"] for x in call(port, "GET", "/alerts") if x["status"]["inhibitedBy"]}
+
+
+def run_all(work):
+    """One scratch Alertmanager per scenario, all at once: the verdict needs a flush (group_wait 30 s)."""
+    procs = []
+    try:
+        for i, (_name, alerts, _exp) in enumerate(SCENARIOS):
+            proc, port = start(work, i)
+            procs.append((proc, port))
+            call(port, "POST", "/alerts", [
+                {"labels": {"alertname": a, "severity": sev, "instance": "pi", **extra}} for a, sev, extra in alerts])
+        print("     alerts posted; waiting for the first flush (40 s)")
+        time.sleep(40)
+        fails = []
+        for (name, alerts, expected), (_proc, port) in zip(SCENARIOS, procs):
+            got = inhibited(port)
+            if got != expected:
+                fails.append(f"{name}: expected inhibited {sorted(expected)}, got {sorted(got)}")
+            else:
+                print(f"ok   {name}: inhibited {sorted(got) or 'none'}")
+        return fails
+    finally:
+        for proc, _port in procs:
+            proc.terminate()
+            proc.wait(timeout=10)
+
+
+def main():
+    if not os.access(os.path.join(AM_DIR, "alertmanager"), os.X_OK):
+        print(f"STOPPED: no alertmanager binary in {AM_DIR}")
+        return 1
+    work = tempfile.mkdtemp(prefix="inhibit-test.")
+    try:
+        render(f"{work}/am.yml")
+        check = subprocess.run([os.path.join(AM_DIR, "amtool"), "check-config", f"{work}/am.yml"],
+                               capture_output=True, text=True)
+        if check.returncode != 0:
+            print(f"FAIL amtool check-config\n{check.stdout}{check.stderr}")
+            return 1
+        print("ok   amtool check-config")
+        fails = run_all(work)
+        for f in fails:
+            print(f"FAIL {f}")
+        print()
+        print("inhibit-test PASS" if not fails else f"inhibit-test FAIL: {len(fails)}")
+        return 1 if fails else 0
+    finally:
+        shutil.rmtree(work, ignore_errors=True)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

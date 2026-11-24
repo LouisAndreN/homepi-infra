@@ -41,4 +41,9 @@
     owner: alertmanager
     group: alertmanager
     mode: "0640"
+    # Rendered with placeholder webhooks and checked by amtool before it replaces the live template
+    validate: >-
+      /bin/sh -c 'SLACK_WEBHOOK_CRITICAL=https://hooks.slack.invalid/check
+      SLACK_WEBHOOK_WARNING=https://hooks.slack.invalid/check envsubst < "$1" > "$1.check"
+      && /opt/alertmanager/amtool check-config "$1.check"; rc=$?; rm -f "$1.check"; exit $rc' sh %s
   notify: Restart alertmanager

@@ -203,7 +203,7 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "{{ $labels.name }} not active for 5 minutes: provisioning, OTA, MQTT ACL sync and the admin API are down"
+          summary: "{{ $labels.name }} not active for 5 minutes: provisioning, OTA and the admin API are down (the MQTT ACL sync reads the registry directly and has its own alerts)"
           description: "Check: systemctl status {{ $labels.name }}; journalctl -u {{ $labels.name }} -n 30; ls -l /var/lib/homepi/devices.db*. docs/runbooks/nginx-api.md"
 
       - alert: InfluxDBDown

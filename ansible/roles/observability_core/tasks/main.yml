@@ -80,3 +80,19 @@
   retries: 20
   delay: 3
   until: observability_reload_state.rc == 0 and observability_reload_state.stdout is search('(?m)^prometheus_config_last_reload_successful 1$')
+
+# The alert tests run at release time only (homepi-precheck sets homepi_precheck), on the Pi's own
+# promtool and Alertmanager, against the files of the candidate commit: a rule or an inhibition that
+# does not do what its test says stops the tag before it is signed.
+- name: Alert rule tests and inhibition tests (release precheck only)
+  ansible.builtin.shell:
+    cmd: "{{ item.cmd }}"
+    chdir: "{{ item.dir }}"
+  loop:
+    - { dir: "{{ role_path }}/files/prometheus/tests", cmd: "/usr/local/bin/promtool test rules *_test.yml" }
+    - { dir: "{{ role_path }}/files/alertmanager/tests", cmd: "python3 inhibit-test /opt/alertmanager" }
+  loop_control:
+    label: "{{ item.cmd }}"
+  changed_when: false
+  check_mode: false
+  when: homepi_precheck | default(false) | bool

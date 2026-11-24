@@ -75,9 +75,34 @@ receivers:
           *Description:* {{ .CommonAnnotations.description }}
         send_resolved: true
 
+# An alert is inhibited only by the alert of what it really depends on: the target cannot be true
+# while the source is firing, so it adds a notification and no information. An alert whose cause is
+# only shared (the MQTT ACL sync reads devices.db directly, not through the API) is never inhibited.
+# 2026-11-22 incident: 79 Slack notifications in one night for one cause. Test: tests/inhibit-test.
 inhibit_rules:
   - source_matchers:
       - severity = critical
     target_matchers:
       - severity = warning
     equal: ['alertname']
+  # A unit that is down is also failed or restarting: one alert per unit, the one that says what it serves
+  - source_matchers:
+      - alertname =~ "[A-Za-z]+Down"
+    target_matchers:
+      - alertname =~ "SystemdUnitFailed|SystemdServiceRestartLoop"
+    equal: ['name']
+  # Prometheus reads the device registry metrics on 127.0.0.1:3001: nginx, then homepi-api.service
+  - source_matchers:
+      - alertname = NginxDown
+    target_matchers:
+      - alertname = DevicesMetricsMissing
+  - source_matchers:
+      - alertname = HomepiApiDown
+      - name = homepi-api.service
+    target_matchers:
+      - alertname = DevicesMetricsMissing
+  # InfluxDB down: Telegraf cannot write, and the write counters are gone with it
+  - source_matchers:
+      - alertname = InfluxDBDown
+    target_matchers:
+      - alertname = InfluxWritesStopped

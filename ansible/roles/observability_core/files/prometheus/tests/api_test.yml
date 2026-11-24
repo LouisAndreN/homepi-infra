@@ -18,7 +18,7 @@ tests:
         exp_alerts:
           - exp_labels: {severity: critical, name: homepi-api.service}
             exp_annotations:
-              summary: "homepi-api.service not active for 5 minutes: provisioning, OTA, MQTT ACL sync and the admin API are down"
+              summary: "homepi-api.service not active for 5 minutes: provisioning, OTA and the admin API are down (the MQTT ACL sync reads the registry directly and has its own alerts)"
               description: "Check: systemctl status homepi-api.service; journalctl -u homepi-api.service -n 30; ls -l /var/lib/homepi/devices.db*. docs/runbooks/nginx-api.md"
   - name: a 2-minute restart does not alert
     interval: 1m
