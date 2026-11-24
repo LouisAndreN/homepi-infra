@@ -1,0 +1,79 @@
+# Offline checks on every push and pull request (scripts/ci/checks). No secret is used or needed:
+# the SOPS files stay encrypted, nothing reaches the Pi or AWS. The release gate stays the precheck on
+# the Pi (its own runtime and binaries); CI is the early warning, on every branch, before a merge.
+name: ci
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The Pi pins arm64 builds of the same versions (ansible/group_vars/all/versions.yml); these are the
+  # amd64 archives of those versions, checked against the sha256sums.txt of each release
+  PROMETHEUS_VERSION: 3.10.0
+  PROMETHEUS_SHA256: 41c50d97bb6a181623fc89d3fe61d0cc68ee69cc93da9091b8bba005f9690122
+  ALERTMANAGER_VERSION: 0.31.1
+  ALERTMANAGER_SHA256: 35191cbd9d4f8162458b78dd7e93990cccd246044d9a6f788adb1c66ac3ea07b
+
+jobs:
+  syntax:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - run: scripts/ci/checks syntax
+
+  rules:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Prometheus and Alertmanager binaries (pinned, sha256 checked)
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/bin" && cd "$RUNNER_TEMP"
+          p=prometheus-$PROMETHEUS_VERSION.linux-amd64; a=alertmanager-$ALERTMANAGER_VERSION.linux-amd64
+          curl -fsSLo p.tgz "https://github.com/prometheus/prometheus/releases/download/v$PROMETHEUS_VERSION/$p.tar.gz"
+          curl -fsSLo a.tgz "https://github.com/prometheus/alertmanager/releases/download/v$ALERTMANAGER_VERSION/$a.tar.gz"
+          printf '%s  p.tgz\n%s  a.tgz\n' "$PROMETHEUS_SHA256" "$ALERTMANAGER_SHA256" | sha256sum -c -
+          tar -xzf p.tgz "$p/promtool" && tar -xzf a.tgz "$a/alertmanager" "$a/amtool"
+          mv "$p/promtool" "$a/alertmanager" "$a/amtool" bin/
+      - run: scripts/ci/checks rules "$RUNNER_TEMP/bin"
+
+  ansible:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Pinned Ansible runtime (ansible/requirements.txt, ansible/requirements.yml)
+        run: |
+          set -eu
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" install -q -r ansible/requirements.txt
+          "$RUNNER_TEMP/venv/bin/ansible-galaxy" collection install -r ansible/requirements.yml -p ansible/collections
+          echo "$RUNNER_TEMP/venv/bin" >> "$GITHUB_PATH"
+      - run: scripts/ci/checks ansible
+
+  tests:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - name: Tools of the restore tests
+        run: sudo apt-get install -y -q cryptsetup-bin parted gdisk lvm2 btrfs-progs dosfstools xfsprogs jq
+      - run: scripts/ci/checks offline
+      - run: sudo scripts/ci/checks root
+
+  changelog:
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          fetch-depth: 0
+      - run: scripts/ci/checks changelog

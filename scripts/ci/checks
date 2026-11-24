@@ -1,0 +1,67 @@
+#!/bin/bash
+# Offline checks of the repository, run by GitHub Actions on every push (.github/workflows/ci.yml)
+# and by hand. No secret, no Pi, no AWS. The Pi still runs the alert tests on its own binaries in
+# every release precheck: CI is the early warning, the precheck is the gate.
+#
+#   scripts/ci/checks syntax          bash -n and Python parse of every tracked script
+#   scripts/ci/checks rules BINDIR    promtool check + test, inhibit-test (BINDIR: promtool, alertmanager, amtool)
+#   scripts/ci/checks ansible         ansible-playbook --syntax-check of every playbook (pinned runtime on PATH)
+#   scripts/ci/checks offline         the offline tests that need no root
+#   sudo scripts/ci/checks root       the restore tests that need root and loop devices
+#   scripts/ci/checks changelog       CHANGELOG.md matches the tags (on a tag push)
+set -uo pipefail
+cd "$(dirname "$0")/../.." || exit 1
+fails=0
+ok() { echo "ok   $*"; }
+bad() { echo "FAIL $*"; fails=$((fails + 1)); }
+run() { local name=$1; shift; if "$@" > /tmp/ci-$$.log 2>&1; then ok "$name"; else bad "$name"; tail -n 25 /tmp/ci-$$.log | sed 's/^/     /'; fi; rm -f /tmp/ci-$$.log; }
+
+scripts() {  # tracked files whose first line names the interpreter given
+  git ls-files -z | while IFS= read -r -d '' p; do
+    [ -f "$p" ] && head -n 1 "$p" | grep -qE "^#!(/usr)?/bin/(env )?$1" && printf '%s\n' "$p"
+  done
+}
+
+case "${1:-}" in
+  syntax)
+    n=0; while IFS= read -r f; do n=$((n + 1)); bash -n "$f" || bad "bash -n $f"; done < <(scripts bash)
+    ok "bash -n: $n scripts"
+    n=0; while IFS= read -r f; do n=$((n + 1)); python3 -c 'import ast, sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])' "$f" || bad "python parse $f"; done < <({ scripts python3; git ls-files '*.py'; } | sort -u)
+    ok "python parse: $n files"
+    ;;
+  rules)
+    B=${2:?usage: checks rules BINDIR}
+    P=ansible/roles/observability_core/files/prometheus
+    for f in "$P"/rules/*.yml; do run "promtool check rules $(basename "$f")" "$B/promtool" check rules "$f"; done
+    for f in "$P"/tests/*_test.yml; do run "promtool test rules $(basename "$f")" bash -c "cd '$P/tests' && '$B/promtool' test rules '$(basename "$f")'"; done
+    run "inhibit-test" python3 ansible/roles/observability_core/files/alertmanager/tests/inhibit-test "$B"
+    ;;
+  ansible)
+    command -v ansible-playbook > /dev/null || { echo "STOPPED: no ansible-playbook on PATH"; exit 1; }
+    want=$(sed -n 's/^ansible-core==//p' ansible/requirements.txt)
+    have=$(ansible-playbook --version | sed -n '1s/.*core \([0-9.]*\).*/\1/p')
+    [ "$have" = "$want" ] && ok "ansible-core $have (pinned)" || bad "ansible-core $have, pinned $want"
+    for pb in site.yml storage.yml restore-base.yml restore-services.yml; do
+      run "syntax-check $pb" bash -c "cd ansible && ansible-playbook -i inventory/pi-local.yml --syntax-check $pb"
+    done
+    ;;
+  offline)
+    for t in ansible/roles/boot_chain/tests/boot-chain-test ansible/roles/gitops_runtime/tests/gitops-hold-test \
+             ansible/roles/homepi_tools/tests/influx-delta-convert-test ansible/roles/provisioning_api/tests/venv-rebuild-test \
+             scripts/restore/tests/restore-orchestrator-test; do
+      run "$(basename "$t")" "$t"
+    done
+    ;;
+  root)
+    [ "$EUID" -eq 0 ] || { echo "STOPPED: run as root (loop devices, cryptsetup)"; exit 1; }
+    for t in scripts/restore/tests/r1-partition-test scripts/restore/tests/r1-erase-test scripts/restore/tests/r1-luks-test; do
+      run "$(basename "$t")" "$t"
+    done
+    ;;
+  changelog)
+    run "CHANGELOG.md matches the tags" scripts/changelog --check
+    ;;
+  *) sed -n '2,13p' "$0"; exit 2 ;;
+esac
+echo
+[ "$fails" = 0 ] && echo "checks ${1} PASS" || { echo "checks ${1} FAIL: $fails"; exit 1; }
