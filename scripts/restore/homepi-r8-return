@@ -1,0 +1,60 @@
+#!/bin/bash
+# homepi-r8-return: R8 on the laptop once the production disk is back in and powered on (steps 3,
+# 5 and 7 of docs/runbooks/restore.md). Usage: scripts/restore/homepi-r8-return [DEVICES]
+#
+# C5 defect 3: R6 run two minutes after production came back failed three ways that were not
+# faults: the boot was still "starting" (the hourly GitOps check, Persistent=true, catching up for
+# 8 minutes), Unbound had not validated DNSSEC yet, and GitopsSilent fired because the last apply
+# was older than the hour production had been off. This script verifies production the way it
+# runs after any long power cut: boot finished, one apply, then R6.
+set -uo pipefail
+export LC_ALL=C.UTF-8
+REPO="$(cd "$(dirname "$0")/../.." && pwd)"
+DEVICES="${1:-7}"
+CP=~/.ssh/cm-homepi
+log() { echo "homepi-r8: $*"; }
+die() { echo "STOPPED: $*"; exit 1; }
+p() { ssh -o ControlMaster=auto -o ControlPersist=2h -o ControlPath="$CP" homepi "$@"; }
+
+[[ "$DEVICES" =~ ^[0-9]+$ ]] || die "usage: $0 [DEVICES]"
+A=$(ssh -G homepi | awk '$1=="hostname"{print $2}')
+log "waiting for sshd on $A:22 (up to 5 minutes)"
+ok=0
+for _ in $(seq 1 30); do
+  b=$(timeout 5 bash -c "exec 3<> /dev/tcp/$A/22 && head -c 15 <&3" 2>&1) || true
+  [ "$b" = "SSH-2.0-OpenSSH" ] && { ok=1; break; }
+  sleep 10
+done
+[ "$ok" = 1 ] || die "no SSH on the production address after 5 minutes (restore.md R8, step 3)"
+# The usual known_hosts: production presents its own host keys
+p true < /dev/null || die "ssh login failed"
+M=$(p 'r=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)"); sed "s/ *$//" /sys/block/$r/device/model' < /dev/null)
+log "root disk: $M"
+case "$M" in *Micron*) ;; *) die "production is not running from the Micron" ;; esac
+
+log "waiting for the boot to finish (catch-up jobs, up to 15 minutes)"
+S=$(p 'timeout 900 systemctl is-system-running --wait' < /dev/null)
+log "system: $S"
+[ "$S" = running ] || { p 'systemctl --failed --no-legend --no-pager; systemctl list-jobs --no-pager' < /dev/null; die "the system is $S"; }
+
+# One apply on the deployed tag, so the apply timestamp is fresh (GitopsSilent) and a tag released
+# during the drill is applied now, before R6, not during it
+for _ in $(seq 1 90); do
+  busy=0
+  for w in $(p 'systemctl is-active homepi-gitops@apply homepi-gitops@check' < /dev/null); do
+    case "$w" in active|activating|reloading) busy=1 ;; esac
+  done
+  [ "$busy" = 0 ] && break
+  sleep 10
+done
+[ "$busy" = 0 ] || die "a GitOps run is still in progress after 15 minutes"
+p 'sudo systemctl start homepi-gitops@apply; echo "homepi-r8: apply $(systemctl show -p Result --value homepi-gitops@apply), deployed $(sudo cat /var/lib/homepi-gitops/deployed | cut -c1-14)"' < /dev/null
+sleep 60
+
+log "R6 on production"
+p "sudo bash -s -- $DEVICES" < "$REPO/scripts/restore/homepi-r6-verify" || die "R6 fails on production"
+
+log "off-site upload of what production made before T0"
+p 'sudo systemctl start homepi-offsite.service; echo "homepi-r8: offsite $(systemctl show -p Result --value homepi-offsite.service)"' < /dev/null
+rm -f ~/.ssh/known_hosts.drill-sd ~/.ssh/known_hosts.drill-new ~/.ssh/cm-drill
+log "done. Next: R8 step 5, the drill key out of SOPS (docs/runbooks/restore.md)"

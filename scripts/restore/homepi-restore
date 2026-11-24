@@ -355,7 +355,15 @@ phase_R5B() {
       r=$(systemctl show -p Result --value "$u.service")
       echo "$u: $r in $(( $(date +%s) - t )) s"
       [ "$r" = success ] || { sudo journalctl -u "$u.service" -n 15 --no-pager; exit 1; }
-    done' < /dev/null
+    done
+    # C5 defect 2: the end of the native backup reset one Telegraf write (16:33:15); R6 ran 101 s
+    # later and its Telegraf check, which reads the last 120 s, failed. R5B ends when ingestion is
+    # clean again (at most 5 minutes), so R6 checks the platform, not the load R5B just caused.
+    for i in $(seq 0 20); do
+      if sudo /usr/local/sbin/homepi-telegraf-check > /dev/null 2>&1; then echo "Telegraf clean $(( i * 15 )) s after the upload"; exit 0; fi
+      sleep 15
+    done
+    echo "Telegraf not clean 5 minutes after the backups:"; sudo /usr/local/sbin/homepi-telegraf-check; exit 1' < /dev/null
 }
 
 phase_R6() {
@@ -477,7 +485,7 @@ main() {
   echo
   report
   echo
-  echo "Next, by hand: R7 (homepi-r7-end-drill), R9 (erase the spare from the microSD) and R8, production back (docs/runbooks/restore.md)."
+  echo "Next, by hand: R7 (homepi-r7-end-drill), R9 (erase the spare from the microSD), then R8 (homepi-r8-return once the production disk is back; docs/runbooks/restore.md)."
 }
 
 [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"

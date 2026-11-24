@@ -123,3 +123,10 @@ The SunFounder case controller (`/usr/local/bin/pironman5`, pip-installed, venv 
 `/opt/pironman5`) runs as root with no `User=`: third-party code with full privileges. Its
 files are pinned by the hardening role; running it unprivileged (GPIO and I2C groups) is not
 done yet.
+
+## No out-of-band access (decided 2026-11-24: a known limit, not a 1.0.0 blocker)
+
+There is no console or power control outside SSH. Without SSH the only shutdown is pulling the
+power once the disk activity stops; the case button would give a clean shutdown but needs the
+pironman5 software, which is not managed by a role yet. Both stay open after 1.0.0: a pironman5
+role (pinned version, unprivileged where possible), then a way to reach the Pi when SSH is down.

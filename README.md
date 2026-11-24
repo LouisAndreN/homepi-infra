@@ -99,7 +99,8 @@ Written up in `docs/incidents` and `docs/game-days`, and in the articles.
 - **Full rebuild game days.** The production NVMe is removed and the Pi rebuilt on a spare disk
   from this repository and the S3 archives only. C3 (2026-11-21): 5 h 18 min, 44 defects. C4
   (2026-11-22): 4 h 24 min, 17 defects, sensor data loss 54 min. Both **FAIL** the 4-hour target
-  and are published as such; the recovery time of a clean run is not measured yet (C5).
+  and are published as such. C5 (2026-11-24): **1 h 03 min**, sensor data loss 29 min, 3 defects,
+  one fixed during the drill, so it is published as **not clean**; 1.0.0 waits for a clean run (C6).
 - **Other drills:** dead man's switch (twice), drift detection, controlled reboot without manual action.
 
 ## Known limits
@@ -107,7 +108,7 @@ Written up in `docs/incidents` and `docs/game-days`, and in the articles.
 The full list is in `docs/known-limits.md`. The main ones:
 
 - **Single node.** No high availability: a dead disk is a full rebuild (see the game days above;
-  measured 4 h 24 min, target 4 h).
+  measured 1 h 03 min in C5, target 4 h).
 - **Disk encryption does not protect against theft.** The data volume is LUKS2, but for a
   headless boot its key file sits on the unencrypted root partition
   (`docs/runbooks/disk-encryption.md`).

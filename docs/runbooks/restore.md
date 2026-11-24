@@ -229,36 +229,37 @@ powered off, spare and microSD in, R9, Micron back. Production off 12 minutes, t
 FNA 0x7 (cryptographic erase supported), `nvme format` succeeded, no GPT or LUKS header readable
 afterwards, no signature left; R6 PASS on production with the 7 devices back.
 
-## R8: production back (`docs/game-days/2026-11-21-c3.md`)
+## R8: production back (`docs/game-days/2026-11-21-c3.md`, `scripts/restore/homepi-r8-return`)
 
 R8 was the hardest step of C3: the production disk came back on another LAN address, with SSH and DNS
 bound to the old one, and no way to log in for a night. Since v0.1.134 the address is static
 (netplan, plus a router reservation), sshd listens on every address and Unbound uses `ip-freebind`,
-so the production disk should come back as it left. The procedure, after R7 on the spare:
+so the production disk comes back as it left (C4 and C5: SSH within a minute). After R7 and R9:
 
-1. Power off the spare (`sudo systemctl poweroff`), wait for the power LED, unplug.
-2. Swap the disks: spare out, production disk in, seated fully. Ethernet in. (C3: no SSH at first
-   was suspected to be a badly seated disk; the cause was the LAN address, see the game-day report.)
-3. Power on. Within 3 minutes: the ESP32s reconnect to `Pi-IoT` (the access point is up), then
-   `ssh homepi true` from the laptop works with the usual `known_hosts`.
+1. Power off, wait for the power LED, unplug.
+2. Swap: microSD and spare out, production disk in, seated fully. Ethernet in.
+3. Power on, then on the laptop `scripts/restore/homepi-r8-return 7`. It waits for SSH (5 minutes),
+   checks the root disk is the Micron, waits for the boot to finish (`systemctl is-system-running
+   --wait`, up to 15 minutes), runs one apply, waits a minute, runs R6, starts the off-site upload
+   and deletes the drill `known_hosts` files.
+   C5 defect 3: R6 two minutes after the boot failed on things that were not faults. The hourly
+   GitOps check (`Persistent=true`) catches up at boot and holds the system in "starting" for about
+   8 minutes, Unbound had not validated DNSSEC yet, and `GitopsSilent` fired because the last apply
+   was older than the hour production had been off.
    If SSH does not answer: check the router's client list for the Pi's MAC; the address must be the
    reserved one. Without SSH there is no clean shutdown (the case button needs pironman5): pull the
    power only after the disk activity stops.
-4. On the Pi: `systemctl is-system-running`, then R6 (`homepi-r6-verify 7`) on production.
-   Every tag released during the drill went to the spare's bare repository: push the tags alone to
-   `pi` (`git push pi refs/tags/v0.1.N ...`). Pushing `main` to `pi` relays it to GitHub `main`
+4. Tags released during the drill: production fetches tags from GitHub itself (C5: it deployed
+   v0.2.3 before any push), so nothing is pushed. Only if the Pi cannot reach GitHub, push the tags
+   alone to `pi` (`git push pi refs/tags/vX.Y.Z`); never `main`, which relays to GitHub `main`
    (C4: four laptop commits reached GitHub without the typed MERGE).
-5. Off-site: `systemctl start homepi-offsite.service`. Archives made by production while it was
-   powered off do not exist; archives of the hours before T0 that were not uploaded yet go now.
-6. Laptop: remove the drill Pi key from `.sops.yaml` (exact match, checked first), then for every
-   `ansible/secrets/*.sops.yaml`: `sops updatekeys -y`, `sops rotate -i`, `sops -d > /dev/null`.
-   `updatekeys` alone only re-wraps the data key: the drill key, still on the spare disk, would open
-   future versions encrypted with the same data key. Commit signed, then `release`; production applies
-   the tag through GitOps. Allow up to 30 minutes from `release` to the deployed tag: the precheck
-   runs the whole `site.yml` in check mode (8 to 10 min), the apply timer fires every 10 minutes and
-   skips a run while the hourly check holds the lock (C4: pushed 20:53, applied from 21:13).
-7. Delete `~/.ssh/known_hosts.drill-sd` and `~/.ssh/known_hosts.drill-new` on the laptop, and keep
-   the spare disk powered off (R7 disabled its timers; a spare booted by mistake must stay silent).
+5. Laptop: remove the drill Pi key from `.sops.yaml`; the file must come back byte for byte to its
+   state before R4SOPS. Then for every `ansible/secrets/*.sops.yaml`: `sops updatekeys -y`,
+   `sops rotate -i`, `sops -d > /dev/null`, and no secret file may still list the drill key.
+   `updatekeys` alone only re-wraps the data key: the drill key would open future versions
+   encrypted with the same data key. Commit signed, then `release`; start one apply on production.
+   Wait for any GitOps run in progress first (C5: the hourly check was running).
+6. Keep the erased spare labelled and off.
 
 What the drill does not bring back by itself: the sensor data the rebuilt Pi collected stays on the
 spare. Its hourly deltas are in S3, so `homepi-r5-deltas` could replay them into production (not done
