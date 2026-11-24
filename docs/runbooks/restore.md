@@ -12,8 +12,12 @@ Since C4 the phases R0 to R6 run from one command, in the drill order, and each 
     scripts/restore/homepi-restore plan       # the phases, nothing run
 
 It waits for a person only at T0 (type POWEROFF: it powers production off), the disk swap (SD), and
-the microSD removal (BOOT); the R1 device name, the LUKS passphrase and the key and signing
-passphrases are typed inside their phases. The timeline (`~/homepi-restore/drill-<start>/timeline.tsv`)
+the microSD removal (BOOT), and the R1 device name. Every passphrase is typed once, at the start,
+before T0 (C6): the SSH key and the signing key go to an agent of this drill (socket in the drill
+directory, keys expire after 4 hours, `homepi-restore stop-agent` at the end), the LUKS passphrase
+is read twice, compared, and kept in memory until R1. The microSD system and BOOTCHECK need no
+address: the orchestrator finds the microSD system by the production host key it presents, and
+says so when the microSD was left in at BOOT. The timeline (`~/homepi-restore/drill-<start>/timeline.tsv`)
 separates the time waiting for a person from the machine time, and keeps every failed attempt: the
 RTO is the wall clock from T0 to the first R6 PASS, failures included. RPO is T0 minus the time in each
 archive name. Host keys: `~/.ssh/known_hosts.drill-sd` for the microSD system,
@@ -77,8 +81,9 @@ What it does, in order, stopping at the first problem:
    Then the partition table and the first and last 100 MiB are cleared as before.
 4. Partitions with the production boundaries (MiB): p1 vfat BOOT 1G, p2 ext4 ROOT 100G, p3 swap 4G,
    p4 ext4 RECOVERY 5G, p5 LUKS2 for the rest.
-5. LUKS2 aes-xts-plain64 512-bit, 4096-byte sectors, argon2id, label `cryptdata`: the operator types
-   the passphrase (keyslot 0); a 512-byte keyfile generated in RAM is added (keyslot 1).
+5. LUKS2 aes-xts-plain64 512-bit, 4096-byte sectors, argon2id, label `cryptdata`: the passphrase
+   (keyslot 0) comes from the orchestrator in `/run` (`--passphrase-file`, deleted after keyslot 1),
+   or is typed when R1 runs alone; a 512-byte keyfile generated in RAM is added (keyslot 1).
 6. `vg-main` and the ten volumes with the production sizes in bytes, labels and filesystems; Btrfs
    subvolumes `@iot-hot`, `@iot-archives`, `@backups`, `@personal`.
 7. Copies the image onto the mounted tree (so `/var`, `/var/log` land on their volumes), writes

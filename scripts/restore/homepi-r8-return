@@ -12,6 +12,9 @@ export LC_ALL=C.UTF-8
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
 DEVICES="${1:-7}"
 CP=~/.ssh/cm-homepi
+# The drill agent, when it is still up, holds the SSH key (homepi-restore, C6)
+A_SOCK="$HOME/homepi-restore/current-drill/agent.sock"
+[ -S "$A_SOCK" ] && export SSH_AUTH_SOCK="$A_SOCK"
 log() { echo "homepi-r8: $*"; }
 die() { echo "STOPPED: $*"; exit 1; }
 p() { ssh -o ControlMaster=auto -o ControlPersist=2h -o ControlPath="$CP" homepi "$@"; }

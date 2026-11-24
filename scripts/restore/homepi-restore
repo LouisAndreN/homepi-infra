@@ -1,14 +1,15 @@
 #!/bin/bash
 # homepi-restore: run the restore phases R0 to R6 (docs/runbooks/restore.md) from the laptop, in order,
-# and time each one. It stops only where a person must act (disk swap, microSD, the R1 device name and
-# LUKS passphrase, key and signing passphrases) and records that wait apart, so the RTO is measured,
-# not reconstructed from shell history (C3, 2026-11-21).
+# and time each one. It stops only where a person must act (disk swap, microSD, the R1 device name)
+# and records that wait apart, so the RTO is measured, not reconstructed from shell history (C3,
+# 2026-11-21). Every passphrase is typed once, at the start, before T0 (C6).
 #
 #   scripts/restore/homepi-restore start [--day YYYY-MM-DD] [--devices N] [--model "990 PRO"]
 #   scripts/restore/homepi-restore resume [--sd-addr IP]   continue a drill (failed phase first);
 #                                     --sd-addr: the microSD system's DHCP address (C4: not the Pi's
 #                                     static production address), used for SDCHECK and R1 only
 #   scripts/restore/homepi-restore report      print the timeline and the RTO/RPO of the drill
+#   scripts/restore/homepi-restore stop-agent  stop this drill's SSH agent (after R8 and the SOPS step)
 #   scripts/restore/homepi-restore plan        list the phases, run nothing
 #
 # A drill lives in ~/homepi-restore/drill-<start>/ (timeline.tsv, drill.env, one log per phase).
@@ -112,6 +113,66 @@ human() {
 pi_addr() {
   if [ -n "${SD_ADDR:-}" ] && [ "${IN_SD_PHASE:-0}" = 1 ]; then echo "$SD_ADDR"; return; fi
   ssh -G "$PI" | awk '$1 == "hostname" {print $2; exit}'
+}
+
+# ---------------------------------------------------------------- secrets, typed once before T0
+# C6: a signing passphrase mistyped in R4TAG cost a second 6-minute precheck, and the operator had to
+# stay at the keyboard for the whole drill. Every secret is now typed at the start and checked there,
+# before production goes off. The SSH key and the signing key go to an agent that belongs to this
+# drill: its socket is in the drill directory (0700), the keys expire after 4 hours, and
+# "homepi-restore stop-agent" ends it. The LUKS passphrase stays in this process's memory until R1
+# writes it to the microSD system's RAM (/run, 0600), where homepi-r1-layout deletes it after use.
+SSH_KEY="$HOME/.ssh/id_ed25519"
+AGENT_TTL=14400
+
+signing_key() {
+  local k
+  k=$(git -C "$REPO" config user.signingkey)
+  k=${k/#\~/$HOME}
+  echo "${k:-$HOME/.ssh/homepi-sign}"
+}
+
+key_fp() { ssh-keygen -lf "$1" 2>&1 | awk '{print $2}'; }
+
+agent_has() { ssh-add -l 2>&1 | grep -qF "$(key_fp "$1")"; }
+
+agent_up() {
+  local k rc
+  export SSH_AUTH_SOCK="$DRILL/agent.sock"
+  ssh-add -l > /dev/null 2>&1; rc=$?
+  if [ "$rc" = 2 ]; then   # 2: no agent on this socket (0: keys, 1: an agent with no key)
+    rm -f "$SSH_AUTH_SOCK"
+    eval "$(ssh-agent -a "$SSH_AUTH_SOCK" -t "$AGENT_TTL")" > /dev/null || { echo "cannot start ssh-agent"; return 1; }
+    setvar AGENT_PID "$SSH_AGENT_PID"
+  fi
+  for k in "$SSH_KEY" "$(signing_key)"; do
+    [ -r "$k" ] || { echo "key not found: $k"; return 1; }
+    agent_has "$k" && continue
+    echo "Passphrase of $(basename "$k"), kept by this drill's agent for 4 hours:"
+    ssh-add -t "$AGENT_TTL" "$k" < /dev/tty || return 1
+    agent_has "$k" || { echo "$(basename "$k") is not in the agent"; return 1; }
+  done
+  log "agent: SSH and signing keys loaded ($DRILL/agent.sock); stop it with: homepi-restore stop-agent"
+}
+
+agent_stop() {
+  [ -n "${AGENT_PID:-}" ] && SSH_AGENT_PID=$AGENT_PID SSH_AUTH_SOCK="$DRILL/agent.sock" ssh-agent -k > /dev/null 2>&1
+  rm -f "$DRILL/agent.sock"
+  log "agent stopped"
+}
+
+# Read twice, compared here: a typo cannot reach cryptsetup. Not exported, never written on the laptop.
+luks_read() {
+  local a b
+  [ "$(result_of R1)" = ok ] && return 0
+  [ -n "${LUKS_PASS:-}" ] && return 0
+  while :; do
+    read -rs -p "LUKS passphrase of the rebuilt disk (R1): " a < /dev/tty; echo
+    read -rs -p "Again: " b < /dev/tty; echo
+    [ -n "$a" ] && [ "$a" = "$b" ] && break
+    echo "Empty or different: type it again."
+  done
+  LUKS_PASS=$a
 }
 
 # ---------------------------------------------------------------- finding the microSD system
@@ -252,13 +313,19 @@ phase_SDCHECK() {
 }
 
 phase_R1() {
+  local rc
   IN_SD_PHASE=1
   master "$KH_SD" || return 1
   git -C "$REPO" archive --format=tar HEAD \
     | ssh "$PI" 'sudo rm -rf /root/r1 && sudo install -d -m 0700 /root/r1/homepi-infra && sudo tar -x -C /root/r1/homepi-infra' || return 1
   ssh "$PI" 'sudo install -m 0600 "$HOME/.ssh/authorized_keys" /root/r1/authorized_keys' < /dev/null || return 1
+  [ -n "${LUKS_PASS:-}" ] || { echo "no LUKS passphrase in this process: run homepi-restore resume (it asks first)"; return 1; }
+  printf '%s' "$LUKS_PASS" | ssh "$PI" 'sudo sh -c "umask 077; cat > /run/homepi-r1-pass"' || return 1
   ssh -t "$PI" "sudo /root/r1/homepi-infra/scripts/restore/homepi-r1-layout --target /dev/nvme0n1 \
-    --expect-model '$MODEL' --authorized-keys /root/r1/authorized_keys --repo /root/r1/homepi-infra" || return 1
+    --expect-model '$MODEL' --authorized-keys /root/r1/authorized_keys --repo /root/r1/homepi-infra \
+    --passphrase-file /run/homepi-r1-pass"; rc=$?
+  ssh "$PI" 'sudo rm -f /run/homepi-r1-pass' < /dev/null
+  [ "$rc" = 0 ] || return 1
   ssh "$PI" 'sudo systemctl poweroff' < /dev/null || true
   drop_master
 }
@@ -488,6 +555,7 @@ main() {
   case "$cmd" in
     plan) printf '%s\n' "$PHASES" | awk '{k = $2; $2 = ""; printf "%-10s %-6s %s\n", $1, k, substr($0, length($1) + 3)}'; exit 0 ;;
     report) load_drill; report; exit 0 ;;
+    stop-agent) load_drill; agent_stop; exit 0 ;;
     start)
       [ "$(hostname)" = "DESKTOP-581OMPC" ] || die "run this on the laptop"
       local day="" devices=7 model="990 PRO"
@@ -527,6 +595,9 @@ main() {
   runtime_check || die "laptop Ansible runtime"
   for c in age sops ansible-playbook git scp ssh timeout; do command -v "$c" > /dev/null || die "missing command: $c"; done
   [ -r "$AGE_KEY" ] || die "laptop age key not found ($AGE_KEY)"
+  # Every passphrase now, before T0 (C6)
+  agent_up || die "the drill agent is not ready"
+  luks_read
   local p
   for p in $(phase_ids); do
     run_phase "$p" || { echo; report; exit 1; }
@@ -535,6 +606,7 @@ main() {
   report
   echo
   echo "Next, by hand: R7 (homepi-r7-end-drill), R9 (erase the spare from the microSD), then R8 (homepi-r8-return once the production disk is back; docs/runbooks/restore.md)."
+  echo "The drill agent keeps the SSH and signing keys for R7 to R8: export SSH_AUTH_SOCK=$DRILL/agent.sock; homepi-restore stop-agent at the end."
 }
 
 [ "${BASH_SOURCE[0]}" = "$0" ] && main "$@"

@@ -1,0 +1,34 @@
+#!/bin/bash
+# Offline test of the LUKS keyslots of homepi-r1-layout with --passphrase-file (run as root; no
+# device-mapper needed: only luksFormat, luksAddKey and --test-passphrase). Checks that a passphrase
+# given in a file without a newline is the same secret as the one typed at a prompt, that the boot
+# keyfile is added, and that the passphrase file is gone after luks_add_keyfile.
+set -uo pipefail
+HERE=$(cd "$(dirname "$0")" && pwd)
+WORK=$(mktemp -d /var/tmp/r1-luks-test.XXXXXX)
+truncate -s 64M "$WORK/p5.img"
+DEV=$(losetup -f --show "$WORK/p5.img")
+trap 'losetup -d "$DEV"; rm -rf "$WORK"' EXIT
+# shellcheck source=/dev/null
+. "$HERE/../homepi-r1-layout"
+trap 'losetup -d "$DEV"; rm -rf "$WORK"' EXIT
+set +e
+fails=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+part() { echo "$DEV"; }
+PASS='correct horse battery staple 42'
+PASSFILE="$WORK/pass"; KEYFILE="$WORK/keyfile"
+( umask 077; printf '%s' "$PASS" > "$PASSFILE" )
+head -c 64 /dev/urandom > "$KEYFILE"
+# Light Argon2id for the test only; the real call keeps cryptsetup's defaults
+cryptsetup() { if [ "$1" = luksFormat ] || [ "$1" = luksAddKey ]; then command cryptsetup "$@" --pbkdf-memory 32768 --pbkdf-force-iterations 4; else command cryptsetup "$@"; fi; }
+(luks_format) > /dev/null 2>&1; rc=$?
+check "luksFormat from the passphrase file" '[ "$rc" = 0 ]'
+check "the file passphrase is the typed passphrase (stdin, newline-terminated like a prompt)" 'printf "%s\n" "$PASS" | command cryptsetup open --test-passphrase "$DEV" > /dev/null 2>&1'
+check "a wrong passphrase is refused" '! printf "%s\n" "wrong" | command cryptsetup open --test-passphrase "$DEV" > /dev/null 2>&1'
+(luks_add_keyfile) > /dev/null 2>&1; rc=$?
+check "boot keyfile added with the passphrase file" '[ "$rc" = 0 ] && command cryptsetup open --test-passphrase --key-file "$KEYFILE" "$DEV" > /dev/null 2>&1'
+check "the passphrase file is removed after keyslot 1" '[ ! -e "$PASSFILE" ]'
+check "two keyslots" '[ "$(command cryptsetup luksDump "$DEV" | grep -cE "^  [0-9]+: luks2")" = 2 ]'
+echo
+[ "$fails" = 0 ] && echo "r1-luks-test PASS" || { echo "r1-luks-test FAIL: $fails"; exit 1; }

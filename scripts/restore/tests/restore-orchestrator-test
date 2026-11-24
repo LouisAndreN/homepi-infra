@@ -60,5 +60,13 @@ lan_ssh_hosts() { printf '%s\n' 192.168.100.1 192.168.100.151 192.168.100.30; }
 check "no microSD system: nothing found" '! find_sd_addr > /dev/null'
 prod_fp() { echo ""; }
 check "no production key in known_hosts: nothing found" '! find_sd_addr > /dev/null'
+# The drill agent: the keys it holds are recognised by fingerprint; the signing key comes from git
+ssh-keygen -q -t ed25519 -N "" -C test -f "$T/k1"; ssh-keygen -q -t ed25519 -N "" -C test -f "$T/k2"
+eval "$(ssh-agent -a "$T/agent.sock")" > /dev/null; ssh-add -q "$T/k1" 2>&1
+check "agent_has: a loaded key is found" 'agent_has "$T/k1"'
+check "agent_has: another key is not" '! agent_has "$T/k2"'
+ssh-agent -k > /dev/null
+git -C "$T/r" config user.signingkey "~/sign-key-for-test"
+check "signing_key: from git config, ~ expanded" '[ "$(REPO=$T/r; signing_key)" = "$HOME/sign-key-for-test" ]'
 echo
 [ "$fails" = 0 ] && echo "restore-orchestrator-test PASS" || { echo "restore-orchestrator-test FAIL: $fails"; exit 1; }

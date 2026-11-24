@@ -57,7 +57,7 @@ SUBVOLUME_UNITS="mnt-data-archives.mount mnt-data-backups.mount mnt-data-persona
 PACKAGES_HOST="cryptsetup lvm2 btrfs-progs xfsprogs dosfstools e2fsprogs parted gdisk rsync xz-utils curl gpgv nvme-cli"
 PACKAGES_TARGET="cryptsetup cryptsetup-initramfs lvm2 btrfs-progs xfsprogs systemd-zram-generator"
 
-TARGET="" EXPECT_MODEL="" AUTH_KEYS="" REPO="" ERASE_ONLY=0
+TARGET="" EXPECT_MODEL="" AUTH_KEYS="" REPO="" ERASE_ONLY=0 PASSFILE=""
 # The keyfile lives in RAM only until it is copied to the target (never on the microSD)
 KEYFILE=/run/homepi-r1-keyfile
 # Set by wipe_and_partition: from then on a failure leaves mounts, an open LUKS volume and an active
@@ -67,6 +67,7 @@ TARGET_WRITTEN=0
 on_exit() {
   local rc=$? d l
   rm -f "$KEYFILE"
+  [ -n "$PASSFILE" ] && rm -f "$PASSFILE"
   [ "$rc" != 0 ] && [ "$TARGET_WRITTEN" = 1 ] || return 0
   echo "homepi-r1: cleaning up after the failure (nothing is wiped)" >&2
   sync
@@ -91,6 +92,9 @@ parse_args() {
       --authorized-keys) AUTH_KEYS="$2"; shift 2 ;;
       --repo) REPO="$2"; shift 2 ;;
       --erase-only) ERASE_ONLY=1; shift ;;
+      # The orchestrator reads the passphrase once, before T0 (C6), and leaves it here, in RAM, 0600;
+      # the file is removed when this script exits, whatever happens
+      --passphrase-file) PASSFILE="$2"; shift 2 ;;
       *) die "unknown argument $1" ;;
     esac
   done
@@ -246,10 +250,17 @@ wipe_and_partition() {
   mkfs.ext4 -q -F -L RECOVERY "$(part 4)"
 }
 
-# Interactive: cryptsetup asks the operator for the passphrase twice (keyslot 0)
+# Keyslot 0: the passphrase, from the orchestrator's file (read once before T0), or typed twice here
 luks_format() {
-  log "LUKS2 format of $(part 5): type the passphrase (twice)"
-  cryptsetup luksFormat -q --verify-passphrase --type luks2 --cipher aes-xts-plain64 --key-size 512 \
+  local src=(--verify-passphrase)
+  if [ -n "$PASSFILE" ]; then
+    [ -s "$PASSFILE" ] || die "passphrase file $PASSFILE missing or empty"
+    src=(--key-file "$PASSFILE")
+    log "LUKS2 format of $(part 5) with the passphrase given before T0"
+  else
+    log "LUKS2 format of $(part 5): type the passphrase (twice)"
+  fi
+  cryptsetup luksFormat -q "${src[@]}" --type luks2 --cipher aes-xts-plain64 --key-size 512 \
     --sector-size 4096 --pbkdf argon2id --label cryptdata "$(part 5)" || die "luksFormat failed"
 }
 
@@ -257,6 +268,12 @@ luks_format() {
 luks_add_keyfile() {
   # C3 (2026-11-21): cryptsetup's own prompt reads "Enter any existing passphrase", which looked like a
   # request for an older passphrase. It is the one just typed twice above.
+  if [ -n "$PASSFILE" ]; then
+    log "adding the boot keyfile"
+    cryptsetup luksAddKey -q --pbkdf argon2id --key-file "$PASSFILE" "$(part 5)" "$KEYFILE" || die "luksAddKey failed"
+    rm -f "$PASSFILE"   # not needed after keyslot 1: the volume opens with the keyfile from here on
+    return 0
+  fi
   log "adding the boot keyfile: at \"Enter any existing passphrase\", type the SAME passphrase you just set (third time)"
   cryptsetup luksAddKey -q --pbkdf argon2id "$(part 5)" "$KEYFILE" || die "luksAddKey failed"
 }
