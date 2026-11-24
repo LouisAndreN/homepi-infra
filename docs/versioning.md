@@ -27,7 +27,8 @@ devices by staged OTA, independently of these tags.
 A drill that needs a fix or a second attempt is published with its numbers as not clean, and 1.0.0
 waits for the next one. C5 (2026-11-24) needed a fix. C6 (2026-11-24) had no defect and no code
 change but two operator errors (a step redone, a phase run twice); the criterion was tightened after
-C6, by decision, to cover them, so C6 does not count either.
+C6, by decision, to cover them, so C6 does not count either. C7 (2026-11-24) ran R0 to R6 without an
+error in 49 min, but R8 had to be run twice (a DNS check too early after the boot): not clean.
 
 ## History
 

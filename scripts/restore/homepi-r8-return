@@ -40,6 +40,12 @@ S=$(p 'timeout 900 systemctl is-system-running --wait' < /dev/null)
 log "system: $S"
 [ "$S" = running ] || { p 'systemctl --failed --no-legend --no-pager; systemctl list-jobs --no-pager' < /dev/null; die "the system is $S"; }
 
+# C7: two to three minutes after the boot, Unbound did not validate DNSSEC yet and the GitOps run
+# could not reach GitHub, so the drill tag was not applied. Wait until Unbound validates (3 minutes).
+log "waiting for Unbound to validate DNSSEC (up to 3 minutes)"
+p 'for _ in $(seq 1 36); do dig @127.0.0.1 isc.org SOA +dnssec +time=3 +tries=1 | grep -qE "flags:[a-z ]* ad" && { echo "homepi-r8: Unbound validates"; exit 0; }; sleep 5; done; exit 1' < /dev/null \
+  || die "Unbound does not validate DNSSEC 3 minutes after the boot"
+
 # One apply on the deployed tag, so the apply timestamp is fresh (GitopsSilent) and a tag released
 # during the drill is applied now, before R6, not during it
 for _ in $(seq 1 90); do
