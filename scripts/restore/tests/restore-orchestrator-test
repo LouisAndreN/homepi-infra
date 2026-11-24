@@ -50,5 +50,15 @@ check "runtime: the venv matching the pin passes and comes first in PATH" '(REPO
 printf '#!/bin/sh\necho "ansible-playbook [core 2.20.1]"\n' > "$T/rt/.venv/bin/ansible-playbook"
 check "runtime: 2.20.1 against a 2.20.11 pin is refused" '(REPO=$T/rt; ! runtime_check > /dev/null)'
 check "runtime: no venv is refused" '(REPO=$T/none; ! runtime_check > /dev/null)'
+# Finding the microSD system: the host on another address that offers the production key
+prod_addr() { echo 192.168.100.151; }
+prod_fp() { echo SHA256:prodkey; }
+lan_ssh_hosts() { printf '%s\n' 192.168.100.1 192.168.100.151 192.168.100.152 192.168.100.30; }
+host_fp() { case "$1" in 192.168.100.151|192.168.100.152) echo SHA256:prodkey ;; *) echo SHA256:other ;; esac; }
+check "microSD found by the production key on another address" '[ "$(find_sd_addr)" = 192.168.100.152 ]'
+lan_ssh_hosts() { printf '%s\n' 192.168.100.1 192.168.100.151 192.168.100.30; }
+check "no microSD system: nothing found" '! find_sd_addr > /dev/null'
+prod_fp() { echo ""; }
+check "no production key in known_hosts: nothing found" '! find_sd_addr > /dev/null'
 echo
 [ "$fails" = 0 ] && echo "restore-orchestrator-test PASS" || { echo "restore-orchestrator-test FAIL: $fails"; exit 1; }

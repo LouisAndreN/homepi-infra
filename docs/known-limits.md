@@ -130,3 +130,13 @@ There is no console or power control outside SSH. Without SSH the only shutdown 
 power once the disk activity stops; the case button would give a clean shutdown but needs the
 pironman5 software, which is not managed by a role yet. Both stay open after 1.0.0: a pironman5
 role (pinned version, unprivileged where possible), then a way to reach the Pi when SSH is down.
+
+## The rescue microSD is a copy of the production identity (found 2026-11-24, C6)
+
+The microSD system used by R1 and R9 was installed from production: it presents the production SSH
+host keys, and it may hold a copy of the LUKS keyfile (restore.md). Whoever holds the card can
+impersonate the Pi on the LAN and may open the data volume of a production disk. The orchestrator
+now relies on this to find the card on the network (its key on another address than production),
+so changing it means giving the card its own host keys and recording them. Until then the card is
+kept like the production disk.
+

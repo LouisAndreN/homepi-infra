@@ -114,16 +114,65 @@ pi_addr() {
   ssh -G "$PI" | awk '$1 == "hostname" {print $2; exit}'
 }
 
+# ---------------------------------------------------------------- finding the microSD system
+# C6: the operator should never type an address. The microSD system was installed from production
+# and presents the production ED25519 host key, on a DHCP address. Production is off from T0, so the
+# one host of the LAN that offers that key on another address than production's is the microSD
+# system. The same test, during BOOTCHECK, tells that the microSD was left in (C6: 23 minutes lost).
+prod_addr() { ssh -G "$PI" | awk '$1 == "hostname" {print $2; exit}'; }
+
+prod_fp() {
+  ssh-keygen -F "$(prod_addr)" -l 2>&1 | grep ED25519 | grep -o 'SHA256:[A-Za-z0-9+/=]*' | head -n 1
+}
+
+host_fp() {
+  timeout 6 ssh-keyscan -t ed25519 "$1" 2>&1 | grep -v '^#' | ssh-keygen -lf - 2>&1 \
+    | grep -o 'SHA256:[A-Za-z0-9+/=]*' | head -n 1
+}
+
+# Addresses of the production /24 with port 22 open (one probe each, in parallel, 1 second)
+lan_ssh_hosts() {
+  local base i
+  base=$(prod_addr); base=${base%.*}
+  for i in $(seq 1 254); do
+    # A probe, judged by its exit code: the refusals of 250 addresses are not worth printing
+    (timeout 1 bash -c "exec 3<> /dev/tcp/$base.$i/22" > /dev/null 2>&1 && echo "$base.$i") &
+  done
+  wait
+}
+
+find_sd_addr() {
+  local fp prod a
+  fp=$(prod_fp); prod=$(prod_addr)
+  [ -n "$fp" ] || return 1
+  for a in $(lan_ssh_hosts | sort -t. -k4 -n); do
+    [ "$a" = "$prod" ] && continue
+    [ "$(host_fp "$a")" = "$fp" ] && { echo "$a"; return 0; }
+  done
+  return 1
+}
+
 # The sshd banner answers without any login: a passphrase-protected key cannot log in in BatchMode
 wait_banner() {
-  local a t0 b
+  local a t0 b sd
   t0=$(now)
-  a=$(pi_addr)
   while :; do
+    # SDCHECK and R1: find the microSD system by its host key until it answers (or --sd-addr gave it)
+    if [ "${IN_SD_PHASE:-0}" = 1 ] && [ -z "${SD_ADDR:-}" ]; then
+      sd=$(find_sd_addr) && { setvar SD_ADDR "$sd"; log "microSD system found on $sd (production host key)"; }
+    fi
+    a=$(pi_addr)
     # OpenSSH only: an initramfs unlock server (dropbear) also says SSH-2.0, with another host key
     b=$(timeout 5 bash -c "exec 3<> /dev/tcp/$a/22 && head -c 15 <&3" 2>&1) || true
     [ "$b" = "SSH-2.0-OpenSSH" ] && { log "sshd answers on $a:22 after $(hms $(( $(now) - t0 )))"; return 0; }
-    [ $(( ($(now) - t0) % 60 )) -lt 5 ] && log "waiting for sshd on $a:22 ($(hms $(( $(now) - t0 )))); microSD on another address? Ctrl-C, then resume --sd-addr IP"
+    # BOOTCHECK: after 90 s, the microSD system answering means the microSD was left in
+    if [ "${IN_SD_PHASE:-0}" != 1 ] && [ $(( $(now) - t0 )) -ge 90 ] && sd=$(find_sd_addr); then
+      echo "The microSD system answers on $sd: the Pi booted from the microSD, not from the $MODEL."
+      echo "Power it off: ssh -o HostName=$sd -o UserKnownHostsFile=$KH_SD homepi sudo systemctl poweroff"
+      echo "then remove the microSD, power on, and: homepi-restore resume"
+      return 1
+    fi
+    [ $(( ($(now) - t0) % 60 )) -lt 5 ] && log "waiting for sshd on $a:22 ($(hms $(( $(now) - t0 ))))"
     sleep 5
   done
 }

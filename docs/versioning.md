@@ -19,12 +19,15 @@ devices by staged OTA, independently of these tags.
 
 1.0.0 is earned by a measurement, not given on a date:
 
-- a restore drill on a blank disk with no code change during the drill, and its RTO within the 4 hour
-  target (C5 or later);
+- a restore drill on a blank disk that runs **without any error**: no code change during the drill,
+  no phase run twice, no step redone by hand, and its RTO within the 4 hour target;
 - the follow-up items of the last drill closed;
 - a written answer for who acts on a critical alert at night.
 
-If C5 needs a fix during the drill, its RTO is published as not clean and 1.0.0 waits for the next one.
+A drill that needs a fix or a second attempt is published with its numbers as not clean, and 1.0.0
+waits for the next one. C5 (2026-11-24) needed a fix. C6 (2026-11-24) had no defect and no code
+change but two operator errors (a step redone, a phase run twice); the criterion was tightened after
+C6, by decision, to cover them, so C6 does not count either.
 
 ## History
 
