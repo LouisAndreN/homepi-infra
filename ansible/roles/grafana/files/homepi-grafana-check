@@ -4,6 +4,10 @@
 Health over the socket; nginx's user reaches it and other users do not; a forged
 identity through the loopback proxy (127.0.0.1:3001) is refused; the InfluxDB data
 source answers (proves secret_key still decrypts its token). Exits 1 on any failure.
+
+--without-proxy skips the loopback proxy check: the grafana role passes it when nginx is not
+running yet (a rebuilt Pi, where the nginx role comes later in site.yml; C5 defect 1). The full
+check runs again in R6 and in every GitOps apply on production, where nginx runs.
 """
 import http.client
 import json
@@ -11,7 +15,9 @@ import socket
 import subprocess
 import sys
 
-SOCK = sys.argv[1] if len(sys.argv) > 1 else "/run/grafana/grafana.sock"
+ARGS = [a for a in sys.argv[1:] if a != "--without-proxy"]
+WITHOUT_PROXY = "--without-proxy" in sys.argv[1:]
+SOCK = ARGS[0] if ARGS else "/run/grafana/grafana.sock"
 ADMIN = {"X-WEBAUTH-USER": "iot-admin"}
 results = []
 
@@ -53,8 +59,11 @@ r = curl_as("www-data", ["--unix-socket", SOCK, "http://localhost/grafana/api/he
 check("nginx user (www-data) reaches the socket", r.stdout == "200", "HTTP %s, curl rc %d" % (r.stdout, r.returncode))
 r = curl_as("nobody", ["--unix-socket", SOCK, "-H", "X-WEBAUTH-USER: iot-admin", "http://localhost/grafana/api/user"])
 check("other local users cannot reach the socket", r.returncode != 0, "curl rc %d" % r.returncode)
-r = curl_as("nobody", ["-H", "X-WEBAUTH-USER: iot-admin", "-H", "Remote-Role: Admin", "http://127.0.0.1:3001/grafana/api/user"])
-check("forged identity through the loopback proxy is refused", r.stdout == "401", "HTTP %s" % r.stdout)
+if WITHOUT_PROXY:
+    print("skip forged identity through the loopback proxy: nginx is not running yet (checked again in R6)")
+else:
+    r = curl_as("nobody", ["-H", "X-WEBAUTH-USER: iot-admin", "-H", "Remote-Role: Admin", "http://127.0.0.1:3001/grafana/api/user"])
+    check("forged identity through the loopback proxy is refused", r.stdout == "401", "HTTP %s" % r.stdout)
 st, body = get("/grafana/api/datasources/name/influxdb", ADMIN)
 uid = json.loads(body).get("uid") if st == 200 else None
 if uid:

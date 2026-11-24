@@ -139,9 +139,20 @@
     mode: "0755"
   register: grafana_checker
 
+# C5 defect 1: on a rebuilt Pi nginx is still stopped here (R3 stops it, its role comes later in
+# site.yml), so the loopback proxy check answered HTTP 000. In production nginx runs and the check
+# is complete; on a rebuilt Pi the proxy part runs in R6.
+- name: nginx running? (read-only)
+  ansible.builtin.command:
+    argv: [systemctl, is-active, --quiet, nginx]
+  register: grafana_nginx_active
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
 - name: Grafana reachable only through nginx, data source healthy
   ansible.builtin.command:
-    argv: ["{{ grafana_check }}", "{{ grafana_socket }}"]
+    argv: "{{ [grafana_check, grafana_socket] + ([] if grafana_nginx_active.rc == 0 else ['--without-proxy']) }}"
     chdir: /
   register: grafana_state
   changed_when: false
