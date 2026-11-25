@@ -28,6 +28,11 @@ Since C5 preparation (2026-11-23): R4SOPS runs after R4SITE, just before R4TAG, 
 R4 failed never forces the drill key commit to be reordered; R5B, between R4APPLY and R6, takes the
 first backups of the rebuilt Pi and uploads them (C4 defect 15).
 
+Since C9 preparation (2026-11-25): R4SOPS also lists the drill tag in `CHANGELOG.md`
+(`scripts/changelog --next`, the tag message of the drill), and R4TAG amends it into the R4SOPS commit
+when the date changed in between, so the CI `changelog` job of the drill tag passes. The SOPS step of
+R8 is a release like any other: its commit lists its tag the same way.
+
 Tested offline only (`scripts/restore/tests/restore-orchestrator-test`, every phase stubbed): order,
 timeline, resume after a failure, values carried between phases, RTO/RPO arithmetic. Each phase calls
 the same commands as C3 (article 20), but the chain itself is first proven by the C4 drill.

@@ -10,6 +10,7 @@ SLIs where a minute without a sample counts as bad, multiwindow burn-rate alerts
 policy when a budget is spent (docs/slo.md). The 2026-11-22 incident, replayed in the tests, would
 have spent the device API budget by a third more.
 
+- `v1.1.4` 2026-11-25: Restore drill tags listed in CHANGELOG.md; C9 plan and verdict rules
 - `v1.1.3` 2026-11-25: ship: release a reviewed branch, main back in place when the release fails
 - `v1.1.2` 2026-11-25: CI: checkout v6 (Node 24); the changelog job reads the annotated tags
 - `v1.1.1` 2026-11-25: SLO rules in one group, so their tests give one result; CI can run by hand

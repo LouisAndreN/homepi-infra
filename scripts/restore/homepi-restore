@@ -413,7 +413,8 @@ phase_R4SOPS() {
   fi
   local f
   for f in ansible/secrets/*.sops.yaml; do sops updatekeys -y "$f" || return 1; done
-  git add .sops.yaml ansible/secrets/ || return 1
+  drill_changelog || return 1
+  git add .sops.yaml ansible/secrets/ CHANGELOG.md || return 1
   if git diff --cached --quiet; then log "nothing to commit (already added)"; return 0; fi
   git commit -S -q -m "$SOPS_SUBJECT" -m "Temporary: removed in R8 with sops updatekeys and sops rotate." < /dev/tty
 }
@@ -437,15 +438,32 @@ next_tag() {
   echo "v${BASH_REMATCH[1]}.${BASH_REMATCH[2]}.$((BASH_REMATCH[3] + 1))"
 }
 
+# The drill tag is a release like any other: its commit must list it in CHANGELOG.md, or the CI
+# changelog job of the tag fails (scripts/changelog --check). Found preparing C9: the drill tags of C8
+# predate scripts/changelog --next.
+DRILL_TAG_MSG="Restore drill: the rebuilt Pi takes over through GitOps"
+drill_changelog() {
+  local tag
+  tag=$(next_tag) || { echo "cannot compute the next tag"; return 1; }
+  (cd "$REPO" && scripts/changelog --next "$tag" "$DRILL_TAG_MSG" > CHANGELOG.md.new && mv CHANGELOG.md.new CHANGELOG.md) || { echo "CHANGELOG.md: cannot list $tag"; return 1; }
+}
+
 phase_R4TAG() {
   master_rebuilt || return 1
   local tag
   tag=$(next_tag) || { echo "cannot compute the next tag"; return 1; }
   setvar DRILL_TAG "$tag"
+  # R4SOPS listed the tag dated that day: a drill that passes midnight between R4SOPS and the tag
+  # (C8: 00:00:46 and 00:06) needs today's date in the tagged commit
+  drill_changelog || return 1
+  if ! git -C "$REPO" diff --quiet -- CHANGELOG.md; then
+    log "the date changed since R4SOPS: CHANGELOG.md amended into the R4SOPS commit"
+    git -C "$REPO" commit -S -q --amend --no-edit -- CHANGELOG.md < /dev/tty || return 1
+  fi
   # shellcheck source=/dev/null
   . "$REPO/scripts/lib.sh"
   # release reuses the R4SOPS commit (same subject) and runs the precheck on the rebuilt Pi
-  release "$SOPS_SUBJECT" "" "$tag" "Restore drill: the rebuilt Pi takes over through GitOps" < /dev/tty
+  release "$SOPS_SUBJECT" "" "$tag" "$DRILL_TAG_MSG" < /dev/tty
 }
 
 phase_R4APPLY() {

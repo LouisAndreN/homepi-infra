@@ -68,5 +68,15 @@ check "agent_has: another key is not" '! agent_has "$T/k2"'
 ssh-agent -k > /dev/null
 git -C "$T/r" config user.signingkey "~/sign-key-for-test"
 check "signing_key: from git config, ~ expanded" '[ "$(REPO=$T/r; signing_key)" = "$HOME/sign-key-for-test" ]'
+# The drill tag in CHANGELOG.md (found preparing C9): listed with the tag message, and the file then
+# passes scripts/changelog --check once the tag exists with that message
+mkdir -p "$T/cl/scripts" "$T/cl/docs/changelog" && cp "$HERE/../../changelog" "$T/cl/scripts/changelog"
+echo "Test minor." > "$T/cl/docs/changelog/1.1.md"
+(cd "$T/cl" && git init -q && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m x \
+  && git -c user.email=t@t -c user.name=t tag -a v1.1.3 -m "v1.1.3 subject" && scripts/changelog > CHANGELOG.md)
+check "drill_changelog lists the next tag with the drill message" '(REPO=$T/cl; drill_changelog) && grep -qx -- "- \`v1.1.4\` $(date +%F): $DRILL_TAG_MSG" "$T/cl/CHANGELOG.md"'
+check "drill_changelog run again gives the same file (resume)" 'cp "$T/cl/CHANGELOG.md" "$T/cl.1" && (REPO=$T/cl; drill_changelog) && cmp -s "$T/cl.1" "$T/cl/CHANGELOG.md"'
+(cd "$T/cl" && git -c user.email=t@t -c user.name=t tag -a v1.1.4 -m "$DRILL_TAG_MSG")
+check "once the drill tag exists, CHANGELOG.md passes --check (the CI job of the tag)" '(cd "$T/cl" && scripts/changelog --check > /dev/null)'
 echo
 [ "$fails" = 0 ] && echo "restore-orchestrator-test PASS" || { echo "restore-orchestrator-test FAIL: $fails"; exit 1; }
