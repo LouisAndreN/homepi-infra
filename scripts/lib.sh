@@ -37,10 +37,68 @@ release() {
   fi
   if git rev-parse -q --verify "refs/tags/$tag" > /dev/null; then echo "STOPPED: tag $tag already exists"; cd ~; return 1; fi
   homepi_precheck || { cd ~; return 1; }
-  git tag -s "$tag" -m "$tagmsg" && git tag -v "$tag" > /dev/null 2>&1 && echo "tag verified" && git push pi main "refs/tags/$tag" 2>&1 | tail -2
-  rc=$?
+  if git tag -s "$tag" -m "$tagmsg" && git tag -v "$tag" > /dev/null 2>&1 && echo "tag verified"; then
+    # The push status, not the status of tail: a refused push used to return 0 here
+    git push pi main "refs/tags/$tag" 2>&1 | tail -2; rc=${PIPESTATUS[0]}
+  else
+    rc=1
+  fi
   cd ~
   return $rc
+}
+
+# The release of a reviewed branch: fast-forward main to it, sign and push the tag, apply it on the Pi.
+# Checks before anything changes: main clean and equal to the published main, that main tagged and
+# deployed, the branch at the reviewed commit, only the allowed paths changed, the tag new everywhere,
+# CHANGELOG.md listing the tag. When the release fails before the tag reached the remote, main goes
+# back to where it was: the commits stay on the remote branch, nothing is lost, and the next run
+# starts from the same state (a failed v1.1.1 left main ahead and stopped the next block, 2026-11-25).
+# Usage: ship <branch> <full commit sha> <tag> "<tag subject>" [<regex of allowed paths>]
+deployed_tag() { ssh homepi 'sudo cat /var/lib/homepi-gitops/deployed' < /dev/null | awk '{print $1}'; }
+ship() {
+  local branch="$1" sha="$2" tag="$3" subj="$4" allow="${5:-}" repo="${HOMEPI_REPO:-$HOME/homepi-infra}" r="${HOMEPI_REMOTE:-github}"
+  local base cur dep extra a
+  [ "$(hostname)" = "DESKTOP-581OMPC" ] || { echo "STOPPED: run this on the laptop"; return 1; }
+  [[ "$sha" =~ ^[0-9a-f]{40}$ ]] || { echo "STOPPED: give the full commit sha of $branch"; return 1; }
+  cd "$repo" || return 1
+  [ "$(git branch --show-current)" = main ] || { echo "STOPPED: not on main"; return 1; }
+  [ -z "$(git status --porcelain)" ] || { echo "STOPPED: working tree not clean"; return 1; }
+  git fetch -q "$r" || { echo "STOPPED: fetch $r failed"; return 1; }
+  base=$(git rev-parse "$r/main") || return 1
+  [ "$(git rev-parse HEAD)" = "$base" ] || { echo "STOPPED: local main $(git rev-parse --short=7 HEAD) is not $r/main $(git rev-parse --short=7 "$base")"; return 1; }
+  cur=$(git tag --points-at "$base" 'v*' | sort -V | tail -n 1)
+  [ -n "$cur" ] || { echo "STOPPED: $r/main is not a release tag"; return 1; }
+  [ "$(git rev-parse -q --verify "$r/$branch")" = "$sha" ] || { echo "STOPPED: $r/$branch is not ${sha:0:7}"; return 1; }
+  git merge-base --is-ancestor "$base" "$sha" || { echo "STOPPED: $branch does not start from main"; return 1; }
+  if [ -n "$allow" ]; then
+    extra=$(git --no-pager diff --name-only "$base" "$sha" | grep -v -E "$allow")
+    [ -z "$extra" ] || { echo "STOPPED: $branch changes paths outside the release scope: $extra"; return 1; }
+  fi
+  [ -z "$(git tag -l "$tag")" ] && [ -z "$(git ls-remote "$r" "refs/tags/$tag")" ] || { echo "STOPPED: $tag already exists"; return 1; }
+  dep=$(deployed_tag); echo "deployed: $dep, main: $cur"
+  [ "$dep" = "$cur" ] || { echo "STOPPED: production runs '$dep', not $cur"; return 1; }
+  git --no-pager diff --stat "$base" "$sha"
+  read -r -p "Fast-forward main to $branch and release $tag. Type MERGE: " a
+  [ "$a" = MERGE ] || { echo "STOPPED: not confirmed"; return 1; }
+  git merge -q --ff-only "$sha" || { echo "STOPPED: not a fast-forward"; return 1; }
+  if ! diff -q <(scripts/changelog --next "$tag" "$subj") CHANGELOG.md > /dev/null; then
+    echo "STOPPED: CHANGELOG.md does not list $tag with that subject"; git reset -q --hard "$base"; echo "     main back to ${base:0:7}"; return 1
+  fi
+  echo "ok   CHANGELOG.md lists $tag"
+  if ! release "$(git log -1 --format=%s)" "" "$tag" "$subj"; then
+    cd "$repo" || return 1
+    # git push pi pushes to the Pi and to GitHub: undo only when both answer and neither has the tag
+    local on_r on_pi
+    if on_r=$(git ls-remote "$r" "refs/tags/$tag") && on_pi=$(git ls-remote pi "refs/tags/$tag") && [ -z "$on_r$on_pi" ]; then
+      git tag -d "$tag" > /dev/null 2>&1
+      git reset -q --hard "$base"; echo "STOPPED: release failed; main back to ${base:0:7}, $branch kept on $r"
+    else
+      echo "STOPPED: release failed and $tag may be on $r or pi: nothing undone, tell Claude"
+    fi
+    return 1
+  fi
+  cd "$repo" || return 1
+  ssh homepi 'sudo systemctl start homepi-gitops@apply; echo "apply: $(systemctl show -p Result --value homepi-gitops@apply), deployed: $(sudo cat /var/lib/homepi-gitops/deployed | cut -c1-14)"' < /dev/null
 }
 
 # Load the homepi AWS profile for Terraform. Opens a new SSO session when the current one expired,

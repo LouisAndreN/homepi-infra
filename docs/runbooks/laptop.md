@@ -12,6 +12,15 @@ bundled with a system Ansible. The runtime is not in Git; rebuild it from the re
 rejects the commit in check mode with its own runtime (`homepi-precheck`), or when the laptop and the
 Pi run different ansible-core versions.
 
+A reviewed branch is released with `ship <branch> <full sha> <tag> "<subject>" [<allowed paths regex>]`
+(since v1.1.3). It checks first (main clean and equal to GitHub `main`, that commit tagged and deployed,
+the branch at the reviewed commit, the paths in scope, the tag new, `CHANGELOG.md` listing it), asks
+for `MERGE`, fast-forwards `main`, runs `release` and starts the apply. When the release fails before
+the tag reached GitHub or the Pi, `main` goes back to the published commit: the branch stays on GitHub
+and the same `ship` can run again. Before v1.1.3 a refused precheck left `main` ahead and stopped the
+next attempt (v1.1.1, 2026-11-25), and a refused `git push` returned success. Test:
+`scripts/tests/ship-test`.
+
 To change a version: edit the requirement file, release; the Pi installs it through `gitops_runtime`,
 then rebuild the laptop venv with the commands above. Never in the other order: a laptop already on the new
 version makes `release()` refuse, since the Pi only gets it by applying that release (2026-11-22,

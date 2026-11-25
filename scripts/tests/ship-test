@@ -1,0 +1,76 @@
+#!/bin/bash
+# Offline test of ship and release (scripts/lib.sh) on scratch repositories: two bare remotes stand
+# for GitHub and the Pi, a throwaway SSH key signs the tags. Only hostname, ssh and the Pi precheck
+# are stubbed. Usage: scripts/tests/ship-test
+set -u
+HERE=$(cd "$(dirname "$0")" && pwd)
+T=$(mktemp -d); trap 'rm -rf "$T"' EXIT
+fails=0
+check() { if eval "$2"; then echo "ok   $1"; else echo "FAIL $1"; fails=$((fails + 1)); fi; }
+
+export HOME=$T/home GIT_CONFIG_NOSYSTEM=1 TZ=Asia/Tokyo
+mkdir -p "$HOME"
+ssh-keygen -q -t ed25519 -N '' -C ship-test -f "$T/sign" || exit 1
+git config --global user.name ship-test; git config --global user.email ship-test@example.invalid
+git config --global init.defaultBranch main; git config --global gpg.format ssh
+git config --global user.signingkey "$T/sign"
+echo "ship-test@example.invalid $(cat "$T/sign.pub")" > "$T/allowed"
+git config --global gpg.ssh.allowedSignersFile "$T/allowed"
+
+git init -q --bare "$T/github.git"; git init -q --bare "$T/pi.git"
+R=$HOME/homepi-infra
+git init -q "$R" && cd "$R" || exit 1
+git remote add github "$T/github.git"
+# like the laptop: pi fetches from the Pi and pushes to the Pi and GitHub
+git remote add pi "$T/pi.git"; git remote set-url --add --push pi "$T/pi.git"; git remote set-url --add --push pi "$T/github.git"
+mkdir -p scripts docs/changelog && cp "$HERE/../changelog" scripts/changelog
+echo "Test minor." > docs/changelog/1.0.md; echo a > app.txt
+scripts/changelog --next v1.0.0 "first" > CHANGELOG.md
+git add -A && git commit -q -m base && git tag -s v1.0.0 -m "first" && git push -q pi main v1.0.0 2>&1
+BASE=$(git rev-parse HEAD)
+
+branch() {  # branch NAME TAG SUBJECT FILE: one commit from BASE, changing FILE, listing TAG
+  git checkout -q -b "$1" "$BASE" && echo "$1" > "$4" && scripts/changelog --next "$2" "$3" > CHANGELOG.md
+  git add -A && git commit -q -m "$1" && git push -q github "$1" 2>&1 && git rev-parse HEAD
+  git checkout -q main
+}
+SHA=$(branch claude/fix v1.0.1 "a fix" app.txt)
+SHA_WIDE=$(branch claude/wide v1.0.1 "a fix" other.txt)
+
+# shellcheck source=/dev/null
+. "$HERE/../lib.sh"
+hostname() { echo DESKTOP-581OMPC; }
+ssh() { echo "ssh stub"; }
+DEPLOYED=v1.0.0; deployed_tag() { echo "$DEPLOYED"; }
+PRECHECK=0; homepi_precheck() { return "$PRECHECK"; }
+state() { echo "$(git -C "$R" rev-parse HEAD) $(git -C "$R" tag -l v1.0.1) $(git ls-remote "$T/github.git" refs/tags/v1.0.1 | wc -l)$(git ls-remote "$T/pi.git" refs/tags/v1.0.1 | wc -l)"; }
+run() { echo MERGE | ship "$@" > "$T/out" 2>&1; echo $? > "$T/rc"; cd "$R" || exit 1; }
+
+run claude/fix "${SHA:0:7}" v1.0.1 "a fix"
+check "a short sha is refused" 'grep -q "full commit sha" "$T/out" && [ "$(state)" = "$BASE  00" ]'
+run claude/fix "$SHA_WIDE" v1.0.1 "a fix"
+check "a branch at another commit than the reviewed one is refused" 'grep -q "is not ${SHA_WIDE:0:7}" "$T/out"'
+run claude/wide "$SHA_WIDE" v1.0.1 "a fix" '^(app\.txt|CHANGELOG\.md)$'
+check "a path outside the release scope is refused before the merge" 'grep -q "outside the release scope: other.txt" "$T/out" && [ "$(state)" = "$BASE  00" ]'
+DEPLOYED=v0.9.9; run claude/fix "$SHA" v1.0.1 "a fix"; DEPLOYED=v1.0.0
+check "production on another tag is refused" 'grep -q "production runs .v0.9.9." "$T/out" && [ "$(state)" = "$BASE  00" ]'
+echo no | ship claude/fix "$SHA" v1.0.1 "a fix" > "$T/out" 2>&1; cd "$R" || exit 1
+check "no typed MERGE, no merge" 'grep -q "not confirmed" "$T/out" && [ "$(state)" = "$BASE  00" ]'
+run claude/fix "$SHA" v1.0.1 "another subject"
+check "a CHANGELOG.md for another subject is refused and main goes back" 'grep -q "does not list v1.0.1" "$T/out" && [ "$(state)" = "$BASE  00" ]'
+PRECHECK=1; run claude/fix "$SHA" v1.0.1 "a fix"; PRECHECK=0
+check "a refused precheck puts main back, no tag anywhere (the v1.1.1 case)" 'grep -q "main back to ${BASE:0:7}" "$T/out" && [ "$(state)" = "$BASE  00" ] && [ "$(cat "$T/rc")" = 1 ]'
+check "the branch is kept on the remote" '[ "$(git ls-remote "$T/github.git" refs/heads/claude/fix | cut -f1)" = "$SHA" ]'
+mv "$T/pi.git" "$T/pi.away"; run claude/fix "$SHA" v1.0.1 "a fix"; mv "$T/pi.away" "$T/pi.git"
+check "a refused push fails the release (it returned 0 through tail)" '[ "$(cat "$T/rc")" = 1 ] && grep -q "nothing undone" "$T/out"'
+check "nothing is undone while the Pi cannot be asked about the tag" '[ "$(git rev-parse HEAD)" = "$SHA" ] && [ -n "$(git tag -l v1.0.1)" ]'
+git reset -q --hard "$BASE"; git tag -d v1.0.1 > /dev/null; [ -z "$(git ls-remote "$T/github.git" refs/tags/v1.0.1)" ] || git push -q github --delete v1.0.1
+run claude/fix "$SHA" v1.0.1 "a fix"
+check "the same ship run again releases" '[ "$(cat "$T/rc")" = 0 ] && [ "$(state)" = "$SHA v1.0.1 11" ]'
+check "the tag is signed and verifies" 'git tag -v v1.0.1 > /dev/null 2>&1'
+check "CHANGELOG.md matches the tags after the release" 'scripts/changelog --check > /dev/null'
+run claude/fix "$SHA" v1.0.1 "a fix"
+check "a second release of the same tag is refused" 'grep -q "STOPPED" "$T/out" && [ "$(cat "$T/rc")" = 1 ]'
+
+echo
+[ "$fails" = 0 ] && echo "ship-test PASS" || { echo "ship-test FAIL: $fails"; exit 1; }

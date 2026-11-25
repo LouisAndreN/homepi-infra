@@ -48,7 +48,7 @@ case "${1:-}" in
   offline)
     for t in ansible/roles/boot_chain/tests/boot-chain-test ansible/roles/gitops_runtime/tests/gitops-hold-test \
              ansible/roles/homepi_tools/tests/influx-delta-convert-test ansible/roles/provisioning_api/tests/venv-rebuild-test \
-             scripts/restore/tests/restore-orchestrator-test; do
+             scripts/restore/tests/restore-orchestrator-test scripts/tests/ship-test; do
       run "$(basename "$t")" "$t"
     done
     ;;
