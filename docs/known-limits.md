@@ -177,4 +177,6 @@ Read-only checks from the laptop and the Pi; no key material displayed (names, s
   `authorized_keys` older than a week cannot be dated. The 15 `ssh-keys` records of those 38 hours
   were rule loads at boot, not writes. Since this release: systemd's own mount records excluded and
   30 files of 100 MB (docs/runbooks/auditd.md); the `exec` volume (dash, sleep, mkdir as root from a
-  login session) is not explained yet.
+  login session) comes from work started over SSH, not from a process left running: on 2026-11-25 no
+  root process with the operator's login uid ran but the SSH session itself, and the `sleep` records
+  of the release hours had one parent each (one short-lived shell per task, as in a precheck).
