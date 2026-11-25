@@ -7,24 +7,17 @@
 # does not count them (an error budget is history, not current health).
 # Tests: tests/slo_test.yml.
 groups:
-  - name: slo_start
-    interval: 5m
+  # One group, evaluated in order: every rule reads only series that an earlier rule of the same
+  # evaluation wrote. With the 28-day rules and the alerts in other groups, which group ran first at a
+  # given instant decided whether they saw this minute's sample or the previous one: the tests failed
+  # at random on the Pi (a 28-day count off by one minute, an alert value off by one sample).
+  - name: slo
+    interval: 1m
     rules:
       # The first evaluation of these rules on this TSDB: minutes before it are not counted (they predate
       # the SLI, or the TSDB itself after a rebuild). last_over_time keeps it across a Pi outage up to 35 days.
       - record: homepi:slo_start_timestamp_seconds
         expr: last_over_time(homepi:slo_start_timestamp_seconds[35d]) or vector(time())
-      - record: homepi:slo_ingest_error_ratio:28d
-        expr: clamp_min(clamp_max(homepi:slo_elapsed_minutes, 40320) - (sum_over_time(homepi:slo_ingest_good:1m[28d]) or vector(0)), 0) / 40320
-      - record: homepi:slo_ingest_budget_remaining:28d
-        expr: 1 - homepi:slo_ingest_error_ratio:28d / 0.005
-      - record: homepi:slo_api_error_ratio:28d
-        expr: clamp_min(clamp_max(homepi:slo_elapsed_minutes, 40320) - (sum_over_time(homepi:slo_api_good:1m[28d]) or vector(0)), 0) / 40320
-      - record: homepi:slo_api_budget_remaining:28d
-        expr: 1 - homepi:slo_api_error_ratio:28d / 0.01
-  - name: slo_sli
-    interval: 1m
-    rules:
       - record: homepi:slo_elapsed_minutes
         expr: (time() - scalar(homepi:slo_start_timestamp_seconds)) / 60
       # ingest SLO 99.5%: a minute is good when InfluxDB accepted at least one Telegraf write in the last 2 minutes
@@ -49,8 +42,15 @@ groups:
         expr: clamp_min(clamp_max(homepi:slo_elapsed_minutes, 60) - (sum_over_time(homepi:slo_api_good:1m[1h]) or vector(0)), 0) / 60
       - record: homepi:slo_api_error_ratio:6h
         expr: clamp_min(clamp_max(homepi:slo_elapsed_minutes, 360) - (sum_over_time(homepi:slo_api_good:1m[6h]) or vector(0)), 0) / 360
-  - name: slo_alerts
-    rules:
+      # 28-day budgets, after the 1-minute SLIs they count
+      - record: homepi:slo_ingest_error_ratio:28d
+        expr: clamp_min(clamp_max(homepi:slo_elapsed_minutes, 40320) - (sum_over_time(homepi:slo_ingest_good:1m[28d]) or vector(0)), 0) / 40320
+      - record: homepi:slo_ingest_budget_remaining:28d
+        expr: 1 - homepi:slo_ingest_error_ratio:28d / 0.005
+      - record: homepi:slo_api_error_ratio:28d
+        expr: clamp_min(clamp_max(homepi:slo_elapsed_minutes, 40320) - (sum_over_time(homepi:slo_api_good:1m[28d]) or vector(0)), 0) / 40320
+      - record: homepi:slo_api_budget_remaining:28d
+        expr: 1 - homepi:slo_api_error_ratio:28d / 0.01
       # ingest: budget 0.005 of 28 days = 202 minutes
       - alert: SloIngestBurnFast
         expr: homepi:slo_ingest_error_ratio:1h > 0.072 and homepi:slo_ingest_error_ratio:5m > 0.072

@@ -18,6 +18,12 @@ nobody can show were good. The minutes before the SLO rules first ran on this TS
 (`homepi:slo_start_timestamp_seconds`) count as good, so the budget is a fixed number of minutes from
 the first day, not a percentage of a few days of history.
 
+All SLO rules, recording rules and alerts, are one rule group evaluated every minute, in file order:
+each rule reads only series an earlier rule of the same evaluation wrote. Until v1.1.1 they were in
+three groups (5 min, 1 min, 15 s); which group ran first at a given instant decided whether a rule saw
+this minute's sample or the previous one, and the tests failed at random on the Pi (the v1.1.1
+precheck refused to sign: a 28-day count off by one minute).
+
 ## Why these targets
 
 The targets follow from what the platform can deliver with its design, not from a wish:

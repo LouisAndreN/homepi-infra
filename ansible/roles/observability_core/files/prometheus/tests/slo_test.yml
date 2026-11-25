@@ -22,7 +22,8 @@ tests:
             exp_annotations:
               summary: "Ingestion SLO burning 14x: about 2% of the 28-day budget in one hour"
               description: "Bad minutes in the last hour: 18.33% (SLO 99.5%). Short outages or flapping that the per-service alerts may not catch. docs/slo.md; docs/runbooks/telegraf.md"
-      - eval_time: 192m
+      # the slow-burn condition holds from about 193m: still pending at 205m (for: 15m), firing at 215m
+      - eval_time: 205m
         alertname: SloIngestBurnSlow
         exp_alerts: []
       - eval_time: 215m
@@ -92,8 +93,9 @@ tests:
               summary: "Device API SLO burning 14x: about 2% of the 28-day budget in one hour"
               description: "Bad minutes in the last hour: 33.33% (SLO 99.0%). Short outages or flapping that the per-service alerts may not catch. docs/slo.md; docs/runbooks/nginx-api.md"
   # The 2026-11-22 incident: the API down 9 hours. Budget 403 minutes in 28 days: spent by a third more
-  # (538 bad minutes counted of 540: the 28-day rules run every 5 minutes on the elapsed minutes of the
-  # previous 1-minute evaluation; a minute or two either way does not change a 28-day budget)
+  # (539 bad minutes counted of 540: at 600m the window holds 600 elapsed minutes but 601 samples, from
+  # minute 0 to minute 600, and the API is back at minute 600). An exact value: since all SLO rules are
+  # in one group it is the same on every run (rules/slo.yml)
   - interval: 1m
     input_series:
       - series: 'node_systemd_unit_state{instance="pi",job="node_exporter",name="homepi-api.service",state="active",type="simple"}'
@@ -103,7 +105,7 @@ tests:
         eval_time: 600m
         exp_samples:
           - labels: 'homepi:slo_api_budget_remaining:28d'
-            value: -0.33432539682539675
+            value: -0.33680555555555536
     alert_rule_test:
       - eval_time: 500m
         alertname: SloApiBudgetExhausted
