@@ -29,13 +29,17 @@ jobs:
   syntax:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
       - run: scripts/ci/checks syntax
 
   rules:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
       - name: Prometheus and Alertmanager binaries (pinned, sha256 checked)
         run: |
           set -eu
@@ -51,7 +55,9 @@ jobs:
   ansible:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
       - name: Pinned Ansible runtime (ansible/requirements.txt, ansible/requirements.yml)
         run: |
           set -eu
@@ -64,7 +70,9 @@ jobs:
   tests:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
+        with:
+          persist-credentials: false
       - name: Tools of the restore tests
         run: sudo apt-get install -y -q cryptsetup-bin parted gdisk lvm2 btrfs-progs dosfstools xfsprogs jq
       - run: scripts/ci/checks offline
@@ -74,7 +82,12 @@ jobs:
     if: startsWith(github.ref, 'refs/tags/v')
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803  # v6.1.0
         with:
+          persist-credentials: false
           fetch-depth: 0
+      # On a tag push, checkout can leave the pushed tag as a lightweight tag on the commit, and
+      # changelog refuses it (the v1.1.1 run failed here; making v1.1.1 lightweight in a clone gives the
+      # same failure). Fetch the tags as they are on GitHub: annotated.
+      - run: git fetch --force --tags origin
       - run: scripts/ci/checks changelog
