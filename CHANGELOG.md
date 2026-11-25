@@ -10,6 +10,7 @@ SLIs where a minute without a sample counts as bad, multiwindow burn-rate alerts
 policy when a budget is spent (docs/slo.md). The 2026-11-22 incident, replayed in the tests, would
 have spent the device API budget by a third more.
 
+- `v1.1.1` 2026-11-25: CI can run by hand; known limits brought up to date
 - `v1.1.0` 2026-11-25: SLOs and error budgets, CI on every push (minor: a release policy, R6 does not count SLO alerts)
 
 ## 1.0

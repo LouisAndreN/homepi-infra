@@ -8,6 +8,7 @@ on:
     branches: ['**']
     tags: ['v*']
   pull_request:
+  workflow_dispatch:   # run by hand from the Actions tab
 
 permissions:
   contents: read

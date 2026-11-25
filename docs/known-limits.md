@@ -41,19 +41,25 @@ Last updated: 2026-11-15 (fleet on firmware v2.4.0, revocation enforced).
 - **Grafana dashboards made in the UI are drift.** The three hand-made dashboards were imported as code; their earlier history (83, 311 and 240 UI versions) exists only in the state backups. An edit made in the UI now triggers the drift alert and is reverted by the next release.
 - **A Terraform update resets the version counter of a Grafana data source to 1.** The `updated` column, not `version`, shows when a data source was written.
 - **Rebuild reproduces configuration, not state.** Restoring state is an explicit step.
-- **Terraform state is local** on the Pi (S3 backend planned for v1.2).
+- **Terraform state.** AWS: an encrypted, versioned S3 bucket with S3 native locking, created by the
+  `bootstrap` root. Grafana: local on the Pi (`/var/lib/homepi-terraform`), where it is applied.
 
 ## Added after the 2026-11-01 incident
 
 See `docs/incidents/2026-11-01-var-inode-exhaustion.md`.
 
 - **Single alerting path on the Pi.** Alertmanager, its DNS (NetBird then Unbound) and its only
-  channel (Slack) all depend on the Pi being healthy. A degraded Pi cannot report itself. Fix
-  planned: CloudWatch heartbeat with SNS e-mail.
+  channel (Slack) all depend on the Pi being healthy. A degraded Pi cannot report itself.
+  Fixed: a heartbeat to CloudWatch, e-mail through SNS when it stops (dead man's switch; second game
+  day PASS, detection in 14 minutes). Still one AWS region: if it is down, this alarm is too.
 - **Loki uses the filesystem store on `/var` (ext4).** Empty stream directories are removed daily by
-  `homepi-loki-housekeeping`, a workaround, not a fix. Fix planned: dedicated XFS volume.
+  `homepi-loki-housekeeping`, a workaround, not a fix. Fixed: Loki has its own XFS volume
+  (`lv-loki`, docs/runbooks/storage.md); the housekeeping stays as a safety net.
 - **Not managed by the repo yet:** Nginx, Authelia, CrowdSec (its whitelist parser is locally
   modified, "tainted"), Loki, Unbound, NetBird DNS settings. The Pi cannot be fully rebuilt from Git.
+  Status 2026-11-25: each of these has a role now (nginx is verify-only), and the Pi was rebuilt
+  from Git and the encrypted backups alone, without an error, in C8 (48 min,
+  docs/game-days/2026-11-24-c8.md). This entry is kept as the record of where the project started.
 - **InfluxDB downsampling task**: the live script is `ansible/roles/influxdb/files/tasks/downsample_iot_hot_to_archives.flux`, compared with InfluxDB (Flux text included) by `homepi-influx-check` on every apply and check, and kept with every token by the nightly native backup (v0.1.94). `/etc/influxdb/tasks/downsample_iot.flux` on the Pi is stale and unused.
 - **No GeoIP on nftables drops** (removed in v0.1.109). Measured over 24 h behind the home router:
   0 public IPv4 source among the dropped inbound packets (all LAN broadcast, multicast and NetBIOS).
