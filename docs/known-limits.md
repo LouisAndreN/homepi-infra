@@ -160,7 +160,9 @@ Read-only checks from the laptop and the Pi; no key material displayed (names, s
   NetBird) and reaches AWS SSO with its MFA on the phone.
 - **Release signing without the laptop: not possible today.** `allowed_signers` holds one key, the
   laptop's `homepi-sign`. Without it GitOps keeps the deployed tag and no release can be made until
-  a new signer is added by hand on the Pi. Documented, never done: L1 proves it.
+  a new signer is added by hand on the Pi. Documented, never done: L1 proves it
+  (docs/game-days/l1-plan.md). Decided before L1: the phone key it creates stays a second signer,
+  so a stolen phone with its passphrase can release to production.
 - **Unused keys in `authorized_keys`.** Four keys: the laptop, the phone, and two of unknown origin
   (`SHA256:ODhK...` labelled `louis@DESKTOP-581OMPC`, whose private part is on no file of the
   laptop, and `SHA256:nOUi...` labelled `root@homepi`, with no public key in `/root/.ssh`). The
