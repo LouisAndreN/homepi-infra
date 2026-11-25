@@ -1,7 +1,7 @@
 # Known limits (v1)
 
 Each entry states what was observed, where, and what is still unknown.
-Last updated: 2026-11-15 (fleet on firmware v2.4.0, revocation enforced).
+Last updated: 2026-11-25 (laptop inventory for L1).
 
 ## Security
 - **Device registration (v0.1.114, v0.1.118).** `x5c-enrolled` requires the device's LDevID as TLS client certificate (verified by nginx, CN equal to the device id); fingerprint and expiry are read from that certificate. The registry decides: pre-announced or operator-approved devices become active, unknown devices are recorded `pending` (alert `DevicePendingApproval`, no MQTT rights), suspended devices stay refused. Since v0.1.118 a revoked certificate and a certificate older than the registered one are refused. `pre_announced` devices keep MQTT rights on purpose: the ACL is rendered every 60 s, and a new device that registers then connects would otherwise lose its first subscription.
@@ -10,7 +10,7 @@ Last updated: 2026-11-15 (fleet on firmware v2.4.0, revocation enforced).
 - **Device firmware (2026-11-15).** The five sensors run v2.4.3, the LED and the NILM bridge v2.4.2, all by signed OTA (one USB flash: esp32-819fe250, whose v2.4.0 could not start the OTA task). No re-enrollment on disconnect, renewal at boot, rollback proven, heap and stack in the telemetry. Still open: the NILM application is in development; a sensor lost at run time is only noticed at the next boot; no alert yet on the device heap margin (the fields are in InfluxDB, not Prometheus).
 - **Power supply (2026-11-15).** The kernel reports under-voltage under load (7 events in 16 hours, then 9 in 20 minutes after the cable was touched and the Pi reset). Measured and alerted since v0.1.122 (docs/runbooks/power.md); the fix is hardware (official 27 W supply, cable). Until then every under-voltage event can corrupt a write in progress, and a reset drops every device and aborts a rollout.
 - **CA keys on an unencrypted partition.** The step-ca keys and password file live under `/etc/step-ca`, on the unencrypted root filesystem. Planned fix: move them to the LUKS volume or rotate the CA.
-- **Laptop disk encryption not verified.** The Manufacturer CA key and `master.key` sit unencrypted in WSL; the BitLocker status was not checked.
+- **Laptop disk not encrypted (checked 2026-11-25, accepted).** `manage-bde -status C:`: fully decrypted, protection off. Decided by the owner: no BitLocker. Consequence: a **stolen** laptop is much worse than a lost one. The laptop age identity (`~/.config/sops/age/keys.txt`) is in clear: it opens every SOPS file of the public repository and every backup in S3, with nothing to break. Also in clear: `~/homepi-pki/backup.age.key` (opens none of the known archives) and `master.key` (already treated as compromised). Behind a passphrase only: the SSH key, the release signing key, the Manufacturer CA key (PKCS#8, AES-256) and the OTA signing key. Response to a theft: new laptop age key, `sops updatekeys` and `sops rotate` on every secret file with the old key removed, rotation of every secret (same list as the 2026-11-08 entry below), new SSH and signing keys (the old ones removed from `authorized_keys` and `allowed_signers` from the phone), and the S3 archives encrypted to the old key kept only until their retention expires.
 - **Passwordless sudo for the deployment account.** `srvpi` runs sudo without a password, so whoever holds its SSH key is root on the Pi; the only barrier is the key passphrase. Not addressed in v1.
 - **Secrets in a public repository.** SOPS-encrypted values are committed with their history; if an age key ever leaks, every secret in that history must be rotated.
 - **Scrape password duplicated.** The Grafana metrics password is stored in the SOPS file and, until Grafana is managed by this repository, also in Grafana's own configuration (not yet checked); both must be changed together. The Alertmanager webhooks are not under SOPS yet.
@@ -146,3 +146,28 @@ now relies on this to find the card on the network (its key on another address t
 so changing it means giving the card its own host keys and recording them. Until then the card is
 kept like the production disk.
 
+
+## Laptop loss inventory (2026-11-25, before L1)
+
+Read-only checks from the laptop and the Pi; no key material displayed (names, sizes, sha256).
+
+- **Escrow copies.** The four age archives of `~/homepi-escrow` (root CA escrow, Manufacturer CA,
+  device identities, extra identities) are byte-identical on the escrow USB key (volume 112B-10C4);
+  the OTA signing key (encrypted PKCS#8) is on the laptop and the USB key, identical. The USB key is
+  the only copy off the laptop: laptop and key lost together, no new device can be enrolled (the
+  devices already enrolled keep working).
+- **Access without the laptop.** The phone has its own SSH key for `srvpi` (`termux`, used through
+  NetBird) and reaches AWS SSO with its MFA on the phone.
+- **Release signing without the laptop: not possible today.** `allowed_signers` holds one key, the
+  laptop's `homepi-sign`. Without it GitOps keeps the deployed tag and no release can be made until
+  a new signer is added by hand on the Pi. Documented, never done: L1 proves it.
+- **Unused keys in `authorized_keys`.** Four keys: the laptop, the phone, and two of unknown origin
+  (`SHA256:ODhK...` labelled `louis@DESKTOP-581OMPC`, whose private part is on no file of the
+  laptop, and `SHA256:nOUi...` labelled `root@homepi`, with no public key in `/root/.ssh`). The
+  sshd log (2026-10-25 to 2026-11-25) shows 73 key logins, all as `srvpi`, all with the laptop or
+  the phone key, from two addresses: the two unknown keys were not used. To remove.
+- **`authorized_keys` is state, not code.** No role manages it: R1 copies it from the microSD system
+  and R3 restores it from the archive, so a key nobody reviewed survives every rebuild. To manage it
+  with Ansible (exclusive list) after C9.
+- **auditd keeps about one day.** Its oldest record was 2026-11-24 08:58 when checked; a change to
+  `authorized_keys` older than that cannot be dated. Retention to raise, or the records shipped.
