@@ -170,5 +170,7 @@ Read-only checks from the laptop and the Pi; no key material displayed (names, s
 - **`authorized_keys` was state, not code.** No role managed it: R1 copied it from the microSD system
   and R3 restored it from the archive, so a key nobody reviewed survived every rebuild. The `sshd`
   role now writes it from the repository, exclusive, and refuses a list without the laptop key.
-- **auditd keeps about one day.** Its oldest record was 2026-11-24 08:58 when checked; a change to
-  `authorized_keys` older than that cannot be dated. Retention to raise, or the records shipped.
+- **The local audit trail covers about 38 hours** (10 files of 50 MB, oldest record 2026-11-24 08:58
+  when checked on 2026-11-25 23:00); Alloy ships it to Loki, which keeps 7 days. A change to
+  `authorized_keys` older than a week cannot be dated. Volume in those 38 hours: `exec` 193,704
+  records, `mount_operations` 144,677, `network_connect` 58,902, every other key under 2,000.
