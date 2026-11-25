@@ -1,0 +1,11 @@
+# The keys that may log in as the operator account, and nothing else (docs/runbooks/ssh-keys.md).
+# Until 2026-11-25 authorized_keys was state: R1 copied it, R3 restored it, no role wrote it, and two
+# keys nobody could place survived every rebuild. Public keys only; a change is a reviewed commit.
+sshd_operator: srvpi
+sshd_authorized_keys:
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIEfs+vsI5FOUh6xZU7aGHrDAmjhz4SpM8Sr8H4BlePiJ louis@DESKTOP-581OMPC"
+  - "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMk13Y1J6KfgthTMadIg1iSwl+a1GIYGe6VPjCeYxIFQ termux"
+# The written file must hold these fingerprints, or nothing is written: a list that drops the key
+# Ansible connects with locks the operator out (the laptop is the only machine that runs Ansible)
+sshd_required_fingerprints:
+  - "SHA256:JwgCCawhiNm3uygLRgZXpkzJnXWRty5TVAGpVE+mJ/A"

@@ -165,9 +165,10 @@ Read-only checks from the laptop and the Pi; no key material displayed (names, s
   (`SHA256:ODhK...` labelled `louis@DESKTOP-581OMPC`, whose private part is on no file of the
   laptop, and `SHA256:nOUi...` labelled `root@homepi`, with no public key in `/root/.ssh`). The
   sshd log (2026-10-25 to 2026-11-25) shows 73 key logins, all as `srvpi`, all with the laptop or
-  the phone key, from two addresses: the two unknown keys were not used. To remove.
-- **`authorized_keys` is state, not code.** No role manages it: R1 copies it from the microSD system
-  and R3 restores it from the archive, so a key nobody reviewed survives every rebuild. To manage it
-  with Ansible (exclusive list) after C9.
+  the phone key, from two addresses: the two unknown keys were not used. Removed by the `sshd`
+  role (docs/runbooks/ssh-keys.md).
+- **`authorized_keys` was state, not code.** No role managed it: R1 copied it from the microSD system
+  and R3 restored it from the archive, so a key nobody reviewed survived every rebuild. The `sshd`
+  role now writes it from the repository, exclusive, and refuses a list without the laptop key.
 - **auditd keeps about one day.** Its oldest record was 2026-11-24 08:58 when checked; a change to
   `authorized_keys` older than that cannot be dated. Retention to raise, or the records shipped.

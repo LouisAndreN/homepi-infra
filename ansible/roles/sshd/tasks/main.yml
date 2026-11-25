@@ -74,3 +74,26 @@
     name: ssh.socket
     enabled: true
     state: started
+
+# authorized_keys from the repository, exclusive. ssh-keygen -lf validates the candidate before it
+# replaces the live file: every line must parse, and every required fingerprint must be there.
+- name: Operator authorized_keys from the repository (exclusive list)
+  ansible.builtin.copy:
+    content: "{{ sshd_authorized_keys | join('\n') }}\n"
+    dest: "/home/{{ sshd_operator }}/.ssh/authorized_keys"
+    owner: "{{ sshd_operator }}"
+    group: "{{ sshd_operator }}"
+    mode: "0600"
+    # The candidate path comes as $0 (Ansible puts it where %s is; no other %s may appear)
+    validate: >-
+      /bin/bash -c 'fp=$(ssh-keygen -lf "$0" | awk "{print \$2}") || exit 1;
+      [ "$(grep -c . "$0")" = "$(echo "$fp" | grep -c .)" ] || { echo "a line is not a public key"; exit 1; };
+      for r in {{ sshd_required_fingerprints | join(' ') }}; do echo "$fp" | grep -qxF "$r" || { echo "missing $r"; exit 1; }; done' %s
+
+- name: No key for root
+  ansible.builtin.copy:
+    content: ""
+    dest: /root/.ssh/authorized_keys
+    owner: root
+    group: root
+    mode: "0600"
