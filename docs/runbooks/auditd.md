@@ -19,7 +19,13 @@ present, no `connect` rule without an `auid` filter, `augenrules --check` clean.
 - Added: `/etc/group`, sudoers, the step-ca configuration (device trust anchor) and secrets
   (reads included), `/var/lib/secrets`, Mosquitto passwords and ACLs, `/etc/homepi`,
   `/etc/systemd/system`.
-- Rotation: 10 files of 50 MB.
+- Rotation: 30 files of 100 MB (10 of 50 MB until 2026-11-25: 38 hours of history).
+- Measured 2026-11-25 over 38 hours (`aureport --input-logs --key --summary`): `exec` 193,704,
+  `mount_operations` 144,677 (145,218 from `systemd-executor` setting up the private namespace of a
+  unit: excluded by two `never` rules), `network_connect` 58,902, every other key under 2,000. The
+  15 `ssh-keys` records were `auditctl` loading the rules at 5 boots, not writes to the file.
+- Do not run `ausearch` or `aureport` without `--input-logs` in a script fed on stdin (`ssh host
+  'bash -s'`): they read stdin, consume the rest of the script and report nothing.
 - Not done: `-e 2` (immutable rules). It needs a reboot for any rule change, which breaks GitOps.
 
 Logs reach Loki through Alloy (`job="auditd"`).

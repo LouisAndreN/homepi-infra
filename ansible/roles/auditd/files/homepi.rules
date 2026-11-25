@@ -37,6 +37,10 @@
 -a always,exit -F arch=b64 -S connect -F auid>=1000 -F auid!=4294967295 -k network_connect
 -a always,exit -F arch=b32 -S connect -F auid>=1000 -F auid!=4294967295 -k network_connect
 
-# Mounts, any origin
+# Mounts, any origin but systemd setting up a unit's private namespace (PrivateTmp, ProtectSystem):
+# 145,218 of 145,367 mount records in 38 hours (2026-11-25), none of them a mount of the host.
+# The never rules must come before the always rules of the same syscalls.
+-a never,exit -F arch=b64 -S mount,umount2 -F exe=/usr/lib/systemd/systemd-executor
+-a never,exit -F arch=b32 -S mount,umount2 -F exe=/usr/lib/systemd/systemd-executor
 -a always,exit -F arch=b64 -S mount,umount2 -k mount_operations
 -a always,exit -F arch=b32 -S mount,umount2 -k mount_operations

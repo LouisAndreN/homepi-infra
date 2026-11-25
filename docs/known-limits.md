@@ -174,5 +174,7 @@ Read-only checks from the laptop and the Pi; no key material displayed (names, s
   role now writes it from the repository, exclusive, and refuses a list without the laptop key.
 - **The local audit trail covers about 38 hours** (10 files of 50 MB, oldest record 2026-11-24 08:58
   when checked on 2026-11-25 23:00); Alloy ships it to Loki, which keeps 7 days. A change to
-  `authorized_keys` older than a week cannot be dated. Volume in those 38 hours: `exec` 193,704
-  records, `mount_operations` 144,677, `network_connect` 58,902, every other key under 2,000.
+  `authorized_keys` older than a week cannot be dated. The 15 `ssh-keys` records of those 38 hours
+  were rule loads at boot, not writes. Since this release: systemd's own mount records excluded and
+  30 files of 100 MB (docs/runbooks/auditd.md); the `exec` volume (dash, sleep, mkdir as root from a
+  login session) is not explained yet.
