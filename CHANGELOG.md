@@ -10,6 +10,7 @@ SLIs where a minute without a sample counts as bad, multiwindow burn-rate alerts
 policy when a budget is spent (docs/slo.md). The 2026-11-22 incident, replayed in the tests, would
 have spent the device API budget by a third more.
 
+- `v1.1.7` 2026-11-26: C9 report; documentation-only releases allowed while a budget is exhausted
 - `v1.1.6` 2026-11-26: C9 drill key out of SOPS; every secret file rotated
 - `v1.1.5` 2026-11-26: Restore drill: the rebuilt Pi takes over through GitOps
 - `v1.1.4` 2026-11-25: Restore drill tags listed in CHANGELOG.md; C9 plan and verdict rules

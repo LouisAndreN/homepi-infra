@@ -61,7 +61,9 @@ burn fires once on production after a drill: expected, it is the price of the dr
 ## Policy
 
 - Budget exhausted: no release that is not a fix for that SLO, and no restore drill, until the budget
-  is positive again.
+  is positive again. Two exceptions, each named in the release: a security fix (v1.1.6, the C9
+  drill key out of SOPS), and a release that changes nothing but `docs/` and `CHANGELOG.md`, which
+  the Pi applies without any change (decided 2026-11-26, after C9; `ship` is given only those paths).
 - A restore drill costs ingestion budget: production is off about an hour (59 min 53 s in C8), about
   30% of the 28-day ingestion budget. Drills are planned when the budget can pay for one.
 
