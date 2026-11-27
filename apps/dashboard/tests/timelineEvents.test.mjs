@@ -1,4 +1,4 @@
-import { eventIntervals, findGaps, classifyGaps } from '../src/energy/timelineEvents.js'
+import { eventIntervals, findGaps, classifyGaps, luxStepEvents } from '../src/energy/timelineEvents.js'
 let f = 0; const ok = (c, m) => { if (!c) f++; console.log(`${c ? 'ok ' : 'BAD'} ${m}`) }
 const T = s => new Date(Date.UTC(2026, 10, 28, 10, 0, s)).toISOString()
 const rows = [
@@ -18,4 +18,13 @@ ok(gaps.length === 1 && gaps[0].end - gaps[0].start > 40000, `one gap found (${(
 const c = classifyGaps(gaps, ev)
 ok(c.gaps[0].cause === 'teensy_update' && c.suspect.length === 1, 'gap attributed to the Teensy update, suspect window added')
 ok(findGaps(times.slice(0, 1), Date.parse(T(0)), Date.parse(T(300)))[0].ongoing, 'trailing gap is open')
+// lux: night 0, lamp on 20:00 (180 lux), off 23:00; daylight ramp 0 -> 400 over 2 h in 5-min steps
+const t0 = Date.parse('2026-11-28T00:00:00Z'), P = (m, v) => ({ t: t0 + m * 60000, v })
+const night = [P(0, 0), P(5, 0), P(10, 180), P(15, 182), P(20, 179), P(25, 3), P(30, 2)]
+const le = luxStepEvents(night, t0 + 999e5)
+ok(le.length === 1 && le[0].start === t0 + 10 * 60000 && le[0].end === t0 + 25 * 60000, 'lamp on/off detected as one light event')
+const dawn = []; for (let m = 0; m <= 120; m += 5) dawn.push(P(m, Math.round(400 * Math.min(1, Math.max(0, (m - 10) / 110)) ** 1.2)))
+ok(luxStepEvents(dawn, 0).length === 0, `daylight ramp ignored (${dawn.map(p => p.v).slice(0, 6).join(',')}...)`)
+const onNow = luxStepEvents([P(0, 1), P(5, 250)], t0 + 3600e3)
+ok(onNow.length === 1 && onNow[0].ongoing, 'light still on: ongoing event')
 console.log('FAILS:', f); process.exit(f ? 1 : 0)

@@ -14,7 +14,7 @@
 
 export const KIND_LABEL = {
   teensy_update: 'Teensy update', ota: 'ESP32 OTA', capture: 'Capture session',
-  appliance: 'Appliance', gap: 'NILM data gap',
+  appliance: 'Appliance', gap: 'NILM data gap', light: 'Light on (lux)',
 }
 export const SUSPECT_AFTER_S = 30
 
@@ -65,4 +65,21 @@ export function classifyGaps(gaps, events) {
   })
   const suspect = updates.filter(u => !u.ongoing).map(u => ({ kind: 'suspect', start: u.end, end: u.end + SUSPECT_AFTER_S * 1000, detail: 'Readings right after a Teensy update may be wrong' }))
   return { gaps: out, suspect }
+}
+
+// Light switched on/off, from one room's lux curve [{t, v}] (window means). A switch is a STEP between two
+// consecutive points: up by at least max(40 lux, the previous level), i.e. at least doubling; down by at
+// least max(40 lux, half the previous level). Daylight changes slowly and never doubles in one window
+// once it is above a few lux, so it is ignored. Resolution is the window of the query (1 to 30 min).
+export const LUX_STEP_MIN = 40
+export function luxStepEvents(pts, nowMs) {
+  const out = []
+  let open = null
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1].v, b = pts[i].v, d = b - a
+    if (!open && d >= Math.max(LUX_STEP_MIN, a)) open = { start: pts[i].t, level: b }
+    else if (open && d <= -Math.max(LUX_STEP_MIN, a / 2)) { out.push({ kind: 'light', start: open.start, end: pts[i].t }); open = null }
+  }
+  if (open) out.push({ kind: 'light', start: open.start, end: nowMs, ongoing: true })
+  return out
 }
