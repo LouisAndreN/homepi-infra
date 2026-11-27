@@ -1,7 +1,137 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
-import { useStore, computeElecCost, buildCostCurve, useT, DEFAULT_CONTRACT } from '../store/index.jsx'
-import { ChartModal } from '../components/ChartModal.jsx'
+import { useStore, DEFAULT_CONTRACT } from '../store/index.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { useFlux, FLUX } from '../hooks/useInflux.js'
+import { ENERGY } from '../config.js'
+
+// Energy tab: live whole-home figures from the NILM pipeline
+// (Teensy -> XIAO ESP32-S3 -> MQTT iot/<id>/nilm -> Telegraf -> iot-hot/nilm_readings).
+// Every number on this tab comes from InfluxDB. No simulated data.
+//
+// Energy is integrated in the browser from fixed-width window means
+// (1 min for today, 5 min for history): energy = mean W x window length.
+// A window with no sample contributes nothing. Flux integral() would draw a
+// straight line across a gap and invent the energy of a bridge outage, so it
+// is deliberately not used. Coverage is shown instead so a gap stays visible.
+
+const DAY_MIN = 1440
+
+// ─── Small helpers ─────────────────────────────────────────────────────────────
+const pad2 = n => String(n).padStart(2, '0')
+const dayKeyOf = d => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+const monthKeyOf = key => key.slice(0, 7)
+function midnightOf(d) { const m = new Date(d); m.setHours(0, 0, 0, 0); return m }
+function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x }
+const fluxTime = ms => `time(v: "${new Date(ms).toISOString()}")`
+
+const isNum = v => v != null && Number.isFinite(v)
+const fmtKwh = (v, digits = 2) => isNum(v) ? `${v.toFixed(digits)} kWh` : '—'
+const fmtW = v => !isNum(v) ? '—' : Math.abs(v) >= 1000 ? `${(v / 1000).toFixed(2)} kW` : `${Math.round(v)} W`
+const fmtYen = v => isNum(v) ? `¥${Math.round(v).toLocaleString()}` : '—'
+const fmtHM = m => `${pad2(Math.floor(m / 60) % 24)}:${pad2(Math.floor(m % 60))}`
+const fmtPct = v => isNum(v) ? `${Math.round(v * 100)}%` : '—'
+
+function median(a) {
+  if (!a.length) return null
+  const s = [...a].sort((x, y) => x - y), k = s.length >> 1
+  return s.length % 2 ? s[k] : (s[k - 1] + s[k]) / 2
+}
+function percentile(a, p) {
+  if (!a.length) return null
+  const s = [...a].sort((x, y) => x - y)
+  return s[Math.min(s.length - 1, Math.max(0, Math.round(p * (s.length - 1))))]
+}
+
+// ─── Data shaping ──────────────────────────────────────────────────────────────
+const LEG_FIELDS = ENERGY.legs.map(l => l.field)
+
+// InfluxDB rows {_time,_field,_value} -> time-sorted [{t, legs:{P_L1,P_L2}, w}]
+// Only samples carrying every configured leg are kept: both legs arrive in the
+// same MQTT message, so a half sample means a parse problem, not a real zero.
+function sumLegs(rows) {
+  const byT = new Map()
+  for (const r of rows) {
+    if (!LEG_FIELDS.includes(r._field)) continue
+    const t = Date.parse(r._time), v = parseFloat(r._value)
+    if (!Number.isFinite(t) || !Number.isFinite(v)) continue
+    let e = byT.get(t)
+    if (!e) { e = { t, legs: {} }; byT.set(t, e) }
+    e.legs[r._field] = v
+  }
+  const out = []
+  for (const e of byT.values()) {
+    if (!LEG_FIELDS.every(f => f in e.legs)) continue
+    e.w = LEG_FIELDS.reduce((s, f) => s + e.legs[f], 0)
+    out.push(e)
+  }
+  return out.sort((a, b) => a.t - b.t)
+}
+
+// Window means (t = window start) -> one object per local calendar day:
+// kwh[i] = energy of slot i, cum[i] = energy before slot i, coverage = filled slots / slots.
+function buildDays(points, stepMin, nowMs = Infinity) {
+  const slots = DAY_MIN / stepMin
+  const days = new Map()
+  for (const p of points) {
+    const d = new Date(p.t)
+    const key = dayKeyOf(d)
+    let day = days.get(key)
+    if (!day) {
+      day = { key, midnight: midnightOf(d).getTime(), step: stepMin,
+        kwh: new Array(slots).fill(0), has: new Array(slots).fill(false),
+        legKwh: Object.fromEntries(LEG_FIELDS.map(f => [f, 0])) }
+      days.set(key, day)
+    }
+    const i = Math.floor((p.t - day.midnight) / 60000 / stepMin)
+    if (i < 0 || i >= slots) continue
+    // The window still in progress only counts for the part already elapsed
+    const elapsed = Math.max(0, Math.min(1, (nowMs - p.t) / (stepMin * 60000)))
+    const h = (stepMin / 60) * elapsed
+    day.kwh[i] = p.w * h / 1000
+    day.has[i] = true
+    for (const f of LEG_FIELDS) day.legKwh[f] += p.legs[f] * h / 1000
+  }
+  for (const day of days.values()) {
+    day.cum = [0]
+    for (let i = 0; i < slots; i++) day.cum.push(day.cum[i] + day.kwh[i])
+    day.total = day.cum[slots]
+    day.filled = day.has.filter(Boolean).length
+    day.coverage = day.filled / slots
+  }
+  return days
+}
+
+// Cumulative kWh of a day at minute m (linear inside the slot containing m)
+function cumAt(day, m) {
+  const n = day.kwh.length, s = day.step
+  const i = Math.max(0, Math.min(n, Math.floor(m / s)))
+  if (i >= n) return day.cum[n]
+  return day.cum[i] + day.kwh[i] * Math.max(0, Math.min(1, (m - i * s) / s))
+}
+
+// ─── Tariff ────────────────────────────────────────────────────────────────────
+// Contract tiers are MONTHLY kWh bands (Japanese 従量電灯). The marginal cost of a
+// day therefore depends on where the month already stands: a day that pushes the
+// month into tier 2 costs more than the same day on the 1st.
+function energyCost(fromKwh, toKwh, contract) {
+  const el = contract?.utilities?.electricity
+  if (!el?.enabled || !(toKwh > fromKwh)) return 0
+  let c = 0
+  for (const t of el.tiers || []) {
+    const lo = Math.max(fromKwh, t.from || 0), hi = Math.min(toKwh, t.to ?? Infinity)
+    if (hi > lo) c += (hi - lo) * t.ratePerKwh
+  }
+  return c
+}
+function dayCost(kwh, monthBefore, contract) {
+  const el = contract?.utilities?.electricity
+  if (!el?.enabled || !isNum(kwh) || !isNum(monthBefore)) return null
+  return energyCost(monthBefore, monthBefore + kwh, contract) + (el.standingChargePerDay || 0)
+}
+function tierAt(kwh, contract) {
+  const tiers = contract?.utilities?.electricity?.tiers || []
+  return tiers.find(t => kwh >= (t.from || 0) && kwh < (t.to ?? Infinity)) || tiers.at(-1) || null
+}
 
 // ─── Japan tariff periods ──────────────────────────────────────────────────────
 // Based on TEPCO Smart Life plan pattern
@@ -18,96 +148,224 @@ function getCurrentPeriod(){
   return JAPAN_PERIODS.find(p=>h>=p.from&&h<p.to)||JAPAN_PERIODS[1]
 }
 
-// ─── Simulated consumption profile ────────────────────────────────────────────
-// 5-minute intervals (288 per day), watts
-function generateProfile(seed=0){
-  return Array.from({length:288},(_,i)=>{
-    const h=i*5/60
-    let w=120 // base load
-    if(h>=6.5&&h<=9)   w+=600*Math.sin(((h-6.5)/2.5)*Math.PI)
-    if(h>=11.5&&h<=13) w+=250*Math.sin(((h-11.5)/1.5)*Math.PI)
-    if(h>=17&&h<=22)   w+=700*Math.sin(((h-17)/5)*Math.PI)
-    w+=Math.sin(i*0.8+seed)*60+Math.sin(i*3.1+seed*2)*25
-    return{min:i*5,watts:Math.max(80,w)}
-  })
+// ─── Charts ────────────────────────────────────────────────────────────────────
+// Plain SVG on the shared tokens. Series identity: Today = accent solid,
+// Yesterday = neutral dashed, Prediction = accent dashed + range band.
+// Status colours (ok/danger) are kept for the prediction verdict badge only.
+const CW = 600, CPAD = { top: 12, right: 14, bottom: 24, left: 50 }
+
+// Axis scale: step from {1, 2, 2.5, 5} x 10^k giving about 4 intervals,
+// so ticks read 0 / 500 / 1000 / 1500 instead of 0 / 625 / 1250.
+function niceScale(v, intervals = 4) {
+  const raw = Math.max(v, 1e-6) / intervals
+  const p = Math.pow(10, Math.floor(Math.log10(raw)))
+  const step = [1, 2, 2.5, 5, 10].map(k => k * p).find(st => st >= raw)
+  const max = Math.ceil(v / step) * step || step
+  return { max, ticks: Array.from({ length: Math.round(max / step) + 1 }, (_, i) => i * step) }
 }
 
-function computeCumulative(profile){
-  let kwh=0
-  return profile.map(r=>({min:r.min,kwh:(kwh+=r.watts/1000*(5/60))}))
+// Split [{m,v}] into polylines wherever two samples are more than gapM apart,
+// so a data gap renders as a gap instead of a straight line across it.
+function toSegments(pts, mx, vy, gapM) {
+  const segs = []
+  let cur = []
+  for (let i = 0; i < pts.length; i++) {
+    if (i > 0 && pts[i].m - pts[i - 1].m > gapM) { if (cur.length) segs.push(cur); cur = [] }
+    cur.push(`${mx(pts[i].m).toFixed(1)},${vy(pts[i].v).toFixed(1)}`)
+  }
+  if (cur.length) segs.push(cur)
+  return segs.map(s => s.join(' '))
 }
 
-// ─── Cumulative energy chart ───────────────────────────────────────────────────
-function CumulativeChart({todayCum,prevCum,predictColor,currentMin,avgKw,h=170}){
-  const W=600,H=h,PAD={top:14,right:16,bottom:28,left:48}
-  const pw=W-PAD.left-PAD.right,ph=H-PAD.top-PAD.bottom
-
-  const maxKwh=Math.max((prevCum.at(-1)?.kwh||0),(todayCum.at(-1)?.kwh||0)+avgKw*((1440-currentMin)/60),0.5)*1.15
-
-  const mx=min=>PAD.left+(min/1440)*pw
-  const ky=kwh=>PAD.top+(1-kwh/maxKwh)*ph
-
-  // Build polyline points
-  const todayPts=todayCum.map(r=>`${mx(r.min)},${ky(r.kwh)}`).join(' ')
-  const prevPts =prevCum.map(r=>`${mx(r.min)},${ky(r.kwh)}`).join(' ')
-
-  const curKwh=todayCum.at(-1)?.kwh||0
-  const predEndKwh=curKwh+avgKw*((1440-currentMin)/60)
-  const predPts=`${mx(currentMin)},${ky(curKwh)} ${mx(1440)},${ky(predEndKwh)}`
-
-  // Y axis ticks
-  const yTicks=4
-  const yStep=maxKwh/yTicks
-
-  // X axis labels
-  const xLabels=[0,6,12,18,24]
-
-  return(
-    <svg width="100%" viewBox={`0 0 ${W} ${H}`} style={{display:'block'}}>
-      {/* Grid */}
-      {Array.from({length:yTicks+1},(_,i)=>(
-        <line key={i} x1={PAD.left} y1={ky(i*yStep)} x2={PAD.left+pw} y2={ky(i*yStep)} stroke="var(--border)" strokeWidth=".5"/>
+function ChartTooltip({ x, rows, title }) {
+  if (!rows?.length) return null
+  const left = `${(x / CW) * 100}%`
+  const flip = x > CW * 0.62
+  return (
+    <div style={{ position: 'absolute', top: 4, left, transform: flip ? 'translateX(calc(-100% - 10px))' : 'translateX(10px)',
+      pointerEvents: 'none', background: 'var(--bg2)', border: '0.5px solid var(--border)', borderRadius: 'var(--r-sm)',
+      padding: '6px 8px', fontSize: 'var(--fs-2xs)', color: 'var(--text)', whiteSpace: 'nowrap', boxShadow: 'var(--shadow-3)', zIndex: 2 }}>
+      <div style={{ fontFamily: 'var(--mono)', color: 'var(--text3)', marginBottom: 3 }}>{title}</div>
+      {rows.map(r => (
+        <div key={r.label} style={{ display: 'flex', alignItems: 'center', gap: 6, lineHeight: 1.6 }}>
+          <svg width="14" height="6" aria-hidden="true"><line x1="0" y1="3" x2="14" y2="3" stroke={r.stroke} strokeWidth="2" strokeDasharray={r.dash || 'none'} /></svg>
+          <span style={{ color: 'var(--text2)' }}>{r.label}</span>
+          <span style={{ marginLeft: 'auto', paddingLeft: 10, fontFamily: 'var(--mono)', fontWeight: 700 }}>{r.value}</span>
+        </div>
       ))}
-      {/* Y labels */}
-      {Array.from({length:yTicks+1},(_,i)=>(
-        <text key={i} x={PAD.left-5} y={ky(i*yStep)+3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{(i*yStep).toFixed(1)}</text>
-      ))}
-      <text x={10} y={PAD.top+ph/2} textAnchor="middle" fontSize="9" fill="var(--text3)" transform={`rotate(-90,10,${PAD.top+ph/2})`}>kWh</text>
-      {/* X labels */}
-      {xLabels.map(h=>(
-        <text key={h} x={mx(h*60)} y={H-4} textAnchor="middle" fontSize="9" fill="var(--text3)" fontFamily="monospace">{h}:00</text>
-      ))}
-      {/* Axes */}
-      <line x1={PAD.left} y1={PAD.top} x2={PAD.left} y2={PAD.top+ph} stroke="var(--border)" strokeWidth="1"/>
-      <line x1={PAD.left} y1={PAD.top+ph} x2={PAD.left+pw} y2={PAD.top+ph} stroke="var(--border)" strokeWidth="1"/>
+    </div>
+  )
+}
 
-      {/* Yesterday reference */}
-      <polyline points={prevPts} fill="none" stroke="white" strokeWidth="1" strokeDasharray="5 4" opacity="0.18"/>
+function useMinuteHover() {
+  const [hm, setHm] = useState(null)
+  const pw = CW - CPAD.left - CPAD.right
+  const handlers = {
+    onPointerMove: e => {
+      const r = e.currentTarget.getBoundingClientRect()
+      const x = ((e.clientX - r.left) / r.width) * CW
+      const m = ((x - CPAD.left) / pw) * DAY_MIN
+      setHm(m >= 0 && m <= DAY_MIN ? m : null)
+    },
+    onPointerLeave: () => setHm(null),
+  }
+  return [hm, handlers]
+}
 
-      {/* Today area fill */}
-      {todayCum.length>1&&(
-        <polygon
-          points={`${mx(0)},${PAD.top+ph} ${todayPts} ${mx(currentMin)},${PAD.top+ph}`}
-          fill={predictColor} opacity="0.08"/>
+function TimeAxes({ H, yMax, ticks, unit, fmtTick }) {
+  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
+  const mx = m => CPAD.left + (m / DAY_MIN) * pw
+  const vy = v => CPAD.top + (1 - v / yMax) * ph
+  return (
+    <g>
+      {ticks.map((v, i) => (
+        <g key={i}>
+          <line x1={CPAD.left} y1={vy(v)} x2={CPAD.left + pw} y2={vy(v)} stroke="var(--border)" strokeWidth=".5" />
+          <text x={CPAD.left - 5} y={vy(v) + 3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{fmtTick(v)}</text>
+        </g>
+      ))}
+      <text x={10} y={CPAD.top + ph / 2} textAnchor="middle" fontSize="9" fill="var(--text3)" transform={`rotate(-90,10,${CPAD.top + ph / 2})`}>{unit}</text>
+      {[0, 6, 12, 18, 24].map(h => (
+        <text key={h} x={mx(h * 60)} y={H - 6} textAnchor="middle" fontSize="9" fill="var(--text3)" fontFamily="monospace">{h}:00</text>
+      ))}
+    </g>
+  )
+}
+
+function CumulativeChart({ todayDay, nowMin, yesterday, pred, H = 190 }) {
+  const [hm, hover] = useMinuteHover()
+  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
+
+  const todayPts = useMemo(() => {
+    if (!todayDay) return []
+    const end = Math.min(DAY_MIN, Math.floor(nowMin) + 1)
+    return Array.from({ length: end + 1 }, (_, m) => ({ m, v: todayDay.cum[m] }))
+  }, [todayDay, nowMin])
+  const yPts = useMemo(() => yesterday ? yesterday.cum.map((v, i) => ({ m: i * yesterday.step, v })) : [], [yesterday])
+
+  const { max: yMax, ticks } = niceScale(Math.max(yesterday?.total || 0, pred?.hi || 0, todayPts.at(-1)?.v || 0, 0.5))
+  const mx = m => CPAD.left + (m / DAY_MIN) * pw
+  const vy = v => CPAD.top + (1 - v / yMax) * ph
+
+  const band = pred?.curve?.length > 1
+    ? `${pred.curve.map(p => `${mx(p.m)},${vy(p.hi)}`).join(' ')} ${[...pred.curve].reverse().map(p => `${mx(p.m)},${vy(p.lo)}`).join(' ')}`
+    : null
+  const predLine = pred?.curve?.map(p => `${mx(p.m)},${vy(p.mid)}`).join(' ')
+  const curKwh = todayPts.at(-1)?.v
+
+  const rows = hm == null ? null : [
+    hm <= nowMin && todayDay && { label: 'Today', value: fmtKwh(cumAt(todayDay, hm)), stroke: 'var(--accent)' },
+    hm > nowMin && pred && { label: 'Prediction', value: fmtKwh(interpPred(pred.curve, hm)), stroke: 'var(--accent)', dash: '4 3' },
+    yesterday && { label: 'Yesterday', value: fmtKwh(cumAt(yesterday, hm)), stroke: 'var(--text3)', dash: '4 3' },
+  ].filter(Boolean)
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block', touchAction: 'pan-y' }} {...hover}
+        role="img" aria-label={`Cumulative energy today ${fmtKwh(curKwh)}${yesterday ? `, yesterday ${fmtKwh(yesterday.total)}` : ''}`}>
+        <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="kWh" fmtTick={v => v.toFixed(yMax < 5 ? 1 : 0)} />
+        {band && <polygon points={band} fill="var(--accent-soft)" opacity="0.6" />}
+        {yPts.length > 1 && <polyline points={yPts.map(p => `${mx(p.m)},${vy(p.v)}`).join(' ')} fill="none" stroke="var(--text3)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.7" />}
+        {todayPts.length > 1 && <polyline points={todayPts.map(p => `${mx(p.m)},${vy(p.v)}`).join(' ')} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
+        {predLine && <polyline points={predLine} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.8" />}
+        <line x1={mx(nowMin)} y1={CPAD.top} x2={mx(nowMin)} y2={CPAD.top + ph} stroke="var(--text3)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.6" />
+        {isNum(curKwh) && <circle cx={mx(nowMin)} cy={vy(curKwh)} r="4" fill="var(--accent)" stroke="var(--bg)" strokeWidth="2" />}
+        {pred && <circle cx={mx(DAY_MIN)} cy={vy(pred.total)} r="4" fill="var(--bg)" stroke="var(--accent)" strokeWidth="2" />}
+        {hm != null && <line x1={mx(hm)} y1={CPAD.top} x2={mx(hm)} y2={CPAD.top + ph} stroke="var(--text2)" strokeWidth="0.8" />}
+      </svg>
+      {hm != null && <ChartTooltip x={mx(hm)} title={fmtHM(hm)} rows={rows} />}
+    </div>
+  )
+}
+
+function interpPred(curve, m) {
+  if (!curve?.length) return null
+  if (m <= curve[0].m) return curve[0].mid
+  for (let i = 1; i < curve.length; i++) {
+    if (m <= curve[i].m) {
+      const a = curve[i - 1], b = curve[i], f = (m - a.m) / ((b.m - a.m) || 1)
+      return a.mid + (b.mid - a.mid) * f
+    }
+  }
+  return curve.at(-1).mid
+}
+
+function PowerChart({ pts, nowMin, baseW, H = 150 }) {
+  const [hm, hover] = useMinuteHover()
+  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
+  const maxW = Math.max(...pts.map(p => p.v), 100)
+  const { max: yMax, ticks } = niceScale(maxW)
+  const mx = m => CPAD.left + (m / DAY_MIN) * pw
+  const vy = v => CPAD.top + (1 - Math.max(0, v) / yMax) * ph
+  const segs = toSegments(pts, mx, vy, 2.5)
+
+  let hv = null
+  if (hm != null && pts.length) {
+    const near = pts.reduce((b, p) => Math.abs(p.m - hm) < Math.abs(b.m - hm) ? p : b, pts[0])
+    if (Math.abs(near.m - hm) <= 2) hv = near
+  }
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block', touchAction: 'pan-y' }} {...hover}
+        role="img" aria-label={`Whole-home power today, 1-minute mean, peak ${fmtW(maxW)}`}>
+        <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="W" fmtTick={v => v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : Math.round(v)} />
+        {isNum(baseW) && <line x1={CPAD.left} y1={vy(baseW)} x2={CPAD.left + pw} y2={vy(baseW)} stroke="var(--text3)" strokeWidth="1" strokeDasharray="2 3" opacity="0.8" />}
+        {segs.map((s, i) => <polyline key={i} points={s} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" />)}
+        <line x1={mx(nowMin)} y1={CPAD.top} x2={mx(nowMin)} y2={CPAD.top + ph} stroke="var(--text3)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.6" />
+        {hv && <>
+          <line x1={mx(hv.m)} y1={CPAD.top} x2={mx(hv.m)} y2={CPAD.top + ph} stroke="var(--text2)" strokeWidth="0.8" />
+          <circle cx={mx(hv.m)} cy={vy(hv.v)} r="4" fill="var(--accent)" stroke="var(--bg)" strokeWidth="2" />
+        </>}
+      </svg>
+      {hv && <ChartTooltip x={mx(hv.m)} title={fmtHM(hv.m)} rows={[
+        { label: 'Power (1 min mean)', value: fmtW(hv.v), stroke: 'var(--accent)' },
+        ...(isNum(baseW) ? [{ label: 'Base load', value: fmtW(baseW), stroke: 'var(--text3)', dash: '2 3' }] : []),
+      ]} />}
+    </div>
+  )
+}
+
+function DailyBars({ bars, H = 140 }) {
+  const [hi, setHi] = useState(null)
+  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
+  const { max: yMax, ticks } = niceScale(Math.max(...bars.map(b => b.kwh || 0), 0.5), 3)
+  const slot = pw / Math.max(1, bars.length), bw = Math.min(46, slot - 8)
+  const vy = v => CPAD.top + (1 - v / yMax) * ph
+
+  return (
+    <div style={{ position: 'relative' }}>
+      <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block' }} role="img" aria-label="Daily energy, last days">
+        {ticks.map((v, i) => (
+          <g key={i}>
+            <line x1={CPAD.left} y1={vy(v)} x2={CPAD.left + pw} y2={vy(v)} stroke="var(--border)" strokeWidth=".5" />
+            <text x={CPAD.left - 5} y={vy(v) + 3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{v.toFixed(yMax < 5 ? 1 : 0)}</text>
+          </g>
+        ))}
+        {bars.map((b, i) => {
+          const x = CPAD.left + i * slot + (slot - bw) / 2
+          const v = b.kwh || 0, y = vy(v), h = Math.max(0, CPAD.top + ph - y)
+          const r = Math.min(4, h / 2, bw / 2)
+          const path = h > 0
+            ? `M${x},${CPAD.top + ph} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${CPAD.top + ph} Z`
+            : null
+          return (
+            <g key={b.key} onPointerEnter={() => setHi(i)} onPointerLeave={() => setHi(null)} style={{ cursor: 'default' }}>
+              <rect x={CPAD.left + i * slot} y={CPAD.top} width={slot} height={ph} fill="transparent" />
+              {path && <path d={path} fill="var(--accent)" opacity={b.partial ? 0.45 : (b.coverage < ENERGY.minCoverage ? 0.6 : 1)} />}
+              <text x={x + bw / 2} y={H - 6} textAnchor="middle" fontSize="9" fill={b.partial ? 'var(--text2)' : 'var(--text3)'} fontFamily="monospace">{b.label}</text>
+            </g>
+          )
+        })}
+        <line x1={CPAD.left} y1={CPAD.top + ph} x2={CPAD.left + pw} y2={CPAD.top + ph} stroke="var(--border)" strokeWidth="1" />
+      </svg>
+      {hi != null && (
+        <ChartTooltip x={CPAD.left + hi * slot + slot / 2} title={bars[hi].key + (bars[hi].partial ? ' · so far' : '')} rows={[
+          { label: 'Energy', value: fmtKwh(bars[hi].kwh), stroke: 'var(--accent)' },
+          { label: 'Data coverage', value: fmtPct(bars[hi].coverage), stroke: 'transparent' },
+        ]} />
       )}
-
-      {/* Today actual line */}
-      {todayCum.length>1&&<polyline points={todayPts} fill="none" stroke={predictColor} strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>}
-
-      {/* Prediction dashed */}
-      <polyline points={predPts} fill="none" stroke={predictColor} strokeWidth="1.5" strokeDasharray="7 5" opacity="0.65"/>
-
-      {/* Current time vertical line */}
-      <line x1={mx(currentMin)} y1={PAD.top} x2={mx(currentMin)} y2={PAD.top+ph} stroke="white" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.35"/>
-
-      {/* End prediction dot */}
-      <circle cx={mx(1440)} cy={ky(predEndKwh)} r="4" fill={predictColor} opacity="0.7"/>
-
-      {/* Current position dot */}
-      {todayCum.length>0&&(
-        <circle cx={mx(currentMin)} cy={ky(curKwh)} r="5" fill={predictColor}/>
-      )}
-    </svg>
+    </div>
   )
 }
 
@@ -217,214 +475,337 @@ function ContractModal({contract,onSave,onCancel}){
   )
 }
 
+
+// ─── UI atoms ──────────────────────────────────────────────────────────────────
+function Kpi({ icon, label, value, sub }) {
+  return (
+    <div className="hp-card" style={{ padding: 'var(--sp-3)' }}>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)', marginBottom: 'var(--sp-1)' }}>{icon} {label}</div>
+      <div style={{ fontSize: 'var(--fs-md)', fontFamily: 'var(--mono)', fontWeight: 700, color: 'var(--text)' }}>{value}</div>
+      <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)', marginTop: 2 }}>{sub}</div>
+    </div>
+  )
+}
+
+function Legend({ items }) {
+  return (
+    <div style={{ display: 'flex', gap: 'var(--sp-3)', fontSize: 'var(--fs-2xs)', color: 'var(--text3)', flexWrap: 'wrap' }}>
+      {items.map(it => (
+        <span key={it.label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
+          {it.band
+            ? <span style={{ width: 16, height: 8, background: 'var(--accent-soft)', display: 'inline-block', borderRadius: 2 }} />
+            : <svg width="20" height="6" aria-hidden="true"><line x1="0" y1="3" x2="20" y2="3" stroke={it.stroke} strokeWidth="2" strokeDasharray={it.dash || 'none'} /></svg>}
+          {it.label}
+        </span>
+      ))}
+    </div>
+  )
+}
+
+function Section({ title, right, children, last }) {
+  return (
+    <div style={{ padding: 'var(--sp-3) var(--sp-4)', borderBottom: last ? 'none' : '0.5px solid var(--border)' }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 'var(--sp-2)', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)', fontWeight: 600 }}>{title}</div>
+        {right}
+      </div>
+      {children}
+    </div>
+  )
+}
+
+function LiveDot({ stale }) {
+  return <span aria-hidden="true" style={{ width: 7, height: 7, borderRadius: '50%', display: 'inline-block', flexShrink: 0,
+    background: stale ? 'var(--danger)' : 'var(--ok)' }} />
+}
+
 // ─── Main EnergyTab ────────────────────────────────────────────────────────────
-export function EnergyTab(){
-  const{state,activeContract,addContract,updateContract,deleteContract,setActiveContract}=useStore()
-  const contracts=state.contracts
-  const[windowKey,setWindowKey]=useState('h24')
-  const[editingContract,setEditingContract]=useState(null)
-  const[modal,setModal]=useState(null)
-  const[subTab,setSubTab]=useState('overview')
+export function EnergyTab() {
+  const { activeContract, addContract, updateContract } = useStore()
+  const [editingContract, setEditingContract] = useState(null)
+  const [subTab, setSubTab] = useState('overview')
 
-  const SUB_TABS=[
-    {key:'overview',label:'Overview'},
-    {key:'devices', label:'Per-device'},
+  const SUB_TABS = [
+    { key: 'overview', label: 'Overview' },
+    { key: 'devices', label: 'Per-device' },
   ]
 
-  const now=new Date()
-  const currentMin=now.getHours()*60+now.getMinutes()
+  // Clock: drives "now" markers and the midnight rollover of the queries
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 5000); return () => clearInterval(t) }, [])
+  const today = midnightOf(new Date(now))
+  const todayMs = today.getTime()
+  const todayKey = dayKeyOf(today)
+  const nowMin = Math.min(DAY_MIN, (now - todayMs) / 60000)
+  const histStartMs = Math.min(addDays(today, -ENERGY.historyDays).getTime(),
+    new Date(today.getFullYear(), today.getMonth(), 1).getTime())
 
-  // Generate simulated data once per session
-  const todayProfile  =useMemo(()=>generateProfile(0),[])
-  const prevProfile   =useMemo(()=>generateProfile(42),[])
+  // ── Queries (all through nginx, read-only token on iot-hot)
+  const qLive = useMemo(() => FLUX.nilmPower('-2m', 'now()', null), [])
+  const qToday = useMemo(() => FLUX.nilmPower(fluxTime(todayMs), 'now()', '1m'), [todayMs])
+  const qHist = useMemo(() => FLUX.nilmPower(fluxTime(histStartMs), fluxTime(todayMs), '5m'), [histStartMs, todayMs])
+  const live = useFlux(qLive, 5000)
+  const tday = useFlux(qToday, 60000)
+  const hist = useFlux(qHist, 15 * 60000)
+  const errors = [live.error && `live: ${live.error}`, tday.error && `today: ${tday.error}`, hist.error && `history: ${hist.error}`].filter(Boolean)
 
-  // Cumulative curves
-  const todayFull =useMemo(()=>computeCumulative(todayProfile),[todayProfile])
-  const prevFull  =useMemo(()=>computeCumulative(prevProfile),[prevProfile])
+  // ── Live power: mean of the last 30 s of raw samples
+  const livePts = useMemo(() => sumLegs(live.data), [live.data])
+  const tdayPts = useMemo(() => sumLegs(tday.data), [tday.data])
+  const lastT = livePts.at(-1)?.t ?? null
+  const ageS = lastT != null ? Math.max(0, (now - lastT) / 1000) : null
+  const stale = ageS == null || ageS > ENERGY.staleAfterS
+  const recent = lastT != null ? livePts.filter(p => p.t >= lastT - 30000) : []
+  const mean = (arr, f) => arr.length ? arr.reduce((s, p) => s + f(p), 0) / arr.length : null
+  const liveW = stale ? null : mean(recent, p => p.w)
+  const liveLegs = Object.fromEntries(LEG_FIELDS.map(f => [f, stale ? null : mean(recent, p => p.legs[f])]))
+  const rateHz = livePts.length > 1 ? (livePts.length - 1) / ((livePts.at(-1).t - livePts[0].t) / 1000) : null
 
-  // Today only up to current time (+ small real-time delta using a ticker)
-  const[tick,setTick]=useState(0)
-  useEffect(()=>{const t=setInterval(()=>setTick(k=>k+1),60000);return()=>clearInterval(t)},[])
+  // ── Today (1 min windows)
+  const todayDay = useMemo(() => buildDays(tdayPts, 1, now).get(todayKey) || null, [tdayPts, todayKey, now])
+  const todayKwh = todayDay?.total ?? (tday.loading ? null : 0)
+  const todayCoverage = todayDay ? todayDay.filled / Math.max(1, Math.ceil(nowMin)) : null
+  const powerPts = useMemo(() => tdayPts.map(p => ({ m: (p.t - todayMs) / 60000, v: p.w })), [tdayPts, todayMs])
+  const peak = useMemo(() => powerPts.reduce((b, p) => (!b || p.v > b.v) ? p : b, null), [powerPts])
+  const baseW = useMemo(() => percentile(powerPts.map(p => p.v), 0.05), [powerPts])
 
-  const todayCum=useMemo(()=>todayFull.filter(r=>r.min<=currentMin),[todayFull,currentMin,tick])
+  // ── History (5 min windows): yesterday, reference days, month to date
+  const histDays = useMemo(() => buildDays(sumLegs(hist.data), 5), [hist.data])
+  const yesterday = histDays.get(dayKeyOf(addDays(today, -1))) || null
+  const refDays = useMemo(() => {
+    const out = []
+    for (let i = 1; i <= ENERGY.historyDays; i++) {
+      const d = histDays.get(dayKeyOf(addDays(today, -i)))
+      if (d && d.coverage >= ENERGY.minCoverage) out.push(d)
+    }
+    return out
+  }, [histDays, todayKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Current stats
-  const currentKwh=todayCum.at(-1)?.kwh||0
-  const prevSameTimeKwh=(prevFull.find(r=>r.min>=currentMin)||prevFull.at(-1))?.kwh||0
-  const prevTotalKwh=prevFull.at(-1)?.kwh||0
+  // Prediction: today so far + median of what the reference days still used
+  // after this time of day. The range is the min..max of those days.
+  const pred = useMemo(() => {
+    if (!refDays.length || !isNum(todayKwh)) return null
+    const inc = (d, m) => cumAt(d, m) - cumAt(d, nowMin)
+    const rem = refDays.map(d => inc(d, DAY_MIN))
+    const curve = [{ m: nowMin, mid: todayKwh, lo: todayKwh, hi: todayKwh }]
+    for (let m = Math.ceil(nowMin / 5) * 5; m <= DAY_MIN; m += 5) {
+      if (m <= nowMin) continue
+      const v = refDays.map(d => inc(d, m))
+      curve.push({ m, mid: todayKwh + median(v), lo: todayKwh + Math.min(...v), hi: todayKwh + Math.max(...v) })
+    }
+    return { total: todayKwh + median(rem), lo: todayKwh + Math.min(...rem), hi: todayKwh + Math.max(...rem), n: refDays.length, curve }
+  }, [refDays, nowMin, todayKwh])
 
-  // Recent avg power for prediction (last 30 min of simulated data)
-  const recentPts=todayProfile.filter(r=>r.min>=currentMin-30&&r.min<=currentMin)
-  const avgKw=recentPts.length?(recentPts.reduce((s,r)=>s+r.watts,0)/recentPts.length/1000):0.3
+  // Month to date before a given day (tiers are monthly). partial = the month
+  // starts before the oldest day still in iot-hot (720 h retention).
+  const oldestKey = useMemo(() => [...histDays.keys()].sort()[0] || null, [histDays])
+  const monthBefore = key => {
+    let s = 0
+    for (const d of histDays.values()) if (monthKeyOf(d.key) === monthKeyOf(key) && d.key < key) s += d.total
+    const firstOfMonth = `${monthKeyOf(key)}-01`
+    return { kwh: s, partial: !oldestKey || oldestKey > firstOfMonth }
+  }
+  const mtdToday = monthBefore(todayKey)
+  const yKey = dayKeyOf(addDays(today, -1))
+  const mtdYesterday = monthBefore(yKey)
 
-  // Predicted total
-  const predTotal=currentKwh+avgKw*((1440-currentMin)/60)
-  // Hex literal here (not var()): concatenated with an alpha suffix below; same
-  // value as --ok/--danger/--text, duplicated in hex out of technical necessity.
-  const predictColor=predTotal<prevTotalKwh*0.95?'#1D9E75':predTotal>prevTotalKwh*1.05?'#E24B4A':'#eef0f7'
+  const costToday = dayCost(todayKwh, mtdToday.kwh, activeContract)
+  const costPred = pred ? dayCost(pred.total, mtdToday.kwh, activeContract) : null
+  const costYesterday = yesterday ? dayCost(yesterday.total, mtdYesterday.kwh, activeContract) : null
+  const monthNow = isNum(todayKwh) ? mtdToday.kwh + todayKwh : null
+  const curTier = isNum(monthNow) ? tierAt(monthNow, activeContract) : null
 
-  // Cost
-  const elecRate=activeContract?.utilities?.electricity?.tiers?.[0]?.ratePerKwh||31
-  const currentCost=computeElecCost(currentKwh,activeContract)
-  const predCost=computeElecCost(predTotal,activeContract)
+  const ySameTime = yesterday ? cumAt(yesterday, nowMin) : null
+  const verdict = !pred || !yesterday || !(yesterday.total > 0) ? null
+    : pred.total < yesterday.total * 0.95 ? { kind: 'below', icon: '✓', color: 'var(--ok)', text: `${((1 - pred.total / yesterday.total) * 100).toFixed(0)}% below yesterday` }
+    : pred.total > yesterday.total * 1.05 ? { kind: 'above', icon: '⚠', color: 'var(--danger)', text: `${((pred.total / yesterday.total - 1) * 100).toFixed(0)}% above yesterday` }
+    : { kind: 'similar', icon: '→', color: 'var(--text2)', text: 'In line with yesterday' }
 
-  // Current period
-  const curPeriod=getCurrentPeriod()
+  // Daily bars: reference window + today (partial)
+  const bars = useMemo(() => {
+    const out = []
+    for (let i = ENERGY.historyDays; i >= 1; i--) {
+      const dt = addDays(today, -i), k = dayKeyOf(dt), d = histDays.get(k)
+      out.push({ key: k, label: `${pad2(dt.getMonth() + 1)}/${pad2(dt.getDate())}`, kwh: d?.total ?? 0, coverage: d?.coverage ?? 0 })
+    }
+    out.push({ key: todayKey, label: 'Today', kwh: todayKwh ?? 0, coverage: todayCoverage ?? 0, partial: true })
+    return out
+  }, [histDays, todayKey, todayKwh, todayCoverage]) // eslint-disable-line react-hooks/exhaustive-deps
 
-  const TIME_WINDOWS=[
-    {key:'h24',label:'Today'},
-    {key:'d3', label:'3 days'},
-    {key:'w1', label:'1 week'},
-    {key:'m1', label:'Month'},
-  ]
+  const curPeriod = getCurrentPeriod()
+  const unvalidated = ENERGY.legs.filter(l => !l.validated).map(l => l.label)
 
-  function handleSaveContract(form){
-    if(editingContract==='new')addContract(form)
-    else updateContract({...form,id:editingContract.id})
+  function handleSaveContract(form) {
+    if (editingContract === 'new') addContract(form)
+    else updateContract({ ...form, id: editingContract.id })
     setEditingContract(null)
   }
 
-  return(
-    <div style={{display:'flex',flexDirection:'column',height:'100%',overflow:'hidden'}}>
+  const legSub = ENERGY.legs.map(l => `${l.label} ${fmtW(liveLegs[l.field])}`).join(' · ')
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
 
       {/* Top bar */}
-      <div style={{padding:'var(--sp-2) var(--sp-4)',borderBottom:'0.5px solid var(--border)',display:'flex',gap:'var(--sp-1)',alignItems:'center',flexShrink:0,background:'var(--bg)'}}>
-        <div style={{fontSize:'var(--fs-sm)',fontWeight:700}}>⚡ Electricity</div>
-        <div style={{marginLeft:'var(--sp-2)',fontSize:'var(--fs-xs)',color:curPeriod.textColor,fontFamily:'var(--mono)',fontWeight:700}}>
-          {curPeriod.label}
+      <div style={{ padding: 'var(--sp-2) var(--sp-4)', borderBottom: '0.5px solid var(--border)', display: 'flex', gap: 'var(--sp-2)', alignItems: 'center', flexShrink: 0, background: 'var(--bg)', flexWrap: 'wrap' }}>
+        <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 700 }}>⚡ Electricity</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 5, fontSize: 'var(--fs-xs)', color: 'var(--text2)', fontFamily: 'var(--mono)' }}>
+          <LiveDot stale={stale} />
+          {stale
+            ? (ageS == null ? 'No NILM data in the last 2 min' : `Stale · last sample ${Math.round(ageS)} s ago`)
+            : `Live · ${Math.round(ageS)} s ago`}
         </div>
-        <div style={{marginLeft:'auto',display:'flex',gap:'var(--sp-2)',alignItems:'center'}}>
-          <span style={{fontSize:'var(--fs-xs)',color:'var(--text3)'}}>{activeContract?.name}</span>
-          <button onClick={()=>setEditingContract(activeContract||DEFAULT_CONTRACT)} className="hp-focus-visible"
-            style={{padding:'var(--sp-1) var(--sp-3)',borderRadius:'var(--r-sm)',fontSize:'var(--fs-xs)',fontWeight:600,border:'0.5px solid var(--border)',background:'var(--bg2)',color:'var(--text2)',cursor:'pointer'}}>⚙ Contract</button>
+        <div style={{ marginLeft: 'auto', display: 'flex', gap: 'var(--sp-2)', alignItems: 'center' }}>
+          <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)' }}>{activeContract?.name}</span>
+          <button onClick={() => setEditingContract(activeContract || DEFAULT_CONTRACT)} className="hp-focus-visible"
+            style={{ padding: 'var(--sp-1) var(--sp-3)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)', fontWeight: 600, border: '0.5px solid var(--border)', background: 'var(--bg2)', color: 'var(--text2)', cursor: 'pointer' }}>⚙ Contract</button>
         </div>
       </div>
 
       {/* Sub-tab bar */}
-      <div style={{padding:'0 var(--sp-4)',borderBottom:'0.5px solid var(--border)',display:'flex',gap:'var(--sp-1)',flexShrink:0,background:'var(--bg)'}}>
-        {SUB_TABS.map(t=>(
-          <button key={t.key} onClick={()=>setSubTab(t.key)} className="hp-focus-visible"
-            style={{padding:'var(--sp-2) var(--sp-3)',fontSize:'var(--fs-sm)',fontWeight:600,
-              background:'none',border:'none',cursor:'pointer',
-              color:subTab===t.key?'var(--text)':'var(--text3)',
-              borderBottom:subTab===t.key?'2px solid var(--accent-vivid)':'2px solid transparent',
-              marginBottom:-1}}>
+      <div style={{ padding: '0 var(--sp-4)', borderBottom: '0.5px solid var(--border)', display: 'flex', gap: 'var(--sp-1)', flexShrink: 0, background: 'var(--bg)' }}>
+        {SUB_TABS.map(t => (
+          <button key={t.key} onClick={() => setSubTab(t.key)} className="hp-focus-visible"
+            style={{ padding: 'var(--sp-2) var(--sp-3)', fontSize: 'var(--fs-sm)', fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer',
+              color: subTab === t.key ? 'var(--text)' : 'var(--text3)',
+              borderBottom: subTab === t.key ? '2px solid var(--accent-vivid)' : '2px solid transparent', marginBottom: -1 }}>
             {t.label}
           </button>
         ))}
       </div>
 
-      {subTab==='overview'&&(
-      <div style={{flex:1,overflow:'auto'}}>
+      {errors.length > 0 && (
+        <div role="alert" style={{ margin: 'var(--sp-2) var(--sp-4) 0', padding: 'var(--sp-2) var(--sp-3)', borderRadius: 'var(--r-sm)', border: '0.5px solid var(--danger)', color: 'var(--danger)', fontSize: 'var(--fs-xs)', fontFamily: 'var(--mono)' }}>
+          ⚠ InfluxDB query failed ({errors.join(' · ')}). Figures below may be incomplete.
+        </div>
+      )}
 
-        {/* KPI row */}
-        <div style={{padding:'var(--sp-3) var(--sp-4)',borderBottom:'0.5px solid var(--border)'}}>
-          <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:'var(--sp-2)',marginBottom:'var(--sp-3)'}}>
-            {[
-              {icon:'⚡',label:'Current load',value:`${(avgKw*1000).toFixed(0)}W`,sub:`${avgKw.toFixed(2)} kW avg`,color:'var(--warn)'},
-              {icon:'📊',label:'Today so far',value:`${currentKwh.toFixed(2)} kWh`,sub:`¥${Math.round(currentCost).toLocaleString()}`,color:'var(--accent-vivid)'},
-              {icon:'🎯',label:'Day prediction',value:`${predTotal.toFixed(2)} kWh`,sub:`¥${Math.round(predCost).toLocaleString()}`,color:predictColor},
-              {icon:'📅',label:'Yesterday total',value:`${prevTotalKwh.toFixed(2)} kWh`,sub:`vs ${prevSameTimeKwh.toFixed(2)} same time`,color:'var(--text3)'},
-            ].map(k=>(
-              <div key={k.label} className="hp-card" style={{padding:'var(--sp-3) var(--sp-3)'}}>
-                <div style={{fontSize:'var(--fs-xs)',color:'var(--text3)',marginBottom:'var(--sp-1)'}}>{k.icon} {k.label}</div>
-                <div style={{fontSize:'var(--fs-md)',fontFamily:'var(--mono)',fontWeight:700,color:k.color}}>{k.value}</div>
-                <div style={{fontSize:'var(--fs-xs)',color:'var(--text3)',marginTop:2}}>{k.sub}</div>
+      {subTab === 'overview' && (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+
+          {/* KPI row */}
+          <div style={{ padding: 'var(--sp-3) var(--sp-4)', borderBottom: '0.5px solid var(--border)' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(140px,1fr))', gap: 'var(--sp-2)', marginBottom: 'var(--sp-3)' }}>
+              <Kpi icon="⚡" label="Current load" value={fmtW(liveW)} sub={stale ? 'no recent sample' : `30 s mean · ${legSub}`} />
+              <Kpi icon="📊" label="Today so far" value={fmtKwh(todayKwh)} sub={`${fmtYen(costToday)} · coverage ${fmtPct(todayCoverage)}`} />
+              <Kpi icon="🎯" label="Day prediction" value={pred ? fmtKwh(pred.total) : '—'}
+                sub={pred ? `${fmtKwh(pred.lo, 1)}–${fmtKwh(pred.hi, 1)} · ${fmtYen(costPred)}` : (hist.loading ? 'loading history…' : 'not enough history yet')} />
+              <Kpi icon="📅" label="Yesterday" value={yesterday ? fmtKwh(yesterday.total) : '—'}
+                sub={yesterday ? `${fmtKwh(ySameTime)} at this time · ${fmtYen(costYesterday)}` : (hist.loading ? 'loading…' : 'no data')} />
+              <Kpi icon="⏫" label="Peak today" value={peak ? fmtW(peak.v) : '—'} sub={peak ? `at ${fmtHM(peak.m)} · 1 min mean` : '—'} />
+              <Kpi icon="🌙" label="Base load" value={fmtW(baseW)} sub="5th percentile today · always-on" />
+            </div>
+
+            {verdict && (
+              <div style={{ padding: 'var(--sp-2) var(--sp-3)', borderRadius: 'var(--r-sm)', background: 'var(--bg2)', border: '0.5px solid var(--border)', display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-sm)', flexWrap: 'wrap' }}>
+                <span aria-hidden="true" style={{ color: verdict.color, fontSize: 16 }}>{verdict.icon}</span>
+                <span style={{ fontWeight: 700, color: 'var(--text)' }}>Projected {verdict.text}</span>
+                <span style={{ color: 'var(--text3)', marginLeft: 'auto', fontSize: 'var(--fs-xs)' }}>
+                  median of the last {pred.n} day{pred.n > 1 ? 's' : ''} with ≥{Math.round(ENERGY.minCoverage * 100)}% data
+                </span>
               </div>
-            ))}
+            )}
           </div>
 
-          {/* Prediction status */}
-          <div style={{padding:'var(--sp-2) var(--sp-3)',borderRadius:'var(--r-sm)',background:`${predictColor}18`,border:`0.5px solid ${predictColor}44`,display:'flex',alignItems:'center',gap:'var(--sp-2)',fontSize:'var(--fs-sm)'}}>
-            <span style={{color:predictColor,fontSize:16}}>{predTotal<prevTotalKwh*0.95?'✓':predTotal>prevTotalKwh*1.05?'⚠':'→'}</span>
-            <span style={{color:predictColor,fontWeight:700}}>
-              {predTotal<prevTotalKwh*0.95?`Saving ${((1-predTotal/prevTotalKwh)*100).toFixed(0)}% vs yesterday`
-              :predTotal>prevTotalKwh*1.05?`+${((predTotal/prevTotalKwh-1)*100).toFixed(0)}% above yesterday's consumption`
-              :'Tracking yesterday\'s consumption'}
-            </span>
-            <span style={{color:'var(--text3)',marginLeft:'auto',fontSize:'var(--fs-xs)'}}>
-              Predicted ¥{Math.round(predCost).toLocaleString()} vs yesterday ¥{Math.round(computeElecCost(prevTotalKwh,activeContract)).toLocaleString()}
-            </span>
-          </div>
-        </div>
+          <Section title="Cumulative energy today" right={
+            <Legend items={[
+              { label: 'Today', stroke: 'var(--accent)' },
+              { label: 'Yesterday', stroke: 'var(--text3)', dash: '5 4' },
+              { label: 'Prediction', stroke: 'var(--accent)', dash: '6 4' },
+              { label: 'Range of past days', band: true },
+            ]} />}>
+            <CumulativeChart todayDay={todayDay} nowMin={nowMin} yesterday={yesterday} pred={pred} />
+          </Section>
 
-        {/* Cumulative chart */}
-        <div style={{padding:'var(--sp-3) var(--sp-4)',borderBottom:'0.5px solid var(--border)'}}>
-          <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'var(--sp-2)'}}>
-            <div style={{fontSize:'var(--fs-xs)',color:'var(--text3)',fontWeight:600}}>Cumulative energy today</div>
-            <div style={{display:'flex',gap:'var(--sp-3)',fontSize:'var(--fs-2xs)',color:'var(--text3)'}}>
-              <span><span style={{display:'inline-block',width:20,height:2,background:predictColor,verticalAlign:'middle',marginRight:4}}/>Today</span>
-              <span><span style={{display:'inline-block',width:20,height:1,background:'white',opacity:.3,verticalAlign:'middle',marginRight:4,borderTop:'1px dashed white'}}/>Yesterday</span>
-              <span><span style={{display:'inline-block',width:20,height:1,background:predictColor,opacity:.6,verticalAlign:'middle',marginRight:4,borderTop:'1px dashed'}}>‒ ‒</span>Prediction</span>
-            </div>
-          </div>
-          <CumulativeChart
-            todayCum={todayCum}
-            prevCum={prevFull}
-            predictColor={predictColor}
-            currentMin={currentMin}
-            avgKw={avgKw}/>
-          <div style={{fontSize:'var(--fs-2xs)',color:'var(--text3)',marginTop:6,display:'flex',alignItems:'center',gap:5}}>
-            <span style={{width:6,height:6,borderRadius:'50%',background:'var(--warn)',flexShrink:0}}/>
-            Real-time requires Shelly EM · Simulated from nominal appliance wattage
-          </div>
-        </div>
+          <Section title="Power today (1 min mean)" right={<Legend items={[
+            { label: 'Whole home', stroke: 'var(--accent)' },
+            { label: 'Base load', stroke: 'var(--text3)', dash: '2 3' },
+          ]} />}>
+            <PowerChart pts={powerPts} nowMin={nowMin} baseW={baseW} />
+          </Section>
 
-        {/* 24h tariff */}
-        <div style={{padding:'var(--sp-3) var(--sp-4)',borderBottom:'0.5px solid var(--border)'}}>
-          <PeakTimeline24h/>
-        </div>
+          <Section title={`Daily energy · last ${ENERGY.historyDays} days`} right={
+            <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>faded = partial day or &lt;{Math.round(ENERGY.minCoverage * 100)}% data</span>}>
+            <DailyBars bars={bars} />
+          </Section>
 
-        {/* Contract tiers summary */}
-        {activeContract?.utilities?.electricity?.tiers?.length>0&&(
-          <div style={{padding:'var(--sp-3) var(--sp-4)'}}>
-            <div className="hp-card">
-              <div style={{fontSize:'var(--fs-sm)',fontWeight:600,marginBottom:'var(--sp-2)'}}>Pricing tiers — {activeContract.name}</div>
-              {activeContract.utilities.electricity.tiers.map((tier,i)=>{
-                const colors=['var(--accent-vivid)','var(--text2)','var(--danger)']
-                return(
-                  <div key={tier.id} style={{display:'flex',justifyContent:'space-between',padding:'var(--sp-1) 0',borderBottom:i<activeContract.utilities.electricity.tiers.length-1?'0.5px solid var(--border)':'none',fontSize:'var(--fs-base)'}}>
-                    <span style={{color:'var(--text2)'}}>{tier.label} · {tier.from}–{tier.to??'∞'} kWh</span>
-                    <span style={{fontFamily:'var(--mono)',color:colors[i%3],fontWeight:700}}>¥{tier.ratePerKwh}/kWh</span>
-                  </div>
-                )
-              })}
-              {(activeContract.utilities.electricity.standingChargePerDay||0)>0&&(
-                <div style={{display:'flex',justifyContent:'space-between',paddingTop:'var(--sp-2)',fontSize:'var(--fs-xs)',color:'var(--text3)'}}>
-                  <span>Standing charge</span><span style={{fontFamily:'var(--mono)'}}>¥{activeContract.utilities.electricity.standingChargePerDay}/day</span>
+          {/* Month to date + tiers */}
+          {activeContract?.utilities?.electricity?.tiers?.length > 0 && (
+            <Section title="Month to date">
+              <div className="hp-card">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 'var(--sp-2)', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
+                  <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 'var(--fs-md)' }}>{fmtKwh(monthNow, 1)}</span>
+                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)' }}>
+                    {curTier ? `now in ${curTier.label} · ¥${curTier.ratePerKwh}/kWh` : ''}{mtdToday.partial ? ' · month starts before the 30-day retention: partial' : ''}
+                  </span>
                 </div>
-              )}
+                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, marginBottom: 'var(--sp-2)' }}>Pricing tiers (monthly kWh) — {activeContract.name}</div>
+                {activeContract.utilities.electricity.tiers.map((tier, i, arr) => (
+                  <div key={tier.id} style={{ display: 'flex', justifyContent: 'space-between', padding: 'var(--sp-1) 0', borderBottom: i < arr.length - 1 ? '0.5px solid var(--border)' : 'none', fontSize: 'var(--fs-base)' }}>
+                    <span style={{ color: tier === curTier ? 'var(--text)' : 'var(--text2)', fontWeight: tier === curTier ? 700 : 400 }}>{tier === curTier ? '▸ ' : ''}{tier.label} · {tier.from}–{tier.to ?? '∞'} kWh</span>
+                    <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)', fontWeight: 700 }}>¥{tier.ratePerKwh}/kWh</span>
+                  </div>
+                ))}
+                {(activeContract.utilities.electricity.standingChargePerDay || 0) > 0 && (
+                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--text3)' }}>
+                    <span>Standing charge</span><span style={{ fontFamily: 'var(--mono)' }}>¥{activeContract.utilities.electricity.standingChargePerDay}/day</span>
+                  </div>
+                )}
+              </div>
+            </Section>
+          )}
+
+          <Section title="Tariff periods">
+            <PeakTimeline24h />
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>
+              Now: {curPeriod.label}. Reference pattern only: costs above use the contract tiers, not these periods.
+            </div>
+          </Section>
+
+          {/* Data provenance: what the numbers are made of */}
+          <Section title="Data source" last>
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)', fontFamily: 'var(--mono)', lineHeight: 1.7 }}>
+              <div>{ENERGY.bucket}/{ENERGY.measurement} · {ENERGY.legs.map(l => l.field).join(' + ')} · {isNum(rateHz) ? `${rateHz.toFixed(2)} Hz` : '—'} · history {histDays.size} day{histDays.size === 1 ? '' : 's'} loaded</div>
+              <div>Energy = window mean × window length (1 min today, 5 min history); windows without data count as 0 and lower the coverage.</div>
+              {unvalidated.length > 0 && <div style={{ color: 'var(--warn)' }}>⚠ {unvalidated.join(', ')} CT calibration and polarity not validated yet: included in the whole-home total.</div>}
+            </div>
+          </Section>
+        </div>
+      )}
+
+      {subTab === 'devices' && (
+        <div style={{ flex: 1, overflow: 'auto' }}>
+          <Section title="Per circuit (measured)">
+            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 'var(--sp-2)' }}>
+              {ENERGY.legs.map(l => (
+                <div key={l.field} className="hp-card" style={{ padding: 'var(--sp-3)' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-xs)', color: 'var(--text3)', marginBottom: 'var(--sp-1)' }}>
+                    <span>Circuit {l.label}</span>
+                    <span style={{ color: l.validated ? 'var(--text3)' : 'var(--warn)' }}>{l.validated ? '✓ calibrated' : '⚠ not validated'}</span>
+                  </div>
+                  <div style={{ fontSize: 'var(--fs-md)', fontFamily: 'var(--mono)', fontWeight: 700 }}>{fmtW(liveLegs[l.field])}</div>
+                  <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)', marginTop: 2 }}>today {fmtKwh(todayDay?.legKwh?.[l.field])}</div>
+                </div>
+              ))}
+            </div>
+          </Section>
+          <div style={{ padding: 'var(--sp-4)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 220, gap: 'var(--sp-2)', textAlign: 'center' }}>
+            <div style={{ fontSize: 32 }}>🔌</div>
+            <div style={{ fontSize: 'var(--fs-md)', fontWeight: 700, color: 'var(--text2)' }}>Per-appliance breakdown</div>
+            <div style={{ fontSize: 'var(--fs-sm)', color: 'var(--text3)', maxWidth: 380 }}>
+              Waiting for NILM Layer 1 (event detection + classification). The whole-home signal above is live;
+              appliances will appear here once the classifier publishes its labels.
             </div>
           </div>
-        )}
-      </div>
-      )}
-
-      {subTab==='devices'&&(
-      <div style={{flex:1,overflow:'auto'}}>
-        {/* Placeholder: will be replaced by the real chart once the
-            NILM telemetry (Teensy -> ESP32-S3 -> MQTT -> InfluxDB) is in place.
-            See useInflux.js / EnergyTab for the planned integration point. */}
-        <div style={{padding:'var(--sp-4)',display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',minHeight:300,gap:'var(--sp-2)',textAlign:'center'}}>
-          <div style={{fontSize:32}}>🔌</div>
-          <div style={{fontSize:'var(--fs-md)',fontWeight:700,color:'var(--text2)'}}>Per-device breakdown</div>
-          <div style={{fontSize:'var(--fs-sm)',color:'var(--text3)',maxWidth:360}}>
-            En attente de la télémétrie NILM en direct (Teensy → ESP32-S3 → MQTT → InfluxDB).
-            Ce panneau affichera la consommation par appareil une fois le pipeline en place.
-          </div>
         </div>
-      </div>
       )}
 
-      {/* Contract editor */}
-      {editingContract&&(
+      {editingContract && (
         <ContractModal
-          contract={editingContract==='new'?null:editingContract}
+          contract={editingContract === 'new' ? null : editingContract}
           onSave={handleSaveContract}
-          onCancel={()=>setEditingContract(null)}/>
+          onCancel={() => setEditingContract(null)} />
       )}
-
-      {modal&&<ChartModal key={modal.title} open={true} onClose={()=>setModal(null)} title={modal.title} unit={modal.unit} initialWindow={windowKey}/>}
     </div>
   )
 }

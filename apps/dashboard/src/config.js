@@ -54,3 +54,19 @@ export const APPLIANCES = [
   { id: 'machine', room: 'sdb',     label: 'Lave-linge',   watts: 500, x: 230, y: 280 },
   { id: 'pi',      room: 'bureau',  label: 'HomePi',       watts: 12,  x: 410, y: 280 },
 ]
+
+// Energy tab (NILM whole-home metering). Values in nilm_readings are already
+// calibrated server-side (W, V, A): the dashboard never applies a scale factor.
+export const ENERGY = {
+  bucket:      'iot-hot',
+  measurement: 'nilm_readings',
+  // Legs summed into the whole-home figure (single-phase three-wire: L1 + L2).
+  // validated:false is shown as a warning in the UI until the CT is characterised.
+  legs: [
+    { field: 'P_L1', label: 'L1', validated: true },
+    { field: 'P_L2', label: 'L2', validated: false },
+  ],
+  historyDays:  7,    // reference days for the prediction and the daily bars
+  minCoverage:  0.8,  // a day needs >= 80% of its 5-min windows to be used as reference
+  staleAfterS:  120,  // live figures are hidden when the last sample is older than this
+}

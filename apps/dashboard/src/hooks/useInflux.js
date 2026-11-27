@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react'
+import { ENERGY } from '../config.js'
 
 const INFLUX_ORG   = 'iot-org'
 const BASE         = '/influx'  // nginx adds the read-only token (v0.1.61)
@@ -101,9 +102,21 @@ export function useFlux(flux, interval = 15000) {
   return { data, loading, error, refresh: run }
 }
 
-// Flux queries exactes de tes dashboards Grafana
-// Flux queries exactes de tes dashboards Grafana
+// Flux queries used by the tabs
 export const FLUX = {
+  // Whole-home power from the NILM bridge, one series per leg field.
+  // every=null returns raw samples (~1 Hz); otherwise window means stamped at the
+  // window START (timeSrc), so a window is attributed to the day it belongs to.
+  // start/stop are Flux expressions: '-2m', 'now()', 'time(v: "...")'.
+  nilmPower: (start, stop, every, bucket = ENERGY.bucket) => `
+from(bucket: "${bucket}")
+  |> range(start: ${start}, stop: ${stop})
+  |> filter(fn: (r) => r._measurement == "${ENERGY.measurement}")
+  |> filter(fn: (r) => ${ENERGY.legs.map(l => `r._field == "${l.field}"`).join(' or ')})
+  |> group(columns: ["_field"])${every ? `
+  |> aggregateWindow(every: ${every}, fn: mean, createEmpty: false, timeSrc: "_start")` : ''}
+  |> keep(columns: ["_time", "_field", "_value"])`,
+
   lastByDevice: (field, bucket = 'iot-hot') => `
 from(bucket: "${bucket}")
   |> range(start: -10m)
