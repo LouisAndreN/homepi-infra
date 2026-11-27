@@ -1,8 +1,10 @@
 import { useState, useMemo, useEffect, useRef } from 'react'
 import { useStore, DEFAULT_CONTRACT } from '../store/index.jsx'
 import { Modal } from '../components/Modal.jsx'
+import { CtPolarityGuide } from '../components/CtPolarityGuide.jsx'
+import { NilmCalibrationWizard } from '../components/NilmCalibrationWizard.jsx'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
-import { ENERGY } from '../config.js'
+import { ENERGY, API_BASE } from '../config.js'
 
 // Energy tab: live whole-home figures from the NILM pipeline
 // (Teensy -> XIAO ESP32-S3 -> MQTT iot/<id>/nilm -> Telegraf -> iot-hot/nilm_readings).
@@ -43,12 +45,27 @@ function percentile(a, p) {
 }
 
 // ─── Data shaping ──────────────────────────────────────────────────────────────
-const LEG_FIELDS = ENERGY.legs.map(l => l.field)
+const LEG_FIELDS = ENERGY.legs.map(l => l.field)   // fetched and shown per circuit
+const ctKeyOf = field => field.replace('P_L', '')
+
+// Per-leg state: the Pi calibration file (admin API) decides when it exists. A CT with a calibration
+// entry is in the total; before its calibrated_at its history is ignored unless the config trusts it
+// (L1 values from firmware v2 were roughly right, L2 had the wrong sign). Without the API, config.js.
+function resolveLegs(calibration) {
+  return ENERGY.legs.map(l => {
+    const c = calibration?.cts?.[ctKeyOf(l.field)]
+    if (!c) return { ...l, calibrated: false, since: null }
+    return { ...l, calibrated: true, validated: true, inTotal: true,
+      since: l.trustUncalibratedHistory ? null : Date.parse(c.calibrated_at),
+      I_scale: c.I_scale, phi_deg: c.phi_deg, calibrated_at: c.calibrated_at, reference: c.reference }
+  })
+}
 
 // InfluxDB rows {_time,_field,_value} -> time-sorted [{t, legs:{P_L1,P_L2}, w}]
-// Only samples carrying every configured leg are kept: both legs arrive in the
-// same MQTT message, so a half sample means a parse problem, not a real zero.
-function sumLegs(rows) {
+// w = sum of the legs in the total that are active at t (after their `since`). A point is kept only if
+// every such leg is present: both legs arrive in the same message, a half point is a parse problem.
+// Legs outside the total are optional (an uncalibrated CT has no P_Lk field on firmware v3).
+function sumLegs(rows, legs) {
   const byT = new Map()
   for (const r of rows) {
     if (!LEG_FIELDS.includes(r._field)) continue
@@ -60,8 +77,14 @@ function sumLegs(rows) {
   }
   const out = []
   for (const e of byT.values()) {
-    if (!LEG_FIELDS.every(f => f in e.legs)) continue
-    e.w = LEG_FIELDS.reduce((s, f) => s + e.legs[f], 0)
+    let ok = true, w = 0
+    for (const l of legs) {
+      const counted = l.inTotal && !(l.since && e.t < l.since)
+      if (!(l.field in e.legs)) { if (counted) { ok = false; break } e.legs[l.field] = null; continue }
+      if (counted) w += e.legs[l.field]
+    }
+    if (!ok) continue
+    e.w = w
     out.push(e)
   }
   return out.sort((a, b) => a.t - b.t)
@@ -89,7 +112,7 @@ function buildDays(points, stepMin, nowMs = Infinity) {
     const h = (stepMin / 60) * elapsed
     day.kwh[i] = p.w * h / 1000
     day.has[i] = true
-    for (const f of LEG_FIELDS) day.legKwh[f] += p.legs[f] * h / 1000
+    for (const f of LEG_FIELDS) if (p.legs[f] != null) day.legKwh[f] += p.legs[f] * h / 1000
   }
   for (const day of days.values()) {
     day.cum = [0]
@@ -524,6 +547,19 @@ export function EnergyTab() {
   const { activeContract, addContract, updateContract } = useStore()
   const [editingContract, setEditingContract] = useState(null)
   const [subTab, setSubTab] = useState('overview')
+  const [showCtGuide, setShowCtGuide] = useState(false)
+  const [showCalib, setShowCalib] = useState(false)
+  const [calibration, setCalibration] = useState(null)
+  const [calibError, setCalibError] = useState(null)
+  async function loadCalibration() {
+    try {
+      const r = await fetch(`${API_BASE}/api/admin/nilm/calibration`)
+      if (!r.ok) throw new Error(`HTTP ${r.status}`)
+      setCalibration(await r.json()); setCalibError(null)
+    } catch (e) { setCalibError(e.message) }
+  }
+  useEffect(() => { loadCalibration() }, [])
+  const legs = useMemo(() => resolveLegs(calibration), [calibration])
 
   const SUB_TABS = [
     { key: 'overview', label: 'Overview' },
@@ -550,15 +586,15 @@ export function EnergyTab() {
   const errors = [live.error && `live: ${live.error}`, tday.error && `today: ${tday.error}`, hist.error && `history: ${hist.error}`].filter(Boolean)
 
   // ── Live power: mean of the last 30 s of raw samples
-  const livePts = useMemo(() => sumLegs(live.data), [live.data])
-  const tdayPts = useMemo(() => sumLegs(tday.data), [tday.data])
+  const livePts = useMemo(() => sumLegs(live.data, legs), [live.data, legs])
+  const tdayPts = useMemo(() => sumLegs(tday.data, legs), [tday.data, legs])
   const lastT = livePts.at(-1)?.t ?? null
   const ageS = lastT != null ? Math.max(0, (now - lastT) / 1000) : null
   const stale = ageS == null || ageS > ENERGY.staleAfterS
   const recent = lastT != null ? livePts.filter(p => p.t >= lastT - 30000) : []
   const mean = (arr, f) => arr.length ? arr.reduce((s, p) => s + f(p), 0) / arr.length : null
   const liveW = stale ? null : mean(recent, p => p.w)
-  const liveLegs = Object.fromEntries(LEG_FIELDS.map(f => [f, stale ? null : mean(recent, p => p.legs[f])]))
+  const liveLegs = Object.fromEntries(LEG_FIELDS.map(f => { const r = recent.filter(p => p.legs[f] != null); return [f, stale || !r.length ? null : mean(r, p => p.legs[f])] }))
   const rateHz = livePts.length > 1 ? (livePts.length - 1) / ((livePts.at(-1).t - livePts[0].t) / 1000) : null
 
   // ── Today (1 min windows)
@@ -569,8 +605,24 @@ export function EnergyTab() {
   const peak = useMemo(() => powerPts.reduce((b, p) => (!b || p.v > b.v) ? p : b, null), [powerPts])
   const baseW = useMemo(() => percentile(powerPts.map(p => p.v), 0.05), [powerPts])
 
+  // ── CT polarity: per leg, over the last windowMin of 1-min means
+  const polarity = useMemo(() => {
+    const cfg = ENERGY.polarity, out = {}
+    const recentMin = tdayPts.filter(p => p.t >= now - cfg.windowMin * 60000)
+    for (const l of legs) {
+      const v = recentMin.map(p => p.legs[l.field]).filter(x => x != null)
+      if (cfg.hasGeneration || v.length < cfg.windowMin * 0.6) { out[l.field] = { state: 'unknown', meanW: null, windowMin: cfg.windowMin }; continue }
+      const meanW = v.reduce((a, b) => a + b, 0) / v.length
+      const negFrac = v.filter(x => x < -cfg.minW).length / v.length
+      const state = meanW < -cfg.minW && negFrac >= cfg.minNegFrac ? 'reversed' : Math.abs(meanW) < cfg.minW ? 'unknown' : 'ok'
+      out[l.field] = { state, meanW, windowMin: cfg.windowMin }
+    }
+    return out
+  }, [tdayPts, now, legs])
+  const reversedLegs = legs.filter(l => polarity[l.field]?.state === 'reversed')
+
   // ── History (5 min windows): yesterday, reference days, month to date
-  const histDays = useMemo(() => buildDays(sumLegs(hist.data), 5), [hist.data])
+  const histDays = useMemo(() => buildDays(sumLegs(hist.data, legs), 5), [hist.data, legs])
   const yesterday = histDays.get(dayKeyOf(addDays(today, -1))) || null
   const refDays = useMemo(() => {
     const out = []
@@ -633,7 +685,6 @@ export function EnergyTab() {
   }, [histDays, todayKey, todayKwh, todayCoverage]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const curPeriod = getCurrentPeriod()
-  const unvalidated = ENERGY.legs.filter(l => !l.validated).map(l => l.label)
 
   function handleSaveContract(form) {
     if (editingContract === 'new') addContract(form)
@@ -641,7 +692,8 @@ export function EnergyTab() {
     setEditingContract(null)
   }
 
-  const legSub = ENERGY.legs.map(l => `${l.label} ${fmtW(liveLegs[l.field])}`).join(' · ')
+  const legSub = legs.filter(l => l.inTotal).map(l => `${l.label} ${fmtW(liveLegs[l.field])}`).join(' + ')
+  const excluded = legs.filter(l => !l.inTotal).map(l => l.label)
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', overflow: 'hidden' }}>
@@ -677,6 +729,19 @@ export function EnergyTab() {
       {errors.length > 0 && (
         <div role="alert" style={{ margin: 'var(--sp-2) var(--sp-4) 0', padding: 'var(--sp-2) var(--sp-3)', borderRadius: 'var(--r-sm)', border: '0.5px solid var(--danger)', color: 'var(--danger)', fontSize: 'var(--fs-xs)', fontFamily: 'var(--mono)' }}>
           ⚠ InfluxDB query failed ({errors.join(' · ')}). Figures below may be incomplete.
+        </div>
+      )}
+
+      {reversedLegs.length > 0 && (
+        <div role="alert" style={{ margin: 'var(--sp-2) var(--sp-4) 0', padding: 'var(--sp-2) var(--sp-3)', borderRadius: 'var(--r-sm)', border: '0.5px solid var(--danger)', background: 'var(--bg2)', display: 'flex', alignItems: 'center', gap: 'var(--sp-2)', fontSize: 'var(--fs-sm)', flexWrap: 'wrap' }}>
+          <span aria-hidden="true" style={{ color: 'var(--danger)' }}>⚠</span>
+          <span style={{ fontWeight: 700 }}>CT {reversedLegs.map(l => l.label).join(' + ')} looks reversed</span>
+          <span style={{ color: 'var(--text3)', fontSize: 'var(--fs-xs)' }}>
+            {reversedLegs.map(l => `${Math.round(polarity[l.field].meanW)} W`).join(', ')} mean over {ENERGY.polarity.windowMin} min ·{' '}
+            {reversedLegs.some(l => l.inTotal) ? 'whole-home figures are wrong until fixed' : 'excluded from the whole-home total'}
+          </span>
+          <button onClick={() => setShowCtGuide(true)} className="hp-focus-visible"
+            style={{ marginLeft: 'auto', padding: 'var(--sp-1) var(--sp-3)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)', fontWeight: 700, border: '0.5px solid var(--border)', background: 'var(--bg3)', color: 'var(--text)', cursor: 'pointer' }}>Show fix</button>
         </div>
       )}
 
@@ -765,9 +830,9 @@ export function EnergyTab() {
           {/* Data provenance: what the numbers are made of */}
           <Section title="Data source" last>
             <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)', fontFamily: 'var(--mono)', lineHeight: 1.7 }}>
-              <div>{ENERGY.bucket}/{ENERGY.measurement} · {ENERGY.legs.map(l => l.field).join(' + ')} · {isNum(rateHz) ? `${rateHz.toFixed(2)} Hz` : '—'} · history {histDays.size} day{histDays.size === 1 ? '' : 's'} loaded</div>
+              <div>{ENERGY.bucket}/{ENERGY.measurement} · total = {legs.filter(l => l.inTotal).map(l => l.field).join(' + ') || '—'} · {isNum(rateHz) ? `${rateHz.toFixed(2)} Hz` : '—'} · history {histDays.size} day{histDays.size === 1 ? '' : 's'} loaded</div>
               <div>Energy = window mean × window length (1 min today, 5 min history); windows without data count as 0 and lower the coverage.</div>
-              {unvalidated.length > 0 && <div style={{ color: 'var(--warn)' }}>⚠ {unvalidated.join(', ')} CT calibration and polarity not validated yet: included in the whole-home total.</div>}
+              {excluded.length > 0 && <div style={{ color: 'var(--warn)' }}>⚠ Whole-home figures exclude {excluded.join(', ')}: CT polarity and calibration not validated yet (see Per-device).</div>}
             </div>
           </Section>
         </div>
@@ -777,16 +842,42 @@ export function EnergyTab() {
         <div style={{ flex: 1, overflow: 'auto' }}>
           <Section title="Per circuit (measured)">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 'var(--sp-2)' }}>
-              {ENERGY.legs.map(l => (
+              {legs.map(l => (
                 <div key={l.field} className="hp-card" style={{ padding: 'var(--sp-3)' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 'var(--fs-xs)', color: 'var(--text3)', marginBottom: 'var(--sp-1)' }}>
                     <span>Circuit {l.label}</span>
-                    <span style={{ color: l.validated ? 'var(--text3)' : 'var(--warn)' }}>{l.validated ? '✓ calibrated' : '⚠ not validated'}</span>
+                    <span style={{ color: l.validated ? 'var(--text3)' : 'var(--warn)' }}>{l.calibrated ? '✓ calibrated on the Pi' : l.validated ? '✓ firmware v2 scale' : '⚠ not calibrated'}{l.inTotal ? '' : ' · not in total'}</span>
                   </div>
                   <div style={{ fontSize: 'var(--fs-md)', fontFamily: 'var(--mono)', fontWeight: 700 }}>{fmtW(liveLegs[l.field])}</div>
                   <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)', marginTop: 2 }}>today {fmtKwh(todayDay?.legKwh?.[l.field])}</div>
+                  <div style={{ fontSize: 'var(--fs-xs)', marginTop: 'var(--sp-1)', color: polarity[l.field]?.state === 'reversed' ? 'var(--danger)' : 'var(--text3)' }}>
+                    Polarity: {{ ok: '✓ OK', reversed: '⚠ reversed', unknown: '— load too low to tell' }[polarity[l.field]?.state || 'unknown']}
+                  </div>
                 </div>
               ))}
+            </div>
+          </Section>
+          <Section title="Calibration (on the Pi)" right={
+            <button onClick={() => setShowCalib(true)} className="hp-focus-visible"
+              style={{ padding: 'var(--sp-1) var(--sp-3)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)', fontWeight: 700, border: 'none', background: 'var(--accent-vivid)', color: '#fff', cursor: 'pointer' }}>Calibrate NILM</button>}>
+            {calibError && <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--warn)' }}>⚠ Calibration state unavailable ({calibError}): config.js defaults in use.</div>}
+            {calibration && (
+              <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)', fontFamily: 'var(--mono)', lineHeight: 1.8 }}>
+                <div>version {calibration.version || 0}{calibration.updated_at ? ` · ${calibration.updated_at}` : ' · never calibrated'}</div>
+                <div>V_scale {calibration.V_scale ? calibration.V_scale.toFixed(3) : '—'}{calibration.voltage ? ` (${calibration.voltage.method}, ${calibration.voltage.reference_V} V)` : ''}</div>
+                {legs.map(l => (
+                  <div key={l.field}>CT {ctKeyOf(l.field)} ({l.label}): {l.calibrated
+                    ? `I_scale ${l.I_scale.toFixed(3)} · φ ${l.phi_deg.toFixed(2)}°${Math.abs(l.phi_deg) > 90 ? ' (mounted reversed, corrected in software)' : ''} · ${l.reference?.method || ''}`
+                    : 'not calibrated'}</div>
+                ))}
+              </div>
+            )}
+          </Section>
+          <Section title="CT orientation" right={
+            <button onClick={() => setShowCtGuide(true)} className="hp-focus-visible"
+              style={{ padding: 'var(--sp-1) var(--sp-3)', borderRadius: 'var(--r-sm)', fontSize: 'var(--fs-xs)', fontWeight: 600, border: '0.5px solid var(--border)', background: 'var(--bg2)', color: 'var(--text2)', cursor: 'pointer' }}>Open guide</button>}>
+            <div style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)' }}>
+              Checked continuously: sustained negative power on a leg (no generation configured) means the CT is mounted the wrong way round.
             </div>
           </Section>
           <div style={{ padding: 'var(--sp-4)', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', minHeight: 220, gap: 'var(--sp-2)', textAlign: 'center' }}>
@@ -798,6 +889,18 @@ export function EnergyTab() {
             </div>
           </div>
         </div>
+      )}
+
+      {showCtGuide && (
+        <Modal onClose={() => setShowCtGuide(false)}>
+          <CtPolarityGuide legs={legs} states={polarity} onClose={() => setShowCtGuide(false)} />
+        </Modal>
+      )}
+
+      {showCalib && (
+        <Modal onClose={() => {}}>
+          <NilmCalibrationWizard current={calibration} onClose={() => setShowCalib(false)} onSaved={s => setCalibration(s)} />
+        </Modal>
       )}
 
       {editingContract && (

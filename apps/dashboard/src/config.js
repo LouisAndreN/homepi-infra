@@ -60,12 +60,29 @@ export const APPLIANCES = [
 export const ENERGY = {
   bucket:      'iot-hot',
   measurement: 'nilm_readings',
-  // Legs summed into the whole-home figure (single-phase three-wire: L1 + L2).
-  // validated:false is shown as a warning in the UI until the CT is characterised.
+  // Metered legs (single-phase three-wire). inTotal: summed into the whole-home
+  // figure. A leg stays out of the total until its CT polarity and scale are
+  // validated with a known load: on 2026-11-27 P_L2 integrated to -0.99 kWh over
+  // the day (CT reversed / polarity not set), which would have under-reported
+  // the home by ~1 kWh. Fix the polarity server-side (nilm_calibration.json),
+  // then set validated and inTotal to true.
   legs: [
-    { field: 'P_L1', label: 'L1', validated: true },
-    { field: 'P_L2', label: 'L2', validated: false },
+    // wire: which cable the CT is clamped on (L1 = R/red, L2 = T/black), used by the polarity guide
+    // Defaults until the CT is calibrated on the Pi (then the calibration file decides).
+    // trustUncalibratedHistory: keep this leg's readings from before its calibration (L1 from
+    // firmware v2 was roughly right; L2 had the wrong sign, so its old history is ignored).
+    { field: 'P_L1', label: 'L1', wire: 'L1', validated: true,  inTotal: true,  trustUncalibratedHistory: true },
+    { field: 'P_L2', label: 'L2', wire: 'L2', validated: false, inTotal: false, trustUncalibratedHistory: false },
   ],
+  // Reversed-CT detection. Without generation (no PV, no battery), sustained
+  // negative active power on a leg can only mean a reversed CT or polarity.
+  // Set hasGeneration: true if export ever becomes possible: detection turns off.
+  polarity: {
+    hasGeneration: false,
+    windowMin:     15,   // look-back on the 1-min means
+    minW:          15,   // |mean| below this is noise: state "unknown"
+    minNegFrac:    0.7,  // share of minutes below -minW to call it reversed
+  },
   historyDays:  7,    // reference days for the prediction and the daily bars
   minCoverage:  0.8,  // a day needs >= 80% of its 5-min windows to be used as reference
   staleAfterS:  120,  // live figures are hidden when the last sample is older than this

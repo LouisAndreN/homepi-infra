@@ -53,6 +53,26 @@
     state: absent
   register: telegraf_legacy_dropin
 
+# NILM calibration (firmware v3): the processor is code (root, GitOps), the calibration file is state
+# (written by the admin API as homepi-api, read by Telegraf through the group, backed up nightly with
+# /var/lib/homepi). setgid keeps the group telegraf on the files the API creates. Content never managed here.
+- name: NILM calibration processor
+  ansible.builtin.copy:
+    src: homepi-nilm-calibrate
+    dest: /usr/local/sbin/homepi-nilm-calibrate
+    owner: root
+    group: root
+    mode: "0755"
+  register: telegraf_nilm_processor
+
+- name: NILM calibration state directory (API writes, Telegraf reads)
+  ansible.builtin.file:
+    path: /var/lib/homepi/nilm
+    state: directory
+    owner: homepi-api
+    group: telegraf
+    mode: "2750"
+
 - name: Telegraf inputs and output
   ansible.builtin.copy:
     src: "{{ item }}"
@@ -94,14 +114,14 @@
   failed_when: telegraf_test.rc != 0 or 'E!' in (telegraf_test.stdout + telegraf_test.stderr)
   when:
     - not ansible_check_mode
-    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed
+    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed
 
 - name: Telegraf restarted on the new configuration
   ansible.builtin.systemd:
     name: telegraf
     state: restarted
     daemon_reload: true
-  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed
+  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed
 
 - name: Telegraf enabled and running
   ansible.builtin.systemd:

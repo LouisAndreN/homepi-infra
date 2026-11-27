@@ -28,6 +28,7 @@ from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 from versions import same_version
 import rollout
+import nilm_calibration
 from urllib.parse import unquote
 from cryptography import x509
 
@@ -757,6 +758,35 @@ async def save_floorplans(request: Request):
     data = await request.json()
     FLOORPLAN_PATH.write_text(json.dumps(data))
     return {"status": "saved"}
+
+
+# ======================================
+# NILM CALIBRATION    /api/admin/nilm/*
+# ======================================
+# State file read by the Telegraf processor homepi-nilm-calibrate (hot reload). The dashboard wizard
+# measures and computes; the API validates the bounds, versions the file and keeps the history.
+
+@app.get("/api/admin/nilm/calibration")
+async def get_nilm_calibration():
+    return nilm_calibration.load()
+
+
+@app.put("/api/admin/nilm/calibration")
+async def put_nilm_calibration(update: nilm_calibration.CalibrationUpdate):
+    try:
+        new = nilm_calibration.merge(nilm_calibration.load(), update)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    nilm_calibration.save(new)
+    parts = (["V"] if update.voltage else []) + [f"CT{k}" for k in sorted(update.cts)]
+    audit("nilm", "nilm_calibration_saved",
+          f"version={new['version']} parts={','.join(parts)} note={update.note[:80]}", "operator")
+    return new
+
+
+@app.get("/api/admin/nilm/calibration/history")
+async def get_nilm_calibration_history(limit: int = 50):
+    return {"history": nilm_calibration.history(limit=max(1, min(limit, 200)))}
 
 
 # ======================================

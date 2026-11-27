@@ -1,0 +1,243 @@
+#!/usr/bin/env python3
+"""homepi-nilm-calibrate: Telegraf execd processor for the NILM readings.
+
+Telegraf pipes every metric of measurement nilm_readings through this
+process (line protocol on stdin, line protocol on stdout). Firmware v3
+publishes RAW normalised values (V_n, Ik_n, Pk_n, Qk_n, dS_n). This
+processor adds the physical values computed with the calibration file:
+
+    V_rms  = V_n  * V_scale
+    Ik_rms = Ik_n * Ik_scale
+    P_Lk   = V_scale * Ik_scale * ( Pk_n cos(phik) + Qk_n sin(phik))
+    Q_Lk   = V_scale * Ik_scale * ( Qk_n cos(phik) - Pk_n sin(phik))
+    S_Lk   = V_rms * Ik_rms,  PF_Lk = P_Lk / S_Lk
+
+phik (measured on a resistive load) absorbs the residual board delay and
+the CT orientation: a reversed CT has phik ~ 180 degrees.
+
+Rules:
+  * Raw fields are always kept, so history can be recomputed after a
+    recalibration.
+  * A CT without a calibration entry gets NO physical fields: missing is
+    better than invented. V needs V_scale; P/Q/S/PF need both scales.
+  * calib_version is added to every converted point.
+  * Metrics without V_n (firmware v2, other measurements) pass through
+    unchanged.
+  * The calibration file is re-read when its mtime changes (checked at
+    most once per second), so a calibration from the dashboard applies
+    without restarting Telegraf. An unreadable or invalid file keeps the
+    last good calibration and logs to stderr (Telegraf journal).
+
+Standard library only: runs on the system python3 as the telegraf user.
+"""
+import json
+import math
+import os
+import sys
+import time
+
+DEFAULT_CONFIG = "/var/lib/homepi/nilm/calibration.json"
+MEASUREMENT = "nilm_readings"
+RELOAD_CHECK_S = 1.0
+
+
+def log(msg):
+    print(f"homepi-nilm-calibrate: {msg}", file=sys.stderr, flush=True)
+
+
+# ── Line protocol ───────────────────────────────────────────────────────────
+# Minimal but escape-correct parser/serialiser for what Telegraf emits.
+def _split_unescaped(s, sep, quotes=False):
+    """Split on sep outside backslash escapes (and outside double quotes)."""
+    out, cur, i, inq = [], [], 0, False
+    while i < len(s):
+        c = s[i]
+        if c == "\\" and i + 1 < len(s):
+            cur.append(s[i:i + 2]); i += 2; continue
+        if quotes and c == '"':
+            inq = not inq
+        elif c == sep and not inq:
+            out.append("".join(cur)); cur = []; i += 1; continue
+        cur.append(c); i += 1
+    out.append("".join(cur))
+    return out
+
+
+def parse_line(line):
+    """-> (measurement_and_tags_raw, measurement, fields(list of (k_raw, v_raw)), ts_raw) or None."""
+    parts = _split_unescaped(line, " ", quotes=True)
+    parts = [p for p in parts if p != ""]
+    if len(parts) < 2:
+        return None
+    head, fields_raw = parts[0], parts[1]
+    ts = parts[2] if len(parts) > 2 else None
+    measurement = _split_unescaped(head, ",")[0].replace("\\,", ",").replace("\\ ", " ")
+    fields = []
+    for kv in _split_unescaped(fields_raw, ",", quotes=True):
+        k, _, v = kv.partition("=")
+        fields.append((k, v))
+    return head, measurement, fields, ts
+
+
+def field_value(v):
+    """Numeric value of a raw field (float, 12i, 12u, true/false), or None for strings."""
+    if not v or v.startswith('"'):
+        return None
+    if v[-1] in "iu":
+        try:
+            return float(int(v[:-1]))
+        except ValueError:
+            return None
+    if v in ("t", "T", "true", "True", "TRUE"):
+        return None
+    if v in ("f", "F", "false", "False", "FALSE"):
+        return None
+    try:
+        return float(v)
+    except ValueError:
+        return None
+
+
+def fmt_float(x):
+    r = repr(float(x))
+    return r if ("e" in r or "." in r or "inf" in r or "nan" in r) else r + ".0"
+
+
+# ── Calibration ─────────────────────────────────────────────────────────────
+class Calibration:
+    def __init__(self, path):
+        self.path = path
+        self.mtime = None
+        self.data = None
+        self.last_check = 0.0
+
+    def maybe_reload(self, now):
+        if now - self.last_check < RELOAD_CHECK_S and self.data is not None:
+            return
+        self.last_check = now
+        try:
+            mtime = os.stat(self.path).st_mtime_ns
+        except FileNotFoundError:
+            if self.data is not None or self.mtime != "missing":
+                log(f"{self.path} missing: raw values only")
+            self.mtime, self.data = "missing", None
+            return
+        except OSError as e:
+            log(f"cannot stat {self.path}: {e}")
+            return
+        if mtime == self.mtime:
+            return
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                data = json.load(fh)
+            self.data = validate(data)
+            self.mtime = mtime
+            log(f"loaded calibration version {self.data['version']} "
+                f"(V_scale={'yes' if self.data['V_scale'] else 'no'}, "
+                f"CTs={sorted(self.data['cts'])})")
+        except Exception as e:  # keep the last good calibration
+            self.mtime = mtime
+            log(f"invalid {self.path} ({e}): keeping calibration "
+                f"{self.data['version'] if self.data else 'none'}")
+
+
+def validate(d):
+    if d.get("schema") != 1:
+        raise ValueError("schema must be 1")
+    version = int(d["version"])
+    vs = d.get("V_scale")
+    vs = float(vs) if vs is not None else None
+    if vs is not None and not (vs > 0 and math.isfinite(vs)):
+        raise ValueError("V_scale must be > 0")
+    cts = {}
+    for k, ct in (d.get("cts") or {}).items():
+        if k not in ("1", "2"):
+            raise ValueError(f"unknown CT {k}")
+        s = float(ct["I_scale"])
+        phi = float(ct["phi_deg"])
+        if not (s > 0 and math.isfinite(s) and math.isfinite(phi)):
+            raise ValueError(f"CT {k}: bad I_scale/phi_deg")
+        cts[k] = {"I_scale": s, "phi": math.radians(phi)}
+    return {"version": version, "V_scale": vs, "cts": cts}
+
+
+def convert(vals, cal):
+    """vals: dict of numeric raw fields. Returns dict of physical fields to add."""
+    out = {}
+    if cal is None:
+        return out
+    vs = cal["V_scale"]
+    if vs is None:
+        return out
+    V = vals["V_n"] * vs
+    out["V_rms"] = V
+    for k in ("1", "2"):
+        ct = cal["cts"].get(k)
+        In, Pn, Qn = vals.get(f"I{k}_n"), vals.get(f"P{k}_n"), vals.get(f"Q{k}_n")
+        if ct is None or In is None or Pn is None or Qn is None:
+            continue
+        g = vs * ct["I_scale"]
+        c, s = math.cos(ct["phi"]), math.sin(ct["phi"])
+        I = In * ct["I_scale"]
+        P = g * (Pn * c + Qn * s)
+        Q = g * (Qn * c - Pn * s)
+        S = V * I
+        out[f"I{k}_rms"] = I
+        out[f"P_L{k}"] = P
+        out[f"Q_L{k}"] = Q
+        out[f"S_L{k}"] = S
+        out[f"PF_L{k}"] = (P / S) if S > 1e-9 else 0.0
+    dS = vals.get("dS_n")
+    scales = [cal["cts"][k]["I_scale"] for k in ("1", "2") if k in cal["cts"]]
+    if dS is not None and scales:
+        out["delta_S"] = dS * vs * (sum(scales) / len(scales))
+    out["calib_version"] = float(cal["version"])
+    return out
+
+
+def process_line(line, cal):
+    p = parse_line(line)
+    if p is None:
+        return line
+    head, measurement, fields, ts = p
+    if measurement != MEASUREMENT:
+        return line
+    vals = {}
+    for k, v in fields:
+        x = field_value(v)
+        if x is not None:
+            vals[k] = x
+    if "V_n" not in vals:
+        return line      # firmware v2 or unrelated: untouched
+    add = convert(vals, cal)
+    if not add:
+        return line
+    existing = {k for k, _ in fields}
+    extra = [f"{k}={fmt_float(v)}" for k, v in add.items() if k not in existing]
+    if not extra:
+        return line
+    new_fields = ",".join([f"{k}={v}" for k, v in fields] + extra)
+    return f"{head} {new_fields}" + (f" {ts}" if ts else "")
+
+
+def main(argv):
+    path = DEFAULT_CONFIG
+    if len(argv) >= 3 and argv[1] == "--config":
+        path = argv[2]
+    cal = Calibration(path)
+    for raw in sys.stdin:
+        line = raw.rstrip("\n")
+        if not line:
+            continue
+        try:
+            cal.maybe_reload(time.monotonic())
+            out = process_line(line, cal.data)
+        except Exception as e:   # never drop a metric because of a bug here
+            log(f"error on a line ({e}): passed through unchanged")
+            out = line
+        sys.stdout.write(out + "\n")
+        sys.stdout.flush()
+
+
+if __name__ == "__main__":
+    main(sys.argv)

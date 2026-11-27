@@ -104,7 +104,7 @@ export function useFlux(flux, interval = 15000) {
 
 // Flux queries used by the tabs
 export const FLUX = {
-  // Whole-home power from the NILM bridge, one series per leg field.
+  // Power from the NILM bridge, one series per configured leg (total and per-circuit views).
   // every=null returns raw samples (~1 Hz); otherwise window means stamped at the
   // window START (timeSrc), so a window is attributed to the day it belongs to.
   // start/stop are Flux expressions: '-2m', 'now()', 'time(v: "...")'.
