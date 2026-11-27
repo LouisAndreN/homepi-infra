@@ -9,6 +9,7 @@ import { FleetTab }     from './tabs/FleetTab.jsx'
 import { LedTab }       from './tabs/LedTab.jsx'
 import { SettingsTab }  from './tabs/SettingsTab.jsx'
 import { currentEditorMode } from './editorMode.js'
+import { APP_VERSION } from './version.js'
 import './styles/tokens.css'
 import { createPortal } from 'react-dom'
 
@@ -103,7 +104,8 @@ function SidebarDesktop({ tabs, active, onSelect, collapsed, onToggleCollapse })
       </button>
       {!collapsed && (
         <div style={{ padding:'var(--sp-2) var(--sp-4)', borderTop:'0.5px solid var(--border)', fontSize:'var(--fs-2xs)', color:'var(--text3)' }}>
-          homepi.internal · Zero-Trust IoT
+          <div>homepi.internal · Zero-Trust IoT</div>
+          <div style={{ fontFamily:'var(--mono)', marginTop:2 }} title="Dashboard release · loaded bundle">{versionLabel()}</div>
         </div>
       )}
     </nav>
@@ -178,6 +180,8 @@ function Logo(){
 // useNewVersion(): compares the bundle this page runs with the one the Pi serves now (index.html,
 // no-store), every 5 min and whenever the app comes back to the foreground.
 const currentBundle = () => document.querySelector('script[type="module"][src*="/assets/index-"]')?.getAttribute('src') || null
+// "v1.3.4 · COEMsjAk": release tag + hash of the bundle loaded in this page (dev: no hash)
+const versionLabel = () => { const h = currentBundle()?.match(/index-([\w-]+)\.js/)?.[1]; return h ? `${APP_VERSION} · ${h}` : `${APP_VERSION} · dev` }
 
 async function hardRefresh(){
   try{
@@ -229,7 +233,7 @@ function NewVersionBanner(){
     <div role="status" style={{ position:'fixed', left:'50%', bottom:'calc(var(--bottomnav-h, 0px) + 12px)', transform:'translateX(-50%)', zIndex:900,
       display:'flex', alignItems:'center', gap:'var(--sp-3)', padding:'var(--sp-2) var(--sp-3)', borderRadius:'var(--r-md, 10px)',
       background:'var(--bg2)', border:'0.5px solid var(--accent-vivid)', boxShadow:'var(--shadow-3)', fontSize:'var(--fs-sm)' }}>
-      <span>A new dashboard version is deployed.</span>
+      <span>A new dashboard version is deployed (running {APP_VERSION}).</span>
       <RefreshButton label="Reload"/>
     </div>
   )
@@ -247,7 +251,8 @@ function Topbar({ current }){
       <span style={{ fontSize:'var(--fs-md)', fontWeight:700, letterSpacing:'-.02em' }}>HomePi</span>
       <div style={{ width:1, height:16, background:'var(--border)', marginLeft:2 }}/>
       <span style={{ fontSize:'var(--fs-base)', color:'var(--text2)' }}>{current.label}</span>
-      <div style={{ marginLeft:'auto' }}><RefreshButton/></div>
+      <span style={{ marginLeft:'auto', fontSize:'var(--fs-2xs)', color:'var(--text3)', fontFamily:'var(--mono)' }} title="Dashboard release · loaded bundle">{APP_VERSION}</span>
+      <RefreshButton/>
     </div>
   )
 }

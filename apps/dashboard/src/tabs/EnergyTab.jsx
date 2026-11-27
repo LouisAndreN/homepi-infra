@@ -4,6 +4,7 @@ import { Modal } from '../components/Modal.jsx'
 import { CtPolarityGuide } from '../components/CtPolarityGuide.jsx'
 import { NilmCalibrationWizard } from '../components/NilmCalibrationWizard.jsx'
 import { RoomTimeline } from '../components/RoomTimeline.jsx'
+import { EnergyCalendar } from '../components/EnergyCalendar.jsx'
 import { eventIntervals, findGaps, classifyGaps } from '../energy/timelineEvents.js'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
 import { ENERGY, API_BASE } from '../config.js'
@@ -767,6 +768,10 @@ export function EnergyTab() {
           <Section title={`Daily energy · last ${ENERGY.historyDays} days`} right={
             <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>faded = partial day or &lt;{Math.round(ENERGY.minCoverage * 100)}% data</span>}>
             <DailyBars bars={bars} />
+          </Section>
+
+          <Section title="Daily energy calendar">
+            <EnergyCalendar legs={legs} />
           </Section>
 
           {/* Month to date + tiers */}

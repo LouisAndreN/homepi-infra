@@ -13,7 +13,8 @@ import { API_BASE } from '../config.js'
 // "relative state" axis (it hides the real values and invites misreading).
 //  - The range selector (top) and the event strip (bottom) float over the charts while scrolling.
 //  - Every event's start and end are drawn through all panels.
-//  - Missing NILM readings are hatched grey on the power panel, never filled.
+//  - Missing NILM readings are hatched on every panel (grey; orange when a Teensy update caused them),
+//    never filled. One incident is drawn once: a gap caused by an update is shown as that update only.
 //  - Hover moves a cursor; a click pins it (values stay in the legends), Esc or a click on the pin clears it.
 //  - Each legend always shows the latest value, and the value under the cursor when there is one.
 //  - Routines (declared recurring events) are drawn like events, but outlined: declared, not measured.
@@ -126,10 +127,13 @@ function Panel({ id, title, unit, digits, series, from, to, cursor, onHover, onP
           <pattern id={hatch} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
             <line x1="0" y1="0" x2="0" y2="6" stroke="var(--text3)" strokeWidth="2" opacity="0.55" />
           </pattern>
+          <pattern id={`${hatch}-u`} patternUnits="userSpaceOnUse" width="6" height="6" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke="var(--warn)" strokeWidth="2" opacity="0.6" />
+          </pattern>
         </defs>
         {gaps.map((g, i) => {
           const x0 = Math.max(PAD.l, x(g.start)), x1 = Math.min(PAD.l + PW, x(g.end))
-          return x1 > x0 ? <rect key={i} x={x0} y={0} width={Math.max(1, x1 - x0)} height={H} fill={`url(#${hatch})`}><title>{g.cause ? 'Teensy update: no NILM readings' : 'No NILM readings (not filled)'}</title></rect> : null
+          return x1 > x0 ? <rect key={i} x={x0} y={0} width={Math.max(1, x1 - x0)} height={H} fill={`url(#${g.cause ? `${hatch}-u` : hatch})`}><title>{g.cause ? 'Teensy update: no NILM readings' : 'No NILM readings (not filled)'}</title></rect> : null
         })}
         <EventMarks events={events} x={x} H={H} />
         {sc.ticks.map(v => (
@@ -190,7 +194,7 @@ function EventStrip({ lanes, from, to, cursor, onHover, onPin, onPinAt, long }) 
         {tip && (
           <div style={{ position: 'absolute', bottom: '100%', left: `${(tip.px / W) * 100}%`, transform: tip.px > W * 0.6 ? 'translateX(calc(-100% - 8px))' : 'translateX(8px)', pointerEvents: 'none',
             background: 'var(--bg2)', border: '0.5px solid var(--border)', borderRadius: 'var(--r-sm)', padding: '6px 8px', fontSize: 'var(--fs-2xs)', whiteSpace: 'nowrap', boxShadow: 'var(--shadow-3)', zIndex: 3 }}>
-            <div style={{ fontWeight: 700 }}>{tip.ev.kind === 'gap' && tip.ev.cause ? 'Teensy update (no readings)' : tip.ev.kind === 'routine' ? `${tip.ev.detail} (declared)` : KIND_LABEL[tip.ev.kind] || tip.ev.kind}{tip.ev.ongoing ? ' · ongoing' : ''}</div>
+            <div style={{ fontWeight: 700 }}>{tip.ev.kind === 'teensy_update' && tip.ev.noReadings ? 'Teensy update · no NILM readings' : tip.ev.kind === 'routine' ? `${tip.ev.detail} (declared)` : KIND_LABEL[tip.ev.kind] || tip.ev.kind}{tip.ev.ongoing ? ' · ongoing' : ''}</div>
             <div style={{ fontFamily: 'var(--mono)', color: 'var(--text2)' }}>{fmtT(tip.ev.start, true)}{tip.ev.instant ? '' : ` → ${tip.ev.ongoing ? 'now' : fmtT(tip.ev.end, true)} (${Math.round((tip.ev.end - tip.ev.start) / 60000)} min)`}</div>
             {tip.ev.kind !== 'routine' && (tip.ev.detail || tip.ev.device) && <div style={{ color: 'var(--text3)' }}>{[tip.ev.device, tip.ev.detail].filter(Boolean).join(' · ')}</div>}
           </div>
@@ -262,10 +266,19 @@ export function RoomTimeline({ legs }) {
   }, [envPanels.find(p => p.m.field === 'lux')?.series, now]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const routineEvents = useMemo(() => expandRoutines(routines, from, to), [routines, from, to])
-  const allEvents = [...evs, ...luxEvents, ...routineEvents]
+  // One incident, one mark: an update that caused a gap spans the gap and carries the "no readings" flag;
+  // the gap lane keeps only the gaps nothing explains; the charts hatch the gap instead of a second band.
+  const overlaps = (a, b) => a.start <= b.end && b.start <= a.end
+  const updates = evs.filter(e => e.kind === 'teensy_update').map(u => {
+    const gs = gaps.filter(g => g.cause && overlaps(g, u))
+    return gs.length ? { ...u, start: Math.min(u.start, ...gs.map(g => g.start)), end: Math.max(u.end, ...gs.map(g => g.end)), noReadings: true } : u
+  })
+  const otherEvs = evs.filter(e => e.kind !== 'teensy_update')
+  const allEvents = [...otherEvs, ...updates.filter(u => !u.noReadings), ...luxEvents, ...routineEvents]   // marks through the charts
+  const stripEvents = [...otherEvs, ...updates, ...luxEvents, ...routineEvents]
   const appliancesByRoom = rooms.filter(r => r.appliances.length).map(r => `${r.label.split(' · ')[0]}: ${r.appliances.map(a => a.label).join(', ')}`)
   const kinds = ['gap', 'teensy_update', 'ota', 'capture', 'appliance', 'light', 'routine']
-  const lanes = kinds.map(k => ({ kind: k, label: KIND_LABEL[k], items: k === 'gap' ? gaps : allEvents.filter(e => e.kind === k) }))
+  const lanes = kinds.map(k => ({ kind: k, label: KIND_LABEL[k], items: k === 'gap' ? gaps.filter(g => !g.cause) : stripEvents.filter(e => e.kind === k) }))
     .filter(l => l.kind === 'gap' || l.kind === 'teensy_update' || l.kind === 'routine' || l.items.length)
   const long = R.ms > 24 * 3600e3
   const panelProps = { from, to, cursor, onHover: setHoverT, onPin, onPinAt }
@@ -299,7 +312,7 @@ export function RoomTimeline({ legs }) {
         <Panel id="power" title="Power" unit="W · whole home" digits={0} series={powerSeries} gaps={gaps} events={allEvents} zeroFloor {...panelProps}
           note={`Per-room energy needs NILM Layer 1 (appliance labels).${appliancesByRoom.length ? ` On the plan: ${appliancesByRoom.join(' · ')}` : ''}`} />
         {envPanels.map(({ m, series }) => (
-          <Panel key={m.field} id={m.field} title={m.label} unit={m.unit} digits={m.digits} series={series} gaps={[]} events={allEvents}
+          <Panel key={m.field} id={m.field} title={m.label} unit={m.unit} digits={m.digits} series={series} gaps={gaps} events={allEvents}
             zeroFloor={m.field === 'lux'} H={m.compact ? 64 : 96} {...panelProps} />
         ))}
         <div style={{ height: 'var(--sp-2)' }} />
@@ -310,7 +323,7 @@ export function RoomTimeline({ legs }) {
         <EventStrip lanes={lanes} long={long} {...panelProps} />
         <div style={{ display: 'flex', gap: 'var(--sp-3)', flexWrap: 'wrap', padding: '2px var(--sp-3) var(--sp-1)', fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>
           <span><svg width="14" height="8" aria-hidden="true"><rect width="14" height="8" fill="url(#hatch-strip)" /></svg> no NILM readings (not filled)</span>
-          <span><span style={{ display: 'inline-block', width: 12, height: 8, background: 'var(--warn)', verticalAlign: 'middle', marginRight: 4 }} />Teensy update: values around it may be wrong</span>
+          <span><svg width="14" height="8" aria-hidden="true"><rect width="14" height="8" fill="var(--warn)" opacity="0.5" /></svg> Teensy update (hatched while there are no readings): values around it may be wrong</span>
           <span>Light: lux steps (switching), daylight drift ignored · coarse at {R.every} resolution</span>
           <span><svg width="14" height="8" aria-hidden="true"><rect x="1" y="1" width="12" height="6" fill="none" stroke="#9887ef" strokeWidth="1.5" /></svg> routine (declared, not measured)</span>
         </div>

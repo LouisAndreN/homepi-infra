@@ -104,6 +104,20 @@ export function useFlux(flux, interval = 15000) {
 
 // Flux queries used by the tabs
 export const FLUX = {
+  // Daily sum (fn: "sum") or count (fn: "count") of 5-min power means per leg, days in local time (tz):
+  // energy and coverage of each day for the calendar. Server side: ~2 x 30 rows instead of 17k points.
+  nilmDaily: (fn, days, tz, bucket = ENERGY.bucket) => `
+import "timezone"
+option location = timezone.location(name: "${tz}")
+from(bucket: "${bucket}")
+  |> range(start: -${days}d)
+  |> filter(fn: (r) => r._measurement == "${ENERGY.measurement}")
+  |> filter(fn: (r) => ${ENERGY.legs.map(l => `r._field == "${l.field}"`).join(' or ')})
+  |> group(columns: ["_field"])
+  |> aggregateWindow(every: 5m, fn: mean, createEmpty: false)
+  |> aggregateWindow(every: 1d, fn: ${fn}, createEmpty: false, timeSrc: "_start")
+  |> keep(columns: ["_time", "_field", "_value"])`,
+
   // Presence of NILM readings (count per window), for gap detection. rssi exists in every bridge
   // message whatever the firmware version.
   nilmPresence: (start, every, bucket = ENERGY.bucket) => `
