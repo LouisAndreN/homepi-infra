@@ -17,5 +17,5 @@ influxdb_expected:
     - grafana-read
     - cli-admin
     - downsample-task-v2
-    - homepi-dashboard via nginx (read iot-hot)
+    - homepi-dashboard via nginx (read iot-hot, iot-archives)
     - homepi-operator (backup)

@@ -9,11 +9,11 @@ Organization `iot-org`.
 |---|---|---|
 | Bucket | `iot-hot` | 720 h |
 | Bucket | `iot-archives` | 8760 h |
-| Task | `downsample_iot_hot_to_archives` | every 1 h, offset 5 min, 5 min means of the `iot_sensors` fields; script in `roles/influxdb/files/tasks/` |
+| Task | `downsample_iot_hot_to_archives` | every 1 h, offset 5 min, 5 min means of the `iot_sensors` fields and daily NILM energy per leg (`nilm_daily`, docs/runbooks/influxdb-nilm-daily.md); script in `roles/influxdb/files/tasks/` |
 | Authorization | `telegraf-write` | write `iot-hot` (Telegraf) |
 | Authorization | `grafana-read` | read `iot-hot`, `iot-archives` (Grafana data source) |
 | Authorization | `downsample-task-v2` | read `iot-hot`, write `iot-archives` (the task) |
-| Authorization | `homepi-dashboard via nginx (read iot-hot)` | dashboard through nginx |
+| Authorization | `homepi-dashboard via nginx (read iot-hot, iot-archives)` | dashboard through nginx (rotated in v1.4.0) |
 | Authorization | `cli-admin` | all organization permissions; token in SOPS `influx_admin_token`, used by Ansible |
 | Authorization | `homepi-operator (backup)` | operator (instance-wide), created with `influxd recovery auth create-operator` on 2026-11-10; SOPS `influx_operator_token`, on the Pi only in `/var/lib/secrets/influx-operator.token` (root 0600), used by native backups |
 

@@ -118,6 +118,15 @@ from(bucket: "${bucket}")
   |> aggregateWindow(every: 1d, fn: ${fn}, createEmpty: false, timeSrc: "_start")
   |> keep(columns: ["_time", "_field", "_value"])`,
 
+  // Daily NILM energy archived by the downsample task (v1.4.0): one row per local day, leg and field
+  // (wh, n5), kept as long as iot-archives (8760 h). Read through the dashboard token (iot-archives read).
+  nilmDailyArchive: (days = 372) => `
+from(bucket: "iot-archives")
+  |> range(start: -${days}d)
+  |> filter(fn: (r) => r._measurement == "nilm_daily")
+  |> group()
+  |> keep(columns: ["_time", "leg", "_field", "_value"])`,
+
   // Presence of NILM readings (count per window), for gap detection. rssi exists in every bridge
   // message whatever the firmware version.
   nilmPresence: (start, every, bucket = ENERGY.bucket) => `

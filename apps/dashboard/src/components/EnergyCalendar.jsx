@@ -1,11 +1,11 @@
 import { useMemo, useState } from 'react'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
-import { dailyTotals, levels, weekdayWeekend, calendarGrid } from '../energy/calendar.js'
+import { dailyTotals, mergeDaily, levels, weekdayWeekend, calendarGrid } from '../energy/calendar.js'
 
 // GitHub-style calendar of daily whole-home energy: one cell per day, columns are weeks (Monday first).
 // Colour = quartile of the complete days (sequential, one hue, brighter = more). Partial days (data
-// coverage < 80%) are outlined; days without data stay empty. iot-hot keeps NILM readings 30 days:
-// older cells stay empty until NILM energy is archived (see the note under the grid).
+// coverage < 80%) are outlined; days without data stay empty. The last 30 days are computed from the
+// live readings (iot-hot), older days come from the daily archive (iot-archives, one year).
 
 const SEQ = ['var(--bg3)', '#173a61', '#1f5a9c', '#2f7fd8', '#7fb8ff']   // level 0..4, validated hue (blue)
 const CELL = 11, GAP = 3, LEFT = 26, TOP = 14
@@ -17,12 +17,20 @@ export function EnergyCalendar({ legs }) {
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC'
   const sums = useFlux(useMemo(() => FLUX.nilmDaily('sum', RETENTION_DAYS + 1, tz), [tz]), 30 * 60000)
   const counts = useFlux(useMemo(() => FLUX.nilmDaily('count', RETENTION_DAYS + 1, tz), [tz]), 30 * 60000)
-  const days = useMemo(() => dailyTotals(sums.data, counts.data, legs), [sums.data, counts.data, legs])
+  const archive = useFlux(useMemo(() => FLUX.nilmDailyArchive(372), []), 60 * 60000)
+  const days = useMemo(() => {
+    const m = mergeDaily(archive.data, sums.data, counts.data)
+    return dailyTotals(m.sumRows, m.countRows, legs)
+  }, [archive.data, sums.data, counts.data, legs])
   const byKey = useMemo(() => new Map(days.map(d => [d.key, d])), [days])
   const lv = useMemo(() => levels(days), [days])
   const ww = useMemo(() => weekdayWeekend(days), [days])
   const grid = useMemo(() => calendarGrid(Date.now()), [days.length]) // eslint-disable-line react-hooks/exhaustive-deps
   const [tip, setTip] = useState(null)
+  const archiveSince = useMemo(() => {
+    const t = archive.data.reduce((m, r) => { const v = Date.parse(r._time); return Number.isFinite(v) && v < m ? v : m }, Infinity)
+    return Number.isFinite(t) ? new Date(t).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : null
+  }, [archive.data])
 
   const W = LEFT + grid.length * (CELL + GAP), H = TOP + 7 * (CELL + GAP)
   const monthLabels = []
@@ -72,7 +80,7 @@ export function EnergyCalendar({ legs }) {
         )}
       </div>
       <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)', marginTop: 4 }}>
-        NILM readings are kept {RETENTION_DAYS} days: earlier days stay empty until daily NILM energy is archived (seasonal view needs a year).
+        Last {RETENTION_DAYS} days from the live readings; older days from the daily archive (kept one year, since {archiveSince || 'v1.4.0'}).
       </div>
     </div>
   )

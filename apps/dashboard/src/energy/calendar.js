@@ -29,6 +29,22 @@ export function dailyTotals(sumRows, countRows, legs) {
   return out.sort((a, b) => a.t - b.t)
 }
 
+// Merge the archived days (iot-archives nilm_daily: wh and n5 per leg) with the live days computed
+// from iot-hot. Both describe the same 5-min means; the live value wins for a day and leg it has
+// (fresher: the archive of today lags up to an hour). Output is in the dailyTotals input format.
+export function mergeDaily(archiveRows, liveSums, liveCounts) {
+  const sums = new Map(), counts = new Map()
+  const k = (t, f) => `${dayKey(new Date(Date.parse(t)))}|${f}`
+  for (const r of archiveRows) {
+    const v = parseFloat(r._value); if (!Number.isFinite(v) || !r.leg) continue
+    if (r._field === 'wh') sums.set(k(r._time, r.leg), { _time: r._time, _field: r.leg, _value: v * 60 / 5 })
+    else if (r._field === 'n5') counts.set(k(r._time, r.leg), { _time: r._time, _field: r.leg, _value: v })
+  }
+  for (const r of liveSums) sums.set(k(r._time, r._field), r)
+  for (const r of liveCounts) counts.set(k(r._time, r._field), r)
+  return { sumRows: [...sums.values()], countRows: [...counts.values()] }
+}
+
 // Four levels from the quartiles of the complete days (coverage >= minCoverage), like GitHub's
 // contribution graph. Partial days get a level too but are marked partial.
 export function levels(days, minCoverage = 0.8) {
