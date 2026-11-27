@@ -243,7 +243,7 @@ function CumulativeChart({ todayDay, nowMin, yesterday, pred, H = 190 }) {
   ].filter(Boolean)
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div data-no-swipe style={{ position: 'relative' }}>
       <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block', touchAction: 'pan-y' }} {...hover}
         role="img" aria-label={`Cumulative energy today ${fmtKwh(curKwh)}${yesterday ? `, yesterday ${fmtKwh(yesterday.total)}` : ''}`}>
         <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="kWh" fmtTick={v => v.toFixed(yMax < 5 ? 1 : 0)} />
@@ -289,7 +289,7 @@ function PowerChart({ pts, nowMin, baseW, bands = [], H = 150 }) {
   }
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div data-no-swipe style={{ position: 'relative' }}>
       <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block', touchAction: 'pan-y' }} {...hover}
         role="img" aria-label={`Whole-home power today, 1-minute mean, peak ${fmtW(maxW)}`}>
         <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="W" fmtTick={v => v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : Math.round(v)} />
@@ -324,7 +324,7 @@ function DailyBars({ bars, H = 140 }) {
   const vy = v => CPAD.top + (1 - v / yMax) * ph
 
   return (
-    <div style={{ position: 'relative' }}>
+    <div data-no-swipe style={{ position: 'relative' }}>
       <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block' }} role="img" aria-label="Daily energy, last days">
         {ticks.map((v, i) => (
           <g key={i}>

@@ -14,7 +14,7 @@
 
 export const KIND_LABEL = {
   teensy_update: 'Teensy update', ota: 'ESP32 OTA', capture: 'Capture session',
-  appliance: 'Appliance', gap: 'NILM data gap', light: 'Light on (lux)',
+  appliance: 'Appliance', gap: 'NILM data gap', light: 'Light on (lux)', routine: 'Routines (declared)',
 }
 export const SUSPECT_AFTER_S = 30
 

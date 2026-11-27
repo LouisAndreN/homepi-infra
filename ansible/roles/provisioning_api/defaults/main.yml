@@ -18,6 +18,7 @@ api_code_files:
   - {src: "{{ playbook_dir }}/../apps/api/versions.py", dest: /opt/homepi/api/versions.py}
   - {src: "{{ playbook_dir }}/../apps/api/rollout.py", dest: /opt/homepi/api/rollout.py}
   - {src: "{{ playbook_dir }}/../apps/api/nilm_calibration.py", dest: /opt/homepi/api/nilm_calibration.py}
+  - {src: "{{ playbook_dir }}/../apps/api/routines.py", dest: /opt/homepi/api/routines.py}
 api_db: /var/lib/homepi/devices.db
 # /var/lib/homepi is not writable by homepi-api: the backup lives in a directory the role gives it
 api_db_backup: /var/backups/homepi-api/devices.db.before-deploy

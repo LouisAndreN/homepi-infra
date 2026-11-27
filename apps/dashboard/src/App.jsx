@@ -91,12 +91,15 @@ function SidebarDesktop({ tabs, active, onSelect, collapsed, onToggleCollapse })
           )
         })}
       </div>
-      <button onClick={onToggleCollapse} className="hp-focus-visible" title={collapsed ? 'Étendre' : 'Rétracter'} style={{
+      <div style={{ display:'flex', justifyContent:'center', padding:'var(--sp-2)', borderTop:'0.5px solid var(--border)' }}>
+        <RefreshButton label={collapsed ? '' : 'Reload'}/>
+      </div>
+      <button onClick={onToggleCollapse} className="hp-focus-visible" title={collapsed ? 'Expand' : 'Collapse'} style={{
         display:'flex', alignItems:'center', justifyContent:'center', gap:8,
         border:'none', borderTop:'0.5px solid var(--border)', background:'transparent',
         color:'var(--text3)', cursor:'pointer', padding:'var(--sp-2)', fontSize:14,
       }}>
-        {collapsed ? '»' : '« Réduire'}
+        {collapsed ? '»' : '« Collapse'}
       </button>
       {!collapsed && (
         <div style={{ padding:'var(--sp-2) var(--sp-4)', borderTop:'0.5px solid var(--border)', fontSize:'var(--fs-2xs)', color:'var(--text3)' }}>
@@ -169,6 +172,69 @@ function Logo(){
   )
 }
 
+// ─── Refresh and new-version detection ─────────────────────────────────
+// An installed PWA has no browser reload button, and a new release is only picked up on a fresh load.
+// hardRefresh(): asks the service worker to update, drops its caches, reloads from the network.
+// useNewVersion(): compares the bundle this page runs with the one the Pi serves now (index.html,
+// no-store), every 5 min and whenever the app comes back to the foreground.
+const currentBundle = () => document.querySelector('script[type="module"][src*="/assets/index-"]')?.getAttribute('src') || null
+
+async function hardRefresh(){
+  try{
+    const regs = await navigator.serviceWorker?.getRegistrations?.() || []
+    await Promise.all(regs.map(r => r.update().catch(() => {})))
+    const keys = await window.caches?.keys?.() || []
+    await Promise.all(keys.map(k => caches.delete(k)))
+  }catch{}
+  window.location.reload()
+}
+
+function useNewVersion(){
+  const [available, setAvailable] = useState(false)
+  useEffect(() => {
+    const mine = currentBundle()
+    if (!mine) return   // dev server: no hashed bundle
+    let stop = false
+    async function check(){
+      try{
+        const r = await fetch('/', { cache: 'no-store', credentials: 'same-origin', redirect: 'manual' })
+        if (!r.ok) return   // 302 to the login page when the session expired: not a version change
+        const served = (await r.text()).match(/\/assets\/index-[\w-]+\.js/)?.[0]
+        if (!stop && served && !mine.endsWith(served)) setAvailable(true)
+      }catch{}
+    }
+    const vis = () => { if (document.visibilityState === 'visible') check() }
+    const t = setInterval(check, 5 * 60000)
+    document.addEventListener('visibilitychange', vis)
+    check()
+    return () => { stop = true; clearInterval(t); document.removeEventListener('visibilitychange', vis) }
+  }, [])
+  return available
+}
+
+function RefreshButton({ label }){
+  const [busy, setBusy] = useState(false)
+  return (
+    <button onClick={() => { setBusy(true); hardRefresh() }} className="hp-focus-visible" title="Reload the dashboard (latest version and data)"
+      aria-label="Reload the dashboard" style={{ display:'flex', alignItems:'center', gap:6, border:'0.5px solid var(--border)', background:'var(--bg2)',
+        color:'var(--text2)', cursor:'pointer', borderRadius:'var(--r-sm)', padding:'4px 10px', fontSize:'var(--fs-xs)', fontWeight:600 }}>
+      <span aria-hidden="true" style={{ display:'inline-block', animation: busy ? 'spin 0.8s linear infinite' : 'none' }}>⟳</span>{label}
+    </button>
+  )
+}
+
+function NewVersionBanner(){
+  if (!useNewVersion()) return null
+  return (
+    <div role="status" style={{ position:'fixed', left:'50%', bottom:'calc(var(--bottomnav-h, 0px) + 12px)', transform:'translateX(-50%)', zIndex:900,
+      display:'flex', alignItems:'center', gap:'var(--sp-3)', padding:'var(--sp-2) var(--sp-3)', borderRadius:'var(--r-md, 10px)',
+      background:'var(--bg2)', border:'0.5px solid var(--accent-vivid)', boxShadow:'var(--shadow-3)', fontSize:'var(--fs-sm)' }}>
+      <span>A new dashboard version is deployed.</span>
+      <RefreshButton label="Reload"/>
+    </div>
+  )
+}
+
 // ─── Top bar: mobile and tablet only ──────────────────────────────────
 function Topbar({ current }){
   return (
@@ -181,6 +247,7 @@ function Topbar({ current }){
       <span style={{ fontSize:'var(--fs-md)', fontWeight:700, letterSpacing:'-.02em' }}>HomePi</span>
       <div style={{ width:1, height:16, background:'var(--border)', marginLeft:2 }}/>
       <span style={{ fontSize:'var(--fs-base)', color:'var(--text2)' }}>{current.label}</span>
+      <div style={{ marginLeft:'auto' }}><RefreshButton/></div>
     </div>
   )
 }
@@ -205,7 +272,8 @@ function AppInner(){
   useEffect(() => { try{ localStorage.setItem('homepi_sidebar_collapsed', sidebarCollapsed?'1':'0') }catch{} }, [sidebarCollapsed])
 
   function onTouchStart(e){
-    if(e.target.closest?.('input[type="range"], input[type="color"]')){ touchStartX.current=null; return }
+    // Charts read values under the finger (data-no-swipe): sliding over them must not change tab
+    if(e.target.closest?.('[data-no-swipe], input[type="range"], input[type="color"]')){ touchStartX.current=null; return }
     touchStartX.current=e.touches[0].clientX
   }
   function onTouchEnd(e){
@@ -250,6 +318,7 @@ function AppInner(){
         </div>
 
         <NavMobile tabs={TABS} active={tab} onSelect={setTab}/>
+        <NewVersionBanner/>
       </div>
     </>
   )

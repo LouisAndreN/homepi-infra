@@ -29,6 +29,7 @@ from email.utils import parsedate_to_datetime
 from versions import same_version
 import rollout
 import nilm_calibration
+import routines
 from urllib.parse import unquote
 from cryptography import x509
 
@@ -787,6 +788,19 @@ async def put_nilm_calibration(update: nilm_calibration.CalibrationUpdate):
 @app.get("/api/admin/nilm/calibration/history")
 async def get_nilm_calibration_history(limit: int = 50):
     return {"history": nilm_calibration.history(limit=max(1, min(limit, 200)))}
+
+
+# --- Routines (declared recurring events, dashboard timeline) ----------
+@app.get("/api/admin/routines")
+async def get_routines():
+    return routines.load()
+
+
+@app.put("/api/admin/routines")
+async def put_routines(data: routines.RoutineList):
+    out = routines.save(data)
+    audit("system", "routines_saved", f"count={len(data.routines)}", "operator")
+    return out
 
 
 # ======================================

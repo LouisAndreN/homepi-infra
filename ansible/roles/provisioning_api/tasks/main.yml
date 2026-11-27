@@ -48,6 +48,17 @@
     access_time: preserve
     modification_time: preserve
   loop: [wal, shm]
+# Dashboard state written by the admin API (routines, v1.3.3). /var/lib/homepi itself stays root-owned
+# (the API must not rewrite the registry's directory); this subdirectory is the API's. Backed up nightly
+# with /var/lib/homepi. Content never managed here.
+- name: Dashboard state directory owned by the API user
+  ansible.builtin.file:
+    path: /var/lib/homepi/dashboard
+    state: directory
+    owner: homepi-api
+    group: homepi-api
+    mode: "0750"
+
 # Here, before the virtualenv rebuild restarts the API: with the API down nothing holds the
 # database open, and a root sqlite3 closing the last connection (the nightly backup is one) may
 # remove both files. After the failed v0.1.145 rebuilds both were gone and the API could not start.
