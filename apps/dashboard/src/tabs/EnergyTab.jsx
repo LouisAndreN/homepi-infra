@@ -3,8 +3,11 @@ import { useStore, DEFAULT_CONTRACT } from '../store/index.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { CtPolarityGuide } from '../components/CtPolarityGuide.jsx'
 import { NilmCalibrationWizard } from '../components/NilmCalibrationWizard.jsx'
+import { RoomTimeline } from '../components/RoomTimeline.jsx'
+import { eventIntervals, findGaps, classifyGaps } from '../energy/timelineEvents.js'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
 import { ENERGY, API_BASE } from '../config.js'
+import { LEG_FIELDS, ctKeyOf, resolveLegs, sumLegs } from '../energy/legs.js'
 
 // Energy tab: live whole-home figures from the NILM pipeline
 // (Teensy -> XIAO ESP32-S3 -> MQTT iot/<id>/nilm -> Telegraf -> iot-hot/nilm_readings).
@@ -45,50 +48,7 @@ function percentile(a, p) {
 }
 
 // ─── Data shaping ──────────────────────────────────────────────────────────────
-const LEG_FIELDS = ENERGY.legs.map(l => l.field)   // fetched and shown per circuit
-const ctKeyOf = field => field.replace('P_L', '')
-
-// Per-leg state: the Pi calibration file (admin API) decides when it exists. A CT with a calibration
-// entry is in the total; before its calibrated_at its history is ignored unless the config trusts it
-// (L1 values from firmware v2 were roughly right, L2 had the wrong sign). Without the API, config.js.
-function resolveLegs(calibration) {
-  return ENERGY.legs.map(l => {
-    const c = calibration?.cts?.[ctKeyOf(l.field)]
-    if (!c) return { ...l, calibrated: false, since: null }
-    return { ...l, calibrated: true, validated: true, inTotal: true,
-      since: l.trustUncalibratedHistory ? null : Date.parse(c.calibrated_at),
-      I_scale: c.I_scale, phi_deg: c.phi_deg, calibrated_at: c.calibrated_at, reference: c.reference }
-  })
-}
-
-// InfluxDB rows {_time,_field,_value} -> time-sorted [{t, legs:{P_L1,P_L2}, w}]
-// w = sum of the legs in the total that are active at t (after their `since`). A point is kept only if
-// every such leg is present: both legs arrive in the same message, a half point is a parse problem.
-// Legs outside the total are optional (an uncalibrated CT has no P_Lk field on firmware v3).
-function sumLegs(rows, legs) {
-  const byT = new Map()
-  for (const r of rows) {
-    if (!LEG_FIELDS.includes(r._field)) continue
-    const t = Date.parse(r._time), v = parseFloat(r._value)
-    if (!Number.isFinite(t) || !Number.isFinite(v)) continue
-    let e = byT.get(t)
-    if (!e) { e = { t, legs: {} }; byT.set(t, e) }
-    e.legs[r._field] = v
-  }
-  const out = []
-  for (const e of byT.values()) {
-    let ok = true, w = 0
-    for (const l of legs) {
-      const counted = l.inTotal && !(l.since && e.t < l.since)
-      if (!(l.field in e.legs)) { if (counted) { ok = false; break } e.legs[l.field] = null; continue }
-      if (counted) w += e.legs[l.field]
-    }
-    if (!ok) continue
-    e.w = w
-    out.push(e)
-  }
-  return out.sort((a, b) => a.t - b.t)
-}
+// Leg logic (calibration state, totals): ../energy/legs.js
 
 // Window means (t = window start) -> one object per local calendar day:
 // kwh[i] = energy of slot i, cum[i] = energy before slot i, coverage = filled slots / slots.
@@ -313,7 +273,7 @@ function interpPred(curve, m) {
   return curve.at(-1).mid
 }
 
-function PowerChart({ pts, nowMin, baseW, H = 150 }) {
+function PowerChart({ pts, nowMin, baseW, bands = [], H = 150 }) {
   const [hm, hover] = useMinuteHover()
   const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
   const maxW = Math.max(...pts.map(p => p.v), 100)
@@ -333,6 +293,13 @@ function PowerChart({ pts, nowMin, baseW, H = 150 }) {
       <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block', touchAction: 'pan-y' }} {...hover}
         role="img" aria-label={`Whole-home power today, 1-minute mean, peak ${fmtW(maxW)}`}>
         <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="W" fmtTick={v => v >= 1000 ? `${+(v / 1000).toFixed(2)}k` : Math.round(v)} />
+        {bands.map((b, i) => {
+          const x0 = mx(Math.max(0, b.m0)), x1 = mx(Math.min(DAY_MIN, b.m1))
+          if (x1 <= x0) return null
+          return <rect key={`b${i}`} x={x0} y={CPAD.top} width={Math.max(1, x1 - x0)} height={ph} fill={b.update ? 'var(--warn)' : 'var(--text3)'} opacity={b.suspect ? 0.08 : b.update ? 0.18 : 0.12}>
+            <title>{b.suspect ? 'Readings right after a Teensy update may be wrong' : b.update ? 'Teensy update: no readings (not filled)' : 'No NILM readings (not filled)'}</title>
+          </rect>
+        })}
         {isNum(baseW) && <line x1={CPAD.left} y1={vy(baseW)} x2={CPAD.left + pw} y2={vy(baseW)} stroke="var(--text3)" strokeWidth="1" strokeDasharray="2 3" opacity="0.8" />}
         {segs.map((s, i) => <polyline key={i} points={s} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeLinejoin="round" />)}
         <line x1={mx(nowMin)} y1={CPAD.top} x2={mx(nowMin)} y2={CPAD.top + ph} stroke="var(--text3)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.6" />
@@ -564,6 +531,7 @@ export function EnergyTab() {
   const SUB_TABS = [
     { key: 'overview', label: 'Overview' },
     { key: 'devices', label: 'Per-device' },
+    { key: 'timeline', label: 'Timeline' },
   ]
 
   // Clock: drives "now" markers and the midnight rollover of the queries
@@ -602,6 +570,13 @@ export function EnergyTab() {
   const todayKwh = todayDay?.total ?? (tday.loading ? null : 0)
   const todayCoverage = todayDay ? todayDay.filled / Math.max(1, Math.ceil(nowMin)) : null
   const powerPts = useMemo(() => tdayPts.map(p => ({ m: (p.t - todayMs) / 60000, v: p.w })), [tdayPts, todayMs])
+  const evToday = useFlux(useMemo(() => FLUX.homepiEvents(fluxTime(todayMs)), [todayMs]), 60000)
+  const todayBands = useMemo(() => {
+    const evs = eventIntervals(evToday.data, now)
+    const { gaps, suspect } = classifyGaps(findGaps(tdayPts.map(p => p.t + 60000), todayMs, Math.min(now, todayMs + DAY_MIN * 60000), 150), evs)
+    const toM = t => (t - todayMs) / 60000
+    return [...gaps.map(g => ({ m0: toM(g.start), m1: toM(g.end), update: !!g.cause })), ...suspect.map(g => ({ m0: toM(g.start), m1: toM(g.end), update: true, suspect: true }))]
+  }, [evToday.data, tdayPts, todayMs, Math.floor(now / 60000)]) // eslint-disable-line react-hooks/exhaustive-deps
   const peak = useMemo(() => powerPts.reduce((b, p) => (!b || p.v > b.v) ? p : b, null), [powerPts])
   const baseW = useMemo(() => percentile(powerPts.map(p => p.v), 0.05), [powerPts])
 
@@ -786,7 +761,7 @@ export function EnergyTab() {
             { label: 'Whole home', stroke: 'var(--accent)' },
             { label: 'Base load', stroke: 'var(--text3)', dash: '2 3' },
           ]} />}>
-            <PowerChart pts={powerPts} nowMin={nowMin} baseW={baseW} />
+            <PowerChart pts={powerPts} nowMin={nowMin} baseW={baseW} bands={todayBands} />
           </Section>
 
           <Section title={`Daily energy · last ${ENERGY.historyDays} days`} right={
@@ -837,6 +812,8 @@ export function EnergyTab() {
           </Section>
         </div>
       )}
+
+      {subTab === 'timeline' && <RoomTimeline legs={legs} />}
 
       {subTab === 'devices' && (
         <div style={{ flex: 1, overflow: 'auto' }}>

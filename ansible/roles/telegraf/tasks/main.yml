@@ -80,7 +80,7 @@
     owner: root
     group: telegraf
     mode: "0640"
-  loop: [homepi_mqtt.conf, nilm.conf, homepi_time.conf]
+  loop: [homepi_mqtt.conf, nilm.conf, homepi_events.conf, homepi_time.conf]
   register: telegraf_confs
 
 - name: api.env no longer holds Telegraf credentials

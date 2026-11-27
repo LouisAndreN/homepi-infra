@@ -104,6 +104,23 @@ export function useFlux(flux, interval = 15000) {
 
 // Flux queries used by the tabs
 export const FLUX = {
+  // Presence of NILM readings (count per window), for gap detection. rssi exists in every bridge
+  // message whatever the firmware version.
+  nilmPresence: (start, every, bucket = ENERGY.bucket) => `
+from(bucket: "${bucket}")
+  |> range(start: ${start})
+  |> filter(fn: (r) => r._measurement == "${ENERGY.measurement}" and r._field == "rssi")
+  |> group()
+  |> aggregateWindow(every: ${every}, fn: count, createEmpty: false)
+  |> keep(columns: ["_time", "_value"])`,
+
+  // Platform events (MQTT iot/<id>/event -> Telegraf -> homepi_events): Teensy updates, OTA, captures
+  homepiEvents: (start, bucket = ENERGY.bucket) => `
+from(bucket: "${bucket}")
+  |> range(start: ${start})
+  |> filter(fn: (r) => r._measurement == "homepi_events")
+  |> keep(columns: ["_time", "_field", "_value", "kind", "device_id"])`,
+
   // Power from the NILM bridge, one series per configured leg (total and per-circuit views).
   // every=null returns raw samples (~1 Hz); otherwise window means stamped at the
   // window START (timeSrc), so a window is attributed to the day it belongs to.
