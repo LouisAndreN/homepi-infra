@@ -83,6 +83,27 @@
   loop: [homepi_mqtt.conf, nilm.conf, homepi_events.conf, homepi_time.conf]
   register: telegraf_confs
 
+# A restart decided only from "changed in this run" is lost when the run fails after the copy: the next run
+# sees identical files, skips the test and the restart, and reports success while Telegraf keeps the old
+# configuration (v1.2.0, 2026-11-27: Telegraf ran its configuration of the day before). The running process
+# is compared with the files instead: any of them newer than the process start means a restart is due.
+- name: Telegraf runs the current configuration? (files newer than the running process)
+  ansible.builtin.shell: |
+    set -u
+    # Start time without parsing a localised date: boot time + monotonic start (0 when not running)
+    mono=$(systemctl show telegraf -p ActiveEnterTimestampMonotonic --value)
+    btime=$(awk '/^btime/ {print $2}' /proc/stat)
+    start_s=$(( ${mono:-0} > 0 ? btime + mono / 1000000 : 0 ))
+    newest=$(stat -c %Y /etc/telegraf/telegraf.conf /etc/telegraf/telegraf.d/*.conf /usr/local/sbin/homepi-nilm-calibrate \
+      /var/lib/secrets/telegraf.env /etc/systemd/system/telegraf.service.d/*.conf 2>/dev/null | sort -n | tail -1)
+    if [ "${newest:-0}" -gt "$start_s" ]; then echo stale; else echo current; fi
+  args:
+    executable: /bin/bash
+    chdir: /
+  register: telegraf_running_config
+  changed_when: false
+  check_mode: false
+
 - name: api.env no longer holds Telegraf credentials
   ansible.builtin.lineinfile:
     path: /etc/homepi/api.env
@@ -114,14 +135,14 @@
   failed_when: telegraf_test.rc != 0 or 'E!' in (telegraf_test.stdout + telegraf_test.stderr)
   when:
     - not ansible_check_mode
-    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed
+    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed or telegraf_running_config.stdout == 'stale'
 
 - name: Telegraf restarted on the new configuration
   ansible.builtin.systemd:
     name: telegraf
     state: restarted
     daemon_reload: true
-  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed
+  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed or telegraf_running_config.stdout == 'stale'
 
 - name: Telegraf enabled and running
   ansible.builtin.systemd:

@@ -59,6 +59,15 @@ time.sleep(1.1); open(path, "w").write("{ broken"); time.sleep(0.05)
 r3 = dict(cal.parse_line(send(line))[2])
 pr.stdin.close(); err = pr.stderr.read(); pr.wait()
 print(f"  version {v1} -> {r2['calib_version']} after rewrite, P_L1 {float(r2['P_L1']):.1f} (x1.1 scale); after broken file: version {r3['calib_version']}")
-print("  stderr:", err.strip().replace("\n", " | "))
+lines = [l for l in err.strip().splitlines() if l]
+print("  stderr:", " | ".join(lines))
 fails += not (v1 == "4.0" and r2["calib_version"] == "5.0" and r3["calib_version"] == "5.0")
+# Telegraf turns every stderr line into an "E!" error and the role fails its test run on "E!":
+# loading a good file (or a missing one) must print nothing, only the broken file may.
+fails += not (len(lines) == 1 and "invalid" in lines[0])
+pr2 = subprocess.Popen([sys.executable, os.path.join(os.path.dirname(__file__), "..", "files", "homepi-nilm-calibrate"), "--config", path + ".absent"],
+                       stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+out2, err2 = pr2.communicate(line + "\n")
+print("  missing file: line passed through:", out2.strip() == line, "| stderr empty:", err2 == "")
+fails += not (out2.strip() == line and err2 == "")
 print("FAILS:", fails)

@@ -27,6 +27,11 @@ Rules:
     most once per second), so a calibration from the dashboard applies
     without restarting Telegraf. An unreadable or invalid file keeps the
     last good calibration and logs to stderr (Telegraf journal).
+  * stderr is for REAL errors only. Telegraf logs every stderr line of an
+    execd process as an error ("E! [processors.execd] stderr: ..."), and the
+    telegraf role fails its test run on any "E!" (v1.2.0 apply failed on the
+    informational "file missing" line). Normal states stay silent; which
+    calibration is applied is visible in the data (calib_version field).
 
 Standard library only: runs on the system python3 as the telegraf user.
 """
@@ -118,8 +123,7 @@ class Calibration:
         try:
             mtime = os.stat(self.path).st_mtime_ns
         except FileNotFoundError:
-            if self.data is not None or self.mtime != "missing":
-                log(f"{self.path} missing: raw values only")
+            # Normal before the first calibration: raw values only, silently
             self.mtime, self.data = "missing", None
             return
         except OSError as e:
@@ -132,9 +136,6 @@ class Calibration:
                 data = json.load(fh)
             self.data = validate(data)
             self.mtime = mtime
-            log(f"loaded calibration version {self.data['version']} "
-                f"(V_scale={'yes' if self.data['V_scale'] else 'no'}, "
-                f"CTs={sorted(self.data['cts'])})")
         except Exception as e:  # keep the last good calibration
             self.mtime = mtime
             log(f"invalid {self.path} ({e}): keeping calibration "
