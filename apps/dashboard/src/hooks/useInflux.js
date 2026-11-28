@@ -127,6 +127,16 @@ from(bucket: "iot-archives")
   |> group()
   |> keep(columns: ["_time", "leg", "_field", "_value"])`,
 
+  // Weather at home (v1.6.0, docs/runbooks/weather.md): hourly weather (fields) and daily sunrise/sunset.
+  // Written to iot-hot by Telegraf, copied hourly to iot-archives (one year). Not pivoted: the CSV parser
+  // keeps rows that have a _value, and energy/weather.js joins the fields per hour.
+  weather: (start, stop = 'now()', fields = ['code', 'is_day', 'temp', 'precip'], bucket = ENERGY.bucket) => `
+from(bucket: "${bucket}")
+  |> range(start: ${start}, stop: ${stop})
+  |> filter(fn: (r) => (r._measurement == "weather" and (${fields.map(f => `r._field == "${f}"`).join(' or ')})) or r._measurement == "weather_daily")
+  |> group()
+  |> keep(columns: ["_time", "_measurement", "_field", "_value"])`,
+
   // Presence of NILM readings (count per window), for gap detection. rssi exists in every bridge
   // message whatever the firmware version.
   nilmPresence: (start, every, bucket = ENERGY.bucket) => `

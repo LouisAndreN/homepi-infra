@@ -3,12 +3,28 @@ import { useStore, DEFAULT_CONTRACT } from '../store/index.jsx'
 import { Modal } from '../components/Modal.jsx'
 import { CtPolarityGuide } from '../components/CtPolarityGuide.jsx'
 import { NilmCalibrationWizard } from '../components/NilmCalibrationWizard.jsx'
-import { RoomTimeline } from '../components/RoomTimeline.jsx'
 import { EnergyCalendar } from '../components/EnergyCalendar.jsx'
+import { MonthCalendar } from '../components/MonthCalendar.jsx'
+import { RoutinesEditor } from '../components/RoutinesEditor.jsx'
 import { eventIntervals, findGaps, classifyGaps } from '../energy/timelineEvents.js'
 import { useFlux, FLUX } from '../hooks/useInflux.js'
-import { ENERGY, API_BASE } from '../config.js'
-import { LEG_FIELDS, ctKeyOf, resolveLegs, sumLegs } from '../energy/legs.js'
+import { useNilmLegs } from '../hooks/useNilmLegs.js'
+import { useRoutines } from '../hooks/useRoutines.js'
+import { useWeather } from '../hooks/useWeather.js'
+import { useDailyEnergy } from '../hooks/useDailyEnergy.js'
+import { ENERGY } from '../config.js'
+import { LEG_FIELDS, ctKeyOf, sumLegs } from '../energy/legs.js'
+import { dayCost } from '../energy/tariff.js'
+import { expandRoutines } from '../energy/routines.js'
+import { weatherRuns, hourAt, iconOf, WEATHER_KINDS } from '../energy/weather.js'
+import { buildWeek, mondayOf } from '../energy/week.js'
+
+// Sub-tabs of Energy, in swipe order (App.jsx swipes through them before moving to the next tab)
+export const ENERGY_SUB_TABS = [
+  { key: 'overview', label: 'Overview' },
+  { key: 'calendar', label: 'Calendar' },
+  { key: 'devices', label: 'Per-device' },
+]
 
 // Energy tab: live whole-home figures from the NILM pipeline
 // (Teensy -> XIAO ESP32-S3 -> MQTT iot/<id>/nilm -> Telegraf -> iot-hot/nilm_readings).
@@ -93,29 +109,7 @@ function cumAt(day, m) {
   return day.cum[i] + day.kwh[i] * Math.max(0, Math.min(1, (m - i * s) / s))
 }
 
-// ─── Tariff ────────────────────────────────────────────────────────────────────
-// Contract tiers are MONTHLY kWh bands (Japanese 従量電灯). The marginal cost of a
-// day therefore depends on where the month already stands: a day that pushes the
-// month into tier 2 costs more than the same day on the 1st.
-function energyCost(fromKwh, toKwh, contract) {
-  const el = contract?.utilities?.electricity
-  if (!el?.enabled || !(toKwh > fromKwh)) return 0
-  let c = 0
-  for (const t of el.tiers || []) {
-    const lo = Math.max(fromKwh, t.from || 0), hi = Math.min(toKwh, t.to ?? Infinity)
-    if (hi > lo) c += (hi - lo) * t.ratePerKwh
-  }
-  return c
-}
-function dayCost(kwh, monthBefore, contract) {
-  const el = contract?.utilities?.electricity
-  if (!el?.enabled || !isNum(kwh) || !isNum(monthBefore)) return null
-  return energyCost(monthBefore, monthBefore + kwh, contract) + (el.standingChargePerDay || 0)
-}
-function tierAt(kwh, contract) {
-  const tiers = contract?.utilities?.electricity?.tiers || []
-  return tiers.find(t => kwh >= (t.from || 0) && kwh < (t.to ?? Infinity)) || tiers.at(-1) || null
-}
+// Tariff (monthly tiers, standing charge): ../energy/tariff.js
 
 // ─── Japan tariff periods ──────────────────────────────────────────────────────
 // Based on TEPCO Smart Life plan pattern
@@ -196,29 +190,37 @@ function useMinuteHover() {
   return [hm, handlers]
 }
 
-function TimeAxes({ H, yMax, ticks, unit, fmtTick }) {
-  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
-  const mx = m => CPAD.left + (m / DAY_MIN) * pw
-  const vy = v => CPAD.top + (1 - v / yMax) * ph
+function TimeAxes({ H, yMax, ticks, unit, fmtTick, pad = CPAD }) {
+  const pw = CW - pad.left - pad.right, ph = H - pad.top - pad.bottom
+  const mx = m => pad.left + (m / DAY_MIN) * pw
+  const vy = v => pad.top + (1 - v / yMax) * ph
   return (
     <g>
       {ticks.map((v, i) => (
         <g key={i}>
-          <line x1={CPAD.left} y1={vy(v)} x2={CPAD.left + pw} y2={vy(v)} stroke="var(--border)" strokeWidth=".5" />
-          <text x={CPAD.left - 5} y={vy(v) + 3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{fmtTick(v)}</text>
+          <line x1={pad.left} y1={vy(v)} x2={pad.left + pw} y2={vy(v)} stroke="var(--border)" strokeWidth=".5" />
+          <text x={pad.left - 5} y={vy(v) + 3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{fmtTick(v)}</text>
         </g>
       ))}
-      <text x={10} y={CPAD.top + ph / 2} textAnchor="middle" fontSize="9" fill="var(--text3)" transform={`rotate(-90,10,${CPAD.top + ph / 2})`}>{unit}</text>
+      <text x={10} y={pad.top + ph / 2} textAnchor="middle" fontSize="9" fill="var(--text3)" transform={`rotate(-90,10,${pad.top + ph / 2})`}>{unit}</text>
       {[0, 6, 12, 18, 24].map(h => (
-        <text key={h} x={mx(h * 60)} y={H - 6} textAnchor="middle" fontSize="9" fill="var(--text3)" fontFamily="monospace">{h}:00</text>
+        <text key={h} x={mx(h * 60)} y={H - pad.bottom + 18} textAnchor="middle" fontSize="9" fill="var(--text3)" fontFamily="monospace">{h}:00</text>
       ))}
     </g>
   )
 }
 
-function CumulativeChart({ todayDay, nowMin, yesterday, pred, H = 190 }) {
+// Cumulative energy of the day, with its context: the weather hour by hour (strip above the plot), the night
+// (shaded, between sunset and sunrise) and the declared routines (lane under the time axis, outlined: declared,
+// not measured). Context never changes the curves: it only explains them.
+const KPAD = { top: 30, right: 14, bottom: 42, left: 50 }
+const ROUTINE = '#9887ef'
+const fmtClock = ms => { const d = new Date(ms); return `${pad2(d.getHours())}:${pad2(d.getMinutes())}` }
+
+function CumulativeChart({ todayDay, nowMin, yesterday, pred, dayMs, weather, sun, routines, H = 236 }) {
   const [hm, hover] = useMinuteHover()
-  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
+  const P = KPAD
+  const pw = CW - P.left - P.right, ph = H - P.top - P.bottom
 
   const todayPts = useMemo(() => {
     if (!todayDay) return []
@@ -226,36 +228,86 @@ function CumulativeChart({ todayDay, nowMin, yesterday, pred, H = 190 }) {
     return Array.from({ length: end + 1 }, (_, m) => ({ m, v: todayDay.cum[m] }))
   }, [todayDay, nowMin])
   const yPts = useMemo(() => yesterday ? yesterday.cum.map((v, i) => ({ m: i * yesterday.step, v })) : [], [yesterday])
+  const runs = useMemo(() => weatherRuns(weather || [], dayMs, dayMs + DAY_MIN * 60000), [weather, dayMs])
+  const toM = t => (t - dayMs) / 60000
 
   const { max: yMax, ticks } = niceScale(Math.max(yesterday?.total || 0, pred?.hi || 0, todayPts.at(-1)?.v || 0, 0.5))
-  const mx = m => CPAD.left + (m / DAY_MIN) * pw
-  const vy = v => CPAD.top + (1 - v / yMax) * ph
+  const mx = m => P.left + (Math.max(0, Math.min(DAY_MIN, m)) / DAY_MIN) * pw
+  const vy = v => P.top + (1 - v / yMax) * ph
 
   const band = pred?.curve?.length > 1
     ? `${pred.curve.map(p => `${mx(p.m)},${vy(p.hi)}`).join(' ')} ${[...pred.curve].reverse().map(p => `${mx(p.m)},${vy(p.lo)}`).join(' ')}`
     : null
   const predLine = pred?.curve?.map(p => `${mx(p.m)},${vy(p.mid)}`).join(' ')
   const curKwh = todayPts.at(-1)?.v
+  const rise = sun?.sunrise != null ? toM(sun.sunrise) : null, set = sun?.sunset != null ? toM(sun.sunset) : null
+  const laneY = H - 16
 
+  const hw = hm == null ? null : hourAt(weather || [], dayMs + hm * 60000)
+  const activeRoutines = hm == null ? [] : (routines || []).filter(r => r.instant ? Math.abs(toM(r.start) - hm) <= 10 : toM(r.start) <= hm && hm <= toM(r.end))
   const rows = hm == null ? null : [
     hm <= nowMin && todayDay && { label: 'Today', value: fmtKwh(cumAt(todayDay, hm)), stroke: 'var(--accent)' },
     hm > nowMin && pred && { label: 'Prediction', value: fmtKwh(interpPred(pred.curve, hm)), stroke: 'var(--accent)', dash: '4 3' },
     yesterday && { label: 'Yesterday', value: fmtKwh(cumAt(yesterday, hm)), stroke: 'var(--text3)', dash: '4 3' },
+    hw && { label: `${iconOf(hw.kind, hw.isDay !== false)} ${WEATHER_KINDS[hw.kind].label}`, value: isNum(hw.temp) ? `${hw.temp.toFixed(1)} °C` : '', stroke: 'transparent' },
+    ...activeRoutines.map(r => ({ label: `${r.detail} (routine)`, value: r.instant ? fmtClock(r.start) : `${fmtClock(r.start)}–${fmtClock(r.end)}`, stroke: ROUTINE })),
   ].filter(Boolean)
 
   return (
     <div data-no-swipe style={{ position: 'relative' }}>
       <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block', touchAction: 'pan-y' }} {...hover}
         role="img" aria-label={`Cumulative energy today ${fmtKwh(curKwh)}${yesterday ? `, yesterday ${fmtKwh(yesterday.total)}` : ''}`}>
-        <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="kWh" fmtTick={v => v.toFixed(yMax < 5 ? 1 : 0)} />
+        {/* Night: before sunrise and after sunset */}
+        {rise != null && rise > 0 && <rect x={mx(0)} y={P.top} width={mx(rise) - mx(0)} height={ph} fill="var(--text3)" opacity="0.08" />}
+        {set != null && set < DAY_MIN && <rect x={mx(set)} y={P.top} width={mx(DAY_MIN) - mx(set)} height={ph} fill="var(--text3)" opacity="0.08" />}
+        <TimeAxes H={H} yMax={yMax} ticks={ticks} unit="kWh" fmtTick={v => v.toFixed(yMax < 5 ? 1 : 0)} pad={P} />
+        {[[rise, '↑'], [set, '↓']].map(([m, a]) => m != null && m >= 0 && m <= DAY_MIN && (
+          <g key={a}>
+            <line x1={mx(m)} y1={P.top} x2={mx(m)} y2={P.top + ph} stroke="#d28e05" strokeWidth="0.8" strokeDasharray="2 3" opacity="0.7" />
+            {/* label on the night side of its line: it never runs over the daytime events */}
+            <text x={mx(m) + (a === '↑' ? -3 : 3)} y={P.top + 9} textAnchor={a === '↑' ? 'end' : 'start'} fontSize="8" fill="var(--text3)" fontFamily="monospace">
+              {a === '↑' ? 'sunrise' : 'sunset'} {fmtClock(a === '↑' ? sun.sunrise : sun.sunset)}</text>
+          </g>
+        ))}
+        {/* Weather strip: one icon per run of the same weather (skipped where a run is too narrow) */}
+        <line x1={P.left} y1={P.top - 4} x2={P.left + pw} y2={P.top - 4} stroke="var(--border)" strokeWidth=".5" />
+        {runs.map((r, i) => {
+          const x0 = mx(r.m0), x1 = mx(r.m1)
+          return (
+            <g key={i}>
+              {i > 0 && <line x1={x0} y1={P.top - 22} x2={x0} y2={P.top - 6} stroke="var(--border)" strokeWidth=".5" />}
+              {x1 - x0 >= 14 && <text x={(x0 + x1) / 2} y={P.top - 10} textAnchor="middle" fontSize="12">{iconOf(r.kind, r.isDay)}
+                <title>{`${WEATHER_KINDS[r.kind].label} ${fmtHM(r.m0)}–${fmtHM(r.m1)}`}</title></text>}
+            </g>
+          )
+        })}
+        {/* Routines: instants as a dashed line through the plot, intervals as an outlined bar in the lane */}
+        {(routines || []).map(r => {
+          const m0 = toM(r.start), m1 = toM(r.end)
+          if (m1 < 0 || m0 > DAY_MIN) return null
+          if (r.instant) return (
+            <g key={r.id}>
+              <line x1={mx(m0)} y1={P.top} x2={mx(m0)} y2={laneY + 8} stroke={ROUTINE} strokeWidth="1" strokeDasharray="3 3" opacity="0.7" />
+              <path d={`M${mx(m0)},${laneY} l4,4 l-4,4 l-4,-4 z`} fill={ROUTINE}><title>{`${r.detail} ${fmtClock(r.start)} (declared)`}</title></path>
+            </g>
+          )
+          const x0 = mx(m0), x1 = mx(m1)
+          return (
+            <g key={r.id}>
+              <rect x={x0} y={laneY} width={Math.max(2, x1 - x0)} height={8} rx="2" fill={ROUTINE} fillOpacity="0.15" stroke={ROUTINE} strokeWidth="1.2">
+                <title>{`${r.detail} ${fmtClock(r.start)}–${fmtClock(r.end)} (declared)`}</title></rect>
+              {x1 - x0 > 46 && <text x={x0 + 4} y={laneY + 6.5} fontSize="7" fill="var(--text2)">{r.detail.slice(0, Math.floor((x1 - x0 - 8) / 4))}</text>}
+            </g>
+          )
+        })}
         {band && <polygon points={band} fill="var(--accent-soft)" opacity="0.6" />}
         {yPts.length > 1 && <polyline points={yPts.map(p => `${mx(p.m)},${vy(p.v)}`).join(' ')} fill="none" stroke="var(--text3)" strokeWidth="1.5" strokeDasharray="5 4" opacity="0.7" />}
         {todayPts.length > 1 && <polyline points={todayPts.map(p => `${mx(p.m)},${vy(p.v)}`).join(' ')} fill="none" stroke="var(--accent)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />}
         {predLine && <polyline points={predLine} fill="none" stroke="var(--accent)" strokeWidth="1.5" strokeDasharray="6 4" opacity="0.8" />}
-        <line x1={mx(nowMin)} y1={CPAD.top} x2={mx(nowMin)} y2={CPAD.top + ph} stroke="var(--text3)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.6" />
+        <line x1={mx(nowMin)} y1={P.top} x2={mx(nowMin)} y2={P.top + ph} stroke="var(--text3)" strokeWidth="0.7" strokeDasharray="3 3" opacity="0.6" />
         {isNum(curKwh) && <circle cx={mx(nowMin)} cy={vy(curKwh)} r="4" fill="var(--accent)" stroke="var(--bg)" strokeWidth="2" />}
         {pred && <circle cx={mx(DAY_MIN)} cy={vy(pred.total)} r="4" fill="var(--bg)" stroke="var(--accent)" strokeWidth="2" />}
-        {hm != null && <line x1={mx(hm)} y1={CPAD.top} x2={mx(hm)} y2={CPAD.top + ph} stroke="var(--text2)" strokeWidth="0.8" />}
+        {hm != null && <line x1={mx(hm)} y1={P.top} x2={mx(hm)} y2={P.top + ph} stroke="var(--text2)" strokeWidth="0.8" />}
       </svg>
       {hm != null && <ChartTooltip x={mx(hm)} title={fmtHM(hm)} rows={rows} />}
     </div>
@@ -317,44 +369,67 @@ function PowerChart({ pts, nowMin, baseW, bands = [], H = 150 }) {
   )
 }
 
-function DailyBars({ bars, H = 140 }) {
+// This week (Monday first) next to the same weekday of last week: last week = dashed outline (as in the
+// cumulative chart), this week = solid, today = the part so far plus the prediction as a dashed outline.
+// The weather of each day sits under its label.
+const WPAD = { top: 12, right: 14, bottom: 46, left: 50 }
+function WeekChart({ week, pred, weatherKinds, H = 200 }) {
   const [hi, setHi] = useState(null)
-  const pw = CW - CPAD.left - CPAD.right, ph = H - CPAD.top - CPAD.bottom
-  const { max: yMax, ticks } = niceScale(Math.max(...bars.map(b => b.kwh || 0), 0.5), 3)
-  const slot = pw / Math.max(1, bars.length), bw = Math.min(46, slot - 8)
-  const vy = v => CPAD.top + (1 - v / yMax) * ph
+  const P = WPAD
+  const pw = CW - P.left - P.right, ph = H - P.top - P.bottom
+  const { max: yMax, ticks } = niceScale(Math.max(...week.days.flatMap(d => [d.kwh || 0, d.prevKwh || 0]), pred?.total || 0, 0.5), 3)
+  const slot = pw / 7, bw = Math.min(26, (slot - 10) / 2)
+  const vy = v => P.top + (1 - v / yMax) * ph
+  const base = P.top + ph
+  const barPath = (x, v, w) => {
+    const y = vy(v), h = Math.max(0, base - y), r = Math.min(4, h / 2, w / 2)
+    return h > 0 ? `M${x},${base} V${y + r} Q${x},${y} ${x + r},${y} H${x + w - r} Q${x + w},${y} ${x + w},${y + r} V${base} Z` : null
+  }
+  const d = hi != null ? week.days[hi] : null
 
   return (
     <div data-no-swipe style={{ position: 'relative' }}>
-      <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block' }} role="img" aria-label="Daily energy, last days">
+      <svg width="100%" viewBox={`0 0 ${CW} ${H}`} style={{ display: 'block' }} role="img"
+        aria-label={`Daily energy this week, ${fmtKwh(week.thisSoFar)} so far; last week ${fmtKwh(week.lastFull)}`} onPointerLeave={() => setHi(null)}>
         {ticks.map((v, i) => (
           <g key={i}>
-            <line x1={CPAD.left} y1={vy(v)} x2={CPAD.left + pw} y2={vy(v)} stroke="var(--border)" strokeWidth=".5" />
-            <text x={CPAD.left - 5} y={vy(v) + 3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{v.toFixed(yMax < 5 ? 1 : 0)}</text>
+            <line x1={P.left} y1={vy(v)} x2={P.left + pw} y2={vy(v)} stroke="var(--border)" strokeWidth=".5" />
+            <text x={P.left - 5} y={vy(v) + 3} textAnchor="end" fontSize="9" fill="var(--text3)" fontFamily="monospace">{v.toFixed(yMax < 5 ? 1 : 0)}</text>
           </g>
         ))}
-        {bars.map((b, i) => {
-          const x = CPAD.left + i * slot + (slot - bw) / 2
-          const v = b.kwh || 0, y = vy(v), h = Math.max(0, CPAD.top + ph - y)
-          const r = Math.min(4, h / 2, bw / 2)
-          const path = h > 0
-            ? `M${x},${CPAD.top + ph} V${y + r} Q${x},${y} ${x + r},${y} H${x + bw - r} Q${x + bw},${y} ${x + bw},${y + r} V${CPAD.top + ph} Z`
-            : null
+        <text x={10} y={P.top + ph / 2} textAnchor="middle" fontSize="9" fill="var(--text3)" transform={`rotate(-90,10,${P.top + ph / 2})`}>kWh</text>
+        {week.days.map((day, i) => {
+          const cx = P.left + i * slot + slot / 2
+          const xPrev = cx - bw - 1, xCur = cx + 1
+          const prevP = isNum(day.prevKwh) ? barPath(xPrev, day.prevKwh, bw) : null
+          const curP = isNum(day.kwh) ? barPath(xCur, day.kwh, bw) : null
+          const lowCur = day.coverage < ENERGY.minCoverage, lowPrev = day.prevCoverage < ENERGY.minCoverage
+          const kinds = weatherKinds?.get(day.key) || []
           return (
-            <g key={b.key} onPointerEnter={() => setHi(i)} onPointerLeave={() => setHi(null)} style={{ cursor: 'default' }}>
-              <rect x={CPAD.left + i * slot} y={CPAD.top} width={slot} height={ph} fill="transparent" />
-              {path && <path d={path} fill="var(--accent)" opacity={b.partial ? 0.45 : (b.coverage < ENERGY.minCoverage ? 0.6 : 1)} />}
-              <text x={x + bw / 2} y={H - 6} textAnchor="middle" fontSize="9" fill={b.partial ? 'var(--text2)' : 'var(--text3)'} fontFamily="monospace">{b.label}</text>
+            <g key={day.key} onPointerEnter={() => setHi(i)}>
+              <rect x={P.left + i * slot} y={P.top} width={slot} height={H - P.top} fill={hi === i ? 'var(--bg2)' : 'transparent'} />
+              {prevP && <path d={prevP} fill="none" stroke="var(--text3)" strokeWidth="1.3" strokeDasharray="4 3" opacity={lowPrev ? 0.5 : 0.9} />}
+              {curP && <path d={curP} fill="var(--accent)" opacity={day.partial ? 0.55 : lowCur ? 0.6 : 1} />}
+              {day.partial && pred && pred.total > (day.kwh || 0) && (
+                <rect x={xCur} y={vy(pred.total)} width={bw} height={Math.max(0, vy(day.kwh || 0) - vy(pred.total))} rx="2"
+                  fill="none" stroke="var(--accent)" strokeWidth="1.3" strokeDasharray="4 3" />
+              )}
+              <text x={cx} y={base + 13} textAnchor="middle" fontSize="9" fontWeight={day.partial ? 700 : 400} fill={day.partial ? 'var(--text)' : 'var(--text3)'} fontFamily="monospace">
+                {day.partial ? 'Today' : day.label}</text>
+              <text x={cx} y={base + 24} textAnchor="middle" fontSize="8" fill="var(--text3)" fontFamily="monospace">{day.date}</text>
+              <text x={cx} y={base + 38} textAnchor="middle" fontSize="11">{kinds.map(k => iconOf(k)).join('')}</text>
             </g>
           )
         })}
-        <line x1={CPAD.left} y1={CPAD.top + ph} x2={CPAD.left + pw} y2={CPAD.top + ph} stroke="var(--border)" strokeWidth="1" />
+        <line x1={P.left} y1={base} x2={P.left + pw} y2={base} stroke="var(--border)" strokeWidth="1" />
       </svg>
-      {hi != null && (
-        <ChartTooltip x={CPAD.left + hi * slot + slot / 2} title={bars[hi].key + (bars[hi].partial ? ' · so far' : '')} rows={[
-          { label: 'Energy', value: fmtKwh(bars[hi].kwh), stroke: 'var(--accent)' },
-          { label: 'Data coverage', value: fmtPct(bars[hi].coverage), stroke: 'transparent' },
-        ]} />
+      {d && (
+        <ChartTooltip x={P.left + hi * slot + slot / 2} title={`${d.label} ${d.date}${d.partial ? ' · so far' : ''}`} rows={[
+          !d.future && { label: 'This week', value: isNum(d.kwh) ? `${fmtKwh(d.kwh)} · ${fmtPct(d.coverage)}` : 'no data', stroke: 'var(--accent)' },
+          d.partial && pred && { label: 'Prediction', value: fmtKwh(pred.total), stroke: 'var(--accent)', dash: '4 3' },
+          { label: `Last week (${d.prevKey.slice(5).replace('-', '/')})`, value: isNum(d.prevKwh) ? `${fmtKwh(d.prevKwh)} · ${fmtPct(d.prevCoverage)}` : 'no data', stroke: 'var(--text3)', dash: '4 3' },
+          (weatherKinds?.get(d.key) || []).length > 0 && { label: weatherKinds.get(d.key).map(k => `${iconOf(k)} ${WEATHER_KINDS[k].label}`).join(' · '), value: '', stroke: 'transparent' },
+        ].filter(Boolean)} />
       )}
     </div>
   )
@@ -483,7 +558,7 @@ function Legend({ items }) {
     <div style={{ display: 'flex', gap: 'var(--sp-3)', fontSize: 'var(--fs-2xs)', color: 'var(--text3)', flexWrap: 'wrap' }}>
       {items.map(it => (
         <span key={it.label} style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
-          {it.band
+          {it.swatch ? it.swatch : it.band
             ? <span style={{ width: 16, height: 8, background: 'var(--accent-soft)', display: 'inline-block', borderRadius: 2 }} />
             : <svg width="20" height="6" aria-hidden="true"><line x1="0" y1="3" x2="20" y2="3" stroke={it.stroke} strokeWidth="2" strokeDasharray={it.dash || 'none'} /></svg>}
           {it.label}
@@ -511,29 +586,47 @@ function LiveDot({ stale }) {
 }
 
 // ─── Main EnergyTab ────────────────────────────────────────────────────────────
-export function EnergyTab() {
+// ─── Calendar sub-tab: the month (energy, cost, weather per day), then the year ───
+function CalendarPanel({ legs, contract }) {
+  const energy = useDailyEnergy(legs)
+  const weather = useWeather(372, { fields: ['code'], interval: 30 * 60000 })
+  return (
+    <div style={{ flex: 1, overflow: 'auto' }}>
+      {(energy.error || weather.error) && (
+        <div role="alert" style={{ margin: 'var(--sp-2) var(--sp-4) 0', fontSize: 'var(--fs-xs)', color: 'var(--danger)', fontFamily: 'var(--mono)' }}>
+          ⚠ {[energy.error && `energy: ${energy.error}`, weather.error && `weather: ${weather.error}`].filter(Boolean).join(' · ')}
+        </div>
+      )}
+      <Section title="Month">
+        <MonthCalendar energy={energy} weatherKinds={weather.kinds} contract={contract} minCoverage={ENERGY.minCoverage} />
+      </Section>
+      <Section title="Year · daily energy">
+        <EnergyCalendar energy={energy} weatherKinds={weather.kinds} />
+      </Section>
+      <Section title="Data source" last>
+        <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)', lineHeight: 1.7 }}>
+          Energy: NILM daily totals (live readings for 30 days, then the daily archive). Weather: Open-Meteo (CC BY 4.0) through the Pi,
+          hourly, archived one year{weather.hours.length ? ` · ${weather.kinds.size} day${weather.kinds.size === 1 ? '' : 's'} with weather` : ' · no weather data yet'}.
+          A day shows every weather that lasted 2 hours or more (1 hour for rain, snow or storms).
+        </div>
+      </Section>
+    </div>
+  )
+}
+
+// sub / onSub: the sub-tab index lives in App.jsx, which swipes through the sub-tabs before changing tab
+export function EnergyTab({ sub = 0, onSub = () => {} }) {
   const { activeContract, addContract, updateContract } = useStore()
   const [editingContract, setEditingContract] = useState(null)
-  const [subTab, setSubTab] = useState('overview')
+  const subTab = ENERGY_SUB_TABS[Math.max(0, Math.min(ENERGY_SUB_TABS.length - 1, sub))].key
+  // The calendar reads a year of data: mounted the first time it is shown, then kept
+  const [calendarSeen, setCalendarSeen] = useState(false)
+  useEffect(() => { if (subTab === 'calendar') setCalendarSeen(true) }, [subTab])
   const [showCtGuide, setShowCtGuide] = useState(false)
   const [showCalib, setShowCalib] = useState(false)
-  const [calibration, setCalibration] = useState(null)
-  const [calibError, setCalibError] = useState(null)
-  async function loadCalibration() {
-    try {
-      const r = await fetch(`${API_BASE}/api/admin/nilm/calibration`)
-      if (!r.ok) throw new Error(`HTTP ${r.status}`)
-      setCalibration(await r.json()); setCalibError(null)
-    } catch (e) { setCalibError(e.message) }
-  }
-  useEffect(() => { loadCalibration() }, [])
-  const legs = useMemo(() => resolveLegs(calibration), [calibration])
-
-  const SUB_TABS = [
-    { key: 'overview', label: 'Overview' },
-    { key: 'devices', label: 'Per-device' },
-    { key: 'timeline', label: 'Timeline' },
-  ]
+  const [editRoutines, setEditRoutines] = useState(false)
+  const { legs, calibration, setCalibration, error: calibError } = useNilmLegs()
+  const [routines, setRoutines] = useRoutines()
 
   // Clock: drives "now" markers and the midnight rollover of the queries
   const [now, setNow] = useState(() => Date.now())
@@ -542,8 +635,9 @@ export function EnergyTab() {
   const todayMs = today.getTime()
   const todayKey = dayKeyOf(today)
   const nowMin = Math.min(DAY_MIN, (now - todayMs) / 60000)
+  // History: the prediction reference days, the month so far (tier of today's cost) and last week from Monday
   const histStartMs = Math.min(addDays(today, -ENERGY.historyDays).getTime(),
-    new Date(today.getFullYear(), today.getMonth(), 1).getTime())
+    new Date(today.getFullYear(), today.getMonth(), 1).getTime(), addDays(mondayOf(now), -7).getTime())
 
   // ── Queries (all through nginx, read-only token on iot-hot)
   const qLive = useMemo(() => FLUX.nilmPower('-2m', 'now()', null), [])
@@ -640,8 +734,6 @@ export function EnergyTab() {
   const costToday = dayCost(todayKwh, mtdToday.kwh, activeContract)
   const costPred = pred ? dayCost(pred.total, mtdToday.kwh, activeContract) : null
   const costYesterday = yesterday ? dayCost(yesterday.total, mtdYesterday.kwh, activeContract) : null
-  const monthNow = isNum(todayKwh) ? mtdToday.kwh + todayKwh : null
-  const curTier = isNum(monthNow) ? tierAt(monthNow, activeContract) : null
 
   const ySameTime = yesterday ? cumAt(yesterday, nowMin) : null
   const verdict = !pred || !yesterday || !(yesterday.total > 0) ? null
@@ -649,16 +741,17 @@ export function EnergyTab() {
     : pred.total > yesterday.total * 1.05 ? { kind: 'above', icon: '⚠', color: 'var(--danger)', text: `${((pred.total / yesterday.total - 1) * 100).toFixed(0)}% above yesterday` }
     : { kind: 'similar', icon: '→', color: 'var(--text2)', text: 'In line with yesterday' }
 
-  // Daily bars: reference window + today (partial)
-  const bars = useMemo(() => {
-    const out = []
-    for (let i = ENERGY.historyDays; i >= 1; i--) {
-      const dt = addDays(today, -i), k = dayKeyOf(dt), d = histDays.get(k)
-      out.push({ key: k, label: `${pad2(dt.getMonth() + 1)}/${pad2(dt.getDate())}`, kwh: d?.total ?? 0, coverage: d?.coverage ?? 0 })
-    }
-    out.push({ key: todayKey, label: 'Today', kwh: todayKwh ?? 0, coverage: todayCoverage ?? 0, partial: true })
-    return out
-  }, [histDays, todayKey, todayKwh, todayCoverage]) // eslint-disable-line react-hooks/exhaustive-deps
+  // Week: this week (Monday first) against last week, from the 5-min history and today's 1-min windows
+  const week = useMemo(() => buildWeek(now,
+    key => key === todayKey ? (todayDay ? { kwh: todayDay.total, coverage: todayCoverage ?? 0 } : null)
+      : (d => d ? { kwh: d.total, coverage: d.coverage } : null)(histDays.get(key)),
+    (key, m) => { const d = histDays.get(key); return d ? cumAt(d, m) : null }, nowMin),
+  [histDays, todayDay, todayCoverage, todayKey, Math.floor(nowMin / 5)]) // eslint-disable-line react-hooks/exhaustive-deps
+  const weekDelta = week.prevDays && week.lastAtPoint > 0 ? week.thisSoFar / week.lastAtPoint - 1 : null
+
+  // Context of the day: weather (2 weeks, for the week chart too), sunrise/sunset, routines of today
+  const weather = useWeather(15)
+  const routinesToday = useMemo(() => expandRoutines(routines, todayMs, todayMs + DAY_MIN * 60000 - 1), [routines, todayMs])
 
   const curPeriod = getCurrentPeriod()
 
@@ -692,8 +785,8 @@ export function EnergyTab() {
 
       {/* Sub-tab bar */}
       <div style={{ padding: '0 var(--sp-4)', borderBottom: '0.5px solid var(--border)', display: 'flex', gap: 'var(--sp-1)', flexShrink: 0, background: 'var(--bg)' }}>
-        {SUB_TABS.map(t => (
-          <button key={t.key} onClick={() => setSubTab(t.key)} className="hp-focus-visible"
+        {ENERGY_SUB_TABS.map((t, i) => (
+          <button key={t.key} onClick={() => onSub(i)} className="hp-focus-visible"
             style={{ padding: 'var(--sp-2) var(--sp-3)', fontSize: 'var(--fs-sm)', fontWeight: 600, background: 'none', border: 'none', cursor: 'pointer',
               color: subTab === t.key ? 'var(--text)' : 'var(--text3)',
               borderBottom: subTab === t.key ? '2px solid var(--accent-vivid)' : '2px solid transparent', marginBottom: -1 }}>
@@ -721,7 +814,11 @@ export function EnergyTab() {
         </div>
       )}
 
-      {subTab === 'overview' && (
+      {/* Sub-tabs side by side, slid like the main tabs (swipe handled in App.jsx) */}
+      <div style={{ flex: 1, overflow: 'hidden', position: 'relative' }}>
+      <div style={{ display: 'flex', width: `${ENERGY_SUB_TABS.length * 100}%`, height: '100%',
+        transform: `translateX(-${ENERGY_SUB_TABS.findIndex(t => t.key === subTab) * (100 / ENERGY_SUB_TABS.length)}%)`, transition: 'transform 0.28s var(--ease)' }}>
+      <div style={{ width: `${100 / ENERGY_SUB_TABS.length}%`, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} aria-hidden={subTab !== 'overview'}>
         <div style={{ flex: 1, overflow: 'auto' }}>
 
           {/* KPI row */}
@@ -754,8 +851,34 @@ export function EnergyTab() {
               { label: 'Yesterday', stroke: 'var(--text3)', dash: '5 4' },
               { label: 'Prediction', stroke: 'var(--accent)', dash: '6 4' },
               { label: 'Range of past days', band: true },
+              { label: 'Night', swatch: <span style={{ width: 16, height: 8, background: 'var(--text3)', opacity: 0.25, display: 'inline-block', borderRadius: 2 }} /> },
+              { label: 'Routine (declared)', swatch: <span style={{ width: 16, height: 8, border: `1.2px solid ${ROUTINE}`, background: 'rgba(152,135,239,0.15)', display: 'inline-block', borderRadius: 2 }} /> },
             ]} />}>
-            <CumulativeChart todayDay={todayDay} nowMin={nowMin} yesterday={yesterday} pred={pred} />
+            <CumulativeChart todayDay={todayDay} nowMin={nowMin} yesterday={yesterday} pred={pred}
+              dayMs={todayMs} weather={weather.hours} sun={weather.sun.get(todayKey)} routines={routinesToday} />
+            <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', flexWrap: 'wrap', marginTop: 'var(--sp-1)', fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>
+              <span>{weather.error ? `⚠ weather unavailable (${weather.error})` : weather.hours.length ? 'Weather by hour: Open-Meteo (CC BY 4.0), past hours only' : 'No weather data yet (collector added in v1.6.0)'}</span>
+              <button onClick={() => setEditRoutines(true)} className="hp-focus-visible" style={{ marginLeft: 'auto', padding: '2px 8px', borderRadius: 'var(--r-sm)',
+                fontSize: 'var(--fs-2xs)', fontWeight: 600, border: '0.5px solid var(--border)', background: 'var(--bg2)', color: 'var(--text2)', cursor: 'pointer' }}>
+                Routines{routines.length ? ` (${routines.filter(r => r.enabled !== false).length})` : ''}</button>
+            </div>
+          </Section>
+
+          <Section title="This week · daily energy" right={
+            <Legend items={[
+              { label: 'This week', swatch: <span style={{ width: 10, height: 10, background: 'var(--accent)', display: 'inline-block', borderRadius: 2 }} /> },
+              { label: 'Last week', swatch: <span style={{ width: 10, height: 10, border: '1.3px dashed var(--text3)', display: 'inline-block', borderRadius: 2 }} /> },
+              { label: 'Prediction', swatch: <span style={{ width: 10, height: 10, border: '1.3px dashed var(--accent)', display: 'inline-block', borderRadius: 2 }} /> },
+            ]} />}>
+            <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'baseline', flexWrap: 'wrap', marginBottom: 'var(--sp-1)', fontSize: 'var(--fs-xs)', color: 'var(--text2)' }}>
+              <span>This week so far <b style={{ fontFamily: 'var(--mono)', color: 'var(--text)' }}>{fmtKwh(week.thisSoFar, 1)}</b></span>
+              <span>Last week at this point <b style={{ fontFamily: 'var(--mono)' }}>{week.prevDays ? fmtKwh(week.lastAtPoint, 1) : '—'}</b>
+                {isNum(weekDelta) && <span style={{ marginLeft: 4, color: weekDelta < -0.05 ? 'var(--ok)' : weekDelta > 0.05 ? 'var(--danger)' : 'var(--text2)' }}>
+                  ({weekDelta > 0 ? '+' : ''}{Math.round(weekDelta * 100)}%)</span>}</span>
+              <span>Last week in total <b style={{ fontFamily: 'var(--mono)' }}>{week.prevDays ? fmtKwh(week.lastFull, 1) : '—'}</b>{week.prevDays > 0 && week.prevDays < 7 ? ` (${week.prevDays} days with data)` : ''}</span>
+            </div>
+            <WeekChart week={week} pred={pred} weatherKinds={weather.kinds} />
+            <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)', marginTop: 2 }}>faded = partial day or &lt;{Math.round(ENERGY.minCoverage * 100)}% data</div>
           </Section>
 
           <Section title="Power today (1 min mean)" right={<Legend items={[
@@ -764,41 +887,6 @@ export function EnergyTab() {
           ]} />}>
             <PowerChart pts={powerPts} nowMin={nowMin} baseW={baseW} bands={todayBands} />
           </Section>
-
-          <Section title={`Daily energy · last ${ENERGY.historyDays} days`} right={
-            <span style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>faded = partial day or &lt;{Math.round(ENERGY.minCoverage * 100)}% data</span>}>
-            <DailyBars bars={bars} />
-          </Section>
-
-          <Section title="Daily energy calendar">
-            <EnergyCalendar legs={legs} />
-          </Section>
-
-          {/* Month to date + tiers */}
-          {activeContract?.utilities?.electricity?.tiers?.length > 0 && (
-            <Section title="Month to date">
-              <div className="hp-card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 'var(--sp-2)', gap: 'var(--sp-2)', flexWrap: 'wrap' }}>
-                  <span style={{ fontFamily: 'var(--mono)', fontWeight: 700, fontSize: 'var(--fs-md)' }}>{fmtKwh(monthNow, 1)}</span>
-                  <span style={{ fontSize: 'var(--fs-xs)', color: 'var(--text3)' }}>
-                    {curTier ? `now in ${curTier.label} · ¥${curTier.ratePerKwh}/kWh` : ''}{mtdToday.partial ? ' · month starts before the 30-day retention: partial' : ''}
-                  </span>
-                </div>
-                <div style={{ fontSize: 'var(--fs-sm)', fontWeight: 600, marginBottom: 'var(--sp-2)' }}>Pricing tiers (monthly kWh) — {activeContract.name}</div>
-                {activeContract.utilities.electricity.tiers.map((tier, i, arr) => (
-                  <div key={tier.id} style={{ display: 'flex', justifyContent: 'space-between', padding: 'var(--sp-1) 0', borderBottom: i < arr.length - 1 ? '0.5px solid var(--border)' : 'none', fontSize: 'var(--fs-base)' }}>
-                    <span style={{ color: tier === curTier ? 'var(--text)' : 'var(--text2)', fontWeight: tier === curTier ? 700 : 400 }}>{tier === curTier ? '▸ ' : ''}{tier.label} · {tier.from}–{tier.to ?? '∞'} kWh</span>
-                    <span style={{ fontFamily: 'var(--mono)', color: 'var(--text)', fontWeight: 700 }}>¥{tier.ratePerKwh}/kWh</span>
-                  </div>
-                ))}
-                {(activeContract.utilities.electricity.standingChargePerDay || 0) > 0 && (
-                  <div style={{ display: 'flex', justifyContent: 'space-between', paddingTop: 'var(--sp-2)', fontSize: 'var(--fs-xs)', color: 'var(--text3)' }}>
-                    <span>Standing charge</span><span style={{ fontFamily: 'var(--mono)' }}>¥{activeContract.utilities.electricity.standingChargePerDay}/day</span>
-                  </div>
-                )}
-              </div>
-            </Section>
-          )}
 
           <Section title="Tariff periods">
             <PeakTimeline24h />
@@ -816,11 +904,13 @@ export function EnergyTab() {
             </div>
           </Section>
         </div>
-      )}
+      </div>
 
-      {subTab === 'timeline' && <RoomTimeline legs={legs} />}
+      <div style={{ width: `${100 / ENERGY_SUB_TABS.length}%`, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} aria-hidden={subTab !== 'calendar'}>
+        {calendarSeen && <CalendarPanel legs={legs} contract={activeContract} />}
+      </div>
 
-      {subTab === 'devices' && (
+      <div style={{ width: `${100 / ENERGY_SUB_TABS.length}%`, height: '100%', display: 'flex', flexDirection: 'column', overflow: 'hidden' }} aria-hidden={subTab !== 'devices'}>
         <div style={{ flex: 1, overflow: 'auto' }}>
           <Section title="Per circuit (measured)">
             <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(160px,1fr))', gap: 'var(--sp-2)' }}>
@@ -871,7 +961,9 @@ export function EnergyTab() {
             </div>
           </div>
         </div>
-      )}
+      </div>
+      </div>
+      </div>
 
       {showCtGuide && (
         <Modal onClose={() => setShowCtGuide(false)}>
@@ -882,6 +974,12 @@ export function EnergyTab() {
       {showCalib && (
         <Modal onClose={() => {}}>
           <NilmCalibrationWizard current={calibration} onClose={() => setShowCalib(false)} onSaved={s => setCalibration(s)} />
+        </Modal>
+      )}
+
+      {editRoutines && (
+        <Modal onClose={() => setEditRoutines(false)}>
+          <RoutinesEditor routines={routines} onSaved={d => setRoutines(d.routines || [])} onClose={() => setEditRoutines(false)} />
         </Modal>
       )}
 

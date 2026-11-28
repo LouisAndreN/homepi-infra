@@ -2,3 +2,6 @@ telegraf_mqtt_password: "{{ lookup('community.sops.sops', playbook_dir + '/secre
 telegraf_influx_token: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/influx.sops.yaml', extract='[\"influx_telegraf_token\"]') }}"
 telegraf_passwd_tool: /usr/local/sbin/homepi-mqtt-passwd
 telegraf_broker_passwd_file: /etc/mosquitto/passwd/telegraf.passwd
+# Home location for the weather collector (Open-Meteo): SOPS only, never in the repository (docs/runbooks/weather.md)
+telegraf_weather_lat: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/weather.sops.yaml', extract='[\"weather_lat\"]') }}"
+telegraf_weather_lon: "{{ lookup('community.sops.sops', playbook_dir + '/secrets/weather.sops.yaml', extract='[\"weather_lon\"]') }}"

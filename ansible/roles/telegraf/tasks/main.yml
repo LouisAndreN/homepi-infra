@@ -26,11 +26,24 @@
     state: reloaded
   when: telegraf_broker_password is changed
 
+# The location goes into an environment file: a value that is not a plain number would be a way to inject
+# another variable, so anything else stops the run here.
+- name: Weather location from SOPS is two plain numbers
+  ansible.builtin.assert:
+    that:
+      - telegraf_weather_lat | string is match('^-?[0-9]{1,2}([.][0-9]{1,6})?$')
+      - telegraf_weather_lon | string is match('^-?[0-9]{1,3}([.][0-9]{1,6})?$')
+    fail_msg: "weather_lat / weather_lon in ansible/secrets/weather.sops.yaml must be decimal degrees (docs/runbooks/weather.md)"
+    quiet: true
+  no_log: true
+
 - name: Telegraf secrets (environment file read by systemd only)
   ansible.builtin.copy:
     content: |
       TELEGRAF_MQTT_PASSWORD={{ telegraf_mqtt_password }}
       TELEGRAF_INFLUX_TOKEN={{ telegraf_influx_token }}
+      HOMEPI_WEATHER_LAT={{ telegraf_weather_lat }}
+      HOMEPI_WEATHER_LON={{ telegraf_weather_lon }}
     dest: /var/lib/secrets/telegraf.env
     owner: root
     group: root
@@ -65,6 +78,15 @@
     mode: "0755"
   register: telegraf_nilm_processor
 
+- name: Weather collector (run by Telegraf inputs.exec)
+  ansible.builtin.copy:
+    src: homepi-weather
+    dest: /usr/local/sbin/homepi-weather
+    owner: root
+    group: root
+    mode: "0755"
+  register: telegraf_weather_tool
+
 - name: NILM calibration state directory (API writes, Telegraf reads)
   ansible.builtin.file:
     path: /var/lib/homepi/nilm
@@ -80,7 +102,7 @@
     owner: root
     group: telegraf
     mode: "0640"
-  loop: [homepi_mqtt.conf, nilm.conf, homepi_events.conf, homepi_time.conf]
+  loop: [homepi_mqtt.conf, nilm.conf, homepi_events.conf, homepi_time.conf, weather.conf]
   register: telegraf_confs
 
 # A restart decided only from "changed in this run" is lost when the run fails after the copy: the next run
@@ -94,7 +116,7 @@
     mono=$(systemctl show telegraf -p ActiveEnterTimestampMonotonic --value)
     btime=$(awk '/^btime/ {print $2}' /proc/stat)
     start_s=$(( ${mono:-0} > 0 ? btime + mono / 1000000 : 0 ))
-    newest=$(stat -c %Y /etc/telegraf/telegraf.conf /etc/telegraf/telegraf.d/*.conf /usr/local/sbin/homepi-nilm-calibrate \
+    newest=$(stat -c %Y /etc/telegraf/telegraf.conf /etc/telegraf/telegraf.d/*.conf /usr/local/sbin/homepi-nilm-calibrate /usr/local/sbin/homepi-weather \
       /var/lib/secrets/telegraf.env /etc/systemd/system/telegraf.service.d/*.conf 2>/dev/null | sort -n | tail -1)
     if [ "${newest:-0}" -gt "$start_s" ]; then echo stale; else echo current; fi
   args:
@@ -135,14 +157,14 @@
   failed_when: telegraf_test.rc != 0 or 'E!' in (telegraf_test.stdout + telegraf_test.stderr)
   when:
     - not ansible_check_mode
-    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed or telegraf_running_config.stdout == 'stale'
+    - telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed or telegraf_weather_tool is changed or telegraf_running_config.stdout == 'stale'
 
 - name: Telegraf restarted on the new configuration
   ansible.builtin.systemd:
     name: telegraf
     state: restarted
     daemon_reload: true
-  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed or telegraf_running_config.stdout == 'stale'
+  when: telegraf_broker_password is changed or telegraf_env is changed or telegraf_dropin is changed or telegraf_legacy_dropin is changed or telegraf_confs is changed or telegraf_nilm_processor is changed or telegraf_weather_tool is changed or telegraf_running_config.stdout == 'stale'
 
 - name: Telegraf enabled and running
   ansible.builtin.systemd:

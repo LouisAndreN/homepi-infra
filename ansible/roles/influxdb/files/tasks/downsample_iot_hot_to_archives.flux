@@ -38,3 +38,11 @@ nilm5
   |> group()
   |> map(fn: (r) => ({_time: r._time, _measurement: "nilm_daily", leg: r._field, _field: "n5", _value: float(v: r._value)}))
   |> to(bucket: "iot-archives", org: "iot-org", tagColumns: ["leg"])
+
+// 3) Weather at home (v1.6.0, docs/runbooks/weather.md): hourly weather and daily sunrise/sunset copied as they
+// are (already hourly and daily). The last 3 days are copied every hour: the collector rewrites recent hours
+// in place, and each copy overwrites the same points in iot-archives.
+from(bucket: "iot-hot")
+  |> range(start: -3d)
+  |> filter(fn: (r) => r["_measurement"] == "weather" or r["_measurement"] == "weather_daily")
+  |> to(bucket: "iot-archives", org: "iot-org")

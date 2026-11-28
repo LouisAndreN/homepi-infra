@@ -3,7 +3,7 @@ import { StoreProvider, useStore, useT } from './store/index.jsx'
 // import { SystemTab }    from './tabs/SystemTab.jsx'
 import { SecurityTab }  from './tabs/SecurityTab.jsx'
 import { SensorsTab }   from './tabs/SensorsTab.jsx'
-import { EnergyTab }    from './tabs/EnergyTab.jsx'
+import { EnergyTab, ENERGY_SUB_TABS } from './tabs/EnergyTab.jsx'
 import { FloorPlanTab } from './tabs/FloorPlanTab.jsx'
 import { FleetTab }     from './tabs/FleetTab.jsx'
 import { LedTab }       from './tabs/LedTab.jsx'
@@ -54,8 +54,9 @@ const CSS = `
 const TABS_META=[
   // {id:'system',   icon:'▣',color:'#378ADD'},
   {id:'security', icon:'⬡',color:'#D85A30'},
-  {id:'sensors',  icon:'◈',color:'#1D9E75'},
   {id:'energy',   icon:'◎',color:'#BA7517'},
+  // Sensors = the Timeline (one panel per metric + the event strip), between Energy and the floor plan
+  {id:'sensors',  icon:'◈',color:'#1D9E75'},
   {id:'floorPlan',icon:'▦',color:'#7F77DD'},
   {id:'led',      icon:'☀',color:'#F5A623'},
   {id:'devices',  icon:'◉',color:'#5BA8F5'},
@@ -261,6 +262,11 @@ function AppInner(){
   const{state}=useStore()
   const t=useT()
   const[tab,setTab]=useState(0)
+  // Energy sub-tab (Overview, Calendar, Per-device): here so that a swipe goes through them first
+  const[energySub,setEnergySub]=useState(0)
+  // A tab is mounted the first time it is shown, then kept (its queries do not run before)
+  const[seen,setSeen]=useState(()=>new Set([0]))
+  useEffect(()=>{ setSeen(s=>s.has(tab)?s:new Set([...s,tab])) },[tab])
   const[sidebarCollapsed,setSidebarCollapsed]=useState(()=>{
     try{ return localStorage.getItem('homepi_sidebar_collapsed')==='1' }catch{ return false }
   })
@@ -285,11 +291,17 @@ function AppInner(){
     if(touchStartX.current===null)return
     if(TABS[tab].id==='floorPlan'&&currentEditorMode==='edit'){ touchStartX.current=null; return }
     const dx=e.changedTouches[0].clientX-touchStartX.current
-    if(Math.abs(dx)>65){
-      if(dx<0)setTab(tt=>Math.min(tt+1,TABS.length-1))
-      else     setTab(tt=>Math.max(tt-1,0))
-    }
     touchStartX.current=null
+    if(Math.abs(dx)<=65)return
+    // Inside Energy, a swipe moves between its sub-tabs; past the last (or before the first) it changes tab.
+    // Entering Energy from the right lands on its last sub-tab, from the left on its first.
+    const lastSub=ENERGY_SUB_TABS.length-1
+    const go=nt=>{ if(nt===tab)return; if(TABS[nt].id==='energy')setEnergySub(nt>tab?0:lastSub); setTab(nt) }
+    if(TABS[tab].id==='energy'){
+      if(dx<0&&energySub<lastSub){ setEnergySub(energySub+1); return }
+      if(dx>0&&energySub>0){ setEnergySub(energySub-1); return }
+    }
+    go(dx<0?Math.min(tab+1,TABS.length-1):Math.max(tab-1,0))
   }
 
   return(
@@ -306,16 +318,18 @@ function AppInner(){
           <div className="hp-main" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}
             style={{flex:1,overflow:'hidden',position:'relative'}}>
             <div style={{display:'flex',width:`${TABS.length*100}%`,height:'100%',transform:`translateX(-${tab*(100/TABS.length)}%)`,transition:'transform 0.28s var(--ease)'}}>
-              {TABS.map(t2=>(
+              {TABS.map((t2,i)=>(
                 <div key={t2.id} style={{width:`${100/TABS.length}%`,height:'100%',overflow:'hidden',flexShrink:0}}>
+                  {seen.has(i)&&<>
                   {/* {t2.id==='system'    &&<SystemTab/>} */}
                   {t2.id==='security'  &&<SecurityTab/>}
+                  {t2.id==='energy'    &&<EnergyTab sub={energySub} onSub={setEnergySub}/>}
                   {t2.id==='sensors'   &&<SensorsTab/>}
-                  {t2.id==='energy'    &&<EnergyTab/>}
                   {t2.id==='floorPlan' &&<FloorPlanTab/>}
                   {t2.id==='led'       &&<LedTab/>}
                   {t2.id==='devices'   &&<FleetTab/>}
                   {t2.id==='settings'  &&<SettingsTab/>}
+                  </>}
                 </div>
               ))}
             </div>
