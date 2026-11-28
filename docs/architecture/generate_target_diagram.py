@@ -213,55 +213,63 @@ def overview():
     d = Page()
     INNER = BOX.format(a="center", v="middle").replace("#F2F3F3", "#FFFFFF").replace("#7D8998", "#7AA116")
     PICONT = ("rounded=1;whiteSpace=wrap;html=1;fillColor=#E9F5E1;strokeColor=#7AA116;fontColor=#232F3E;"
-              "fontSize=12;fontStyle=1;align=left;verticalAlign=top;spacingLeft=10;spacingTop=4;arcSize=4;")
+              "fontSize=12;fontStyle=1;align=left;verticalAlign=top;spacingLeft=10;spacingTop=4;arcSize=3;")
+    RIGHT_LABEL = "labelPosition=right;verticalLabelPosition=middle;align=left;verticalAlign=middle;spacingLeft=6;"
     d.v(TEXT.format(v="middle", s=18, b=1, c="#232F3E"),
         "HomePi 全体像：Raspberry Pi 5 1台 + AWSの4アカウント構成", 20, 10, 900, 32)
-    d.v(GRP.format(g="group_corporate_data_center", s="#7D8998", f="#5A6C86", d=0), "自宅（オンプレミス）",
-        20, 60, 710, 620)
-    esp = d.v(BOX.format(a="center", v="middle"), "<b>ESP32 x 7</b><br>隔離されたIoT Wi-Fi<br>デバイスごとの証明書",
-              40, 110, 200, 80)
-    gh = d.v(BOX.format(a="center", v="middle"), "<b>GitHub</b><br>homepi-infra<br>CI（GitHub Actions）",
-             40, 385, 200, 80)
-    lap = d.v(BOX.format(a="center", v="middle"), "<b>ノートPC</b><br>タグの署名鍵、Terraform", 40, 560, 200, 70)
+    d.v(GRP.format(g="group_corporate_data_center", s="#7D8998", f="#5A6C86", d=0),
+        "自宅（オンプレミス）：インターネットに開いたポートなし", 20, 60, 710, 710)
+    esp = d.v(BOX.format(a="center", v="middle"),
+              "<b>ESP32 x 7</b><br>センサー、LED、電力計測ブリッジ<br>隔離されたIoT Wi-Fi<br>デバイスごとの証明書",
+              40, 105, 200, 90)
+    gh = d.v(BOX.format(a="center", v="middle"), "<b>GitHub</b>（+ Pi上のbareリポジトリ）<br>homepi-infra<br>"
+             "CI（GitHub Actions）", 40, 520, 200, 80)
+    lap = d.v(BOX.format(a="center", v="middle"), "<b>ノートPC</b><br>タグの署名鍵、Terraform<br>"
+              "（管理はスマートフォンからも）", 40, 640, 200, 70)
 
     # The Pi and the services inside it
-    pic = d.v(PICONT, "Raspberry Pi 5（Ubuntu 24.04、NVMe）", 390, 90, 300, 400)
-    mq = d.v(INNER, "Mosquitto（MQTT、mTLS + CRL）", 405, 125, 270, 40)
-    bk = d.v(INNER, "バックアップ（age暗号化）", 405, 180, 270, 40)
-    ca = d.v(INNER, "step-ca（中間CA）", 405, 235, 270, 40)
-    acc = d.v(INNER, "nftables（既定拒否）、NetBird、Authelia", 405, 290, 270, 40)
-    obs = d.v(INNER, "Prometheus、Alertmanager、Loki、Grafana", 405, 345, 270, 40)
-    go = d.v(INNER, "Ansible 33ロール + GitOps（署名付きタグ）", 405, 410, 270, 40)
+    pic = d.v(PICONT, "Raspberry Pi 5（Ubuntu 24.04、NVMe）", 390, 90, 300, 630)
+    mq = d.v(INNER, "Mosquitto（MQTT、mTLS + CRL + ACL）", 405, 125, 270, 40)
+    tg = d.v(INNER, "Telegraf → InfluxDB（センサーデータ）", 405, 195, 270, 40)
+    obs = d.v(INNER, "Prometheus、Alertmanager、Loki、Grafana", 405, 265, 270, 40)
+    ca = d.v(INNER, "step-ca（中間CA）+ 登録API", 405, 325, 270, 40)
+    bk = d.v(INNER, "バックアップ（age暗号化）", 405, 380, 270, 40)
+    net = d.v(INNER, "nftables（既定拒否）、Unbound（DNSSEC）", 405, 435, 270, 40)
+    go = d.v(INNER, "Ansible 33ロール + GitOps（署名付きタグ）", 405, 540, 270, 40)
+    acc = d.v(INNER, "nginx + Authelia（2要素認証）、NetBird", 405, 655, 270, 40)
 
-    d.e(esp, mq, "MQTT over mTLS（8883）", extra="exitX=1;exitY=0.25;entryX=0;entryY=0.5;", pts=[(315, 130), (315, 145)])
-    d.e(esp, ca, "起動時に証明書を取得<br>（/step/sign）", extra="exitX=0.5;exitY=1;entryX=0;entryY=0.5;",
-        pts=[(140, 255)])
-    d.e(gh, go, "10分ごとに取得し、<br>署名を確認してAnsibleを適用", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;",
-        pts=[(315, 425), (315, 430)])
-    d.e(lap, gh, "署名付きタグ<br>（git push）")
+    d.e(esp, mq, "MQTT over mTLS（8883）", extra="exitX=1;exitY=0.44;entryX=0;entryY=0.5;")
+    d.e(esp, ca, "起動時に証明書を取得し登録<br>（/step/sign、登録API）", extra="exitX=0.5;exitY=1;entryX=0;entryY=0.5;",
+        pts=[(140, 345)])
+    d.e(mq, tg, "購読して保存", off=(80, 0))
+    d.e(tg, obs, "Grafanaで可視化", off=(85, 0))
+    d.e(gh, go, "10分ごとに取得し、署名を<br>確認してAnsibleを適用", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;")
+    d.e(lap, gh, "署名付きタグ（git push）", off=(0, 0))
+    d.e(lap, acc, "管理：NetBird（WireGuard）<br>+ 2要素認証", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;")
 
     # AWS
     d.v(GRP.format(g="group_aws_cloud_alt", s="#232F3E", f="#232F3E", d=0),
-        "AWS Organization（4アカウント、東京リージョン、SCP）", 800, 60, 460, 620)
-    ra = d.icon(SEC, "identity_and_access_management", "IAM Roles Anywhere<br>長期アクセスキーなし", 870, 160)
-    s3b = d.icon(STO, "s3", "S3 バックアップ<br>Object Lock", 1100, 160)
-    rep = d.icon(STO, "s3", "backup-vault アカウント<br>バックアップの複製", 1100, 290)
-    la = d.icon(STO, "s3", "log-archive アカウント<br>CloudTrail、Piのログ", 870, 290)
-    cw = d.icon(MGT, "cloudwatch_2", "CloudWatch<br>デッドマンスイッチ", 870, 410)
-    sns = d.icon(MGT, "sns", "SNS<br>メール通知", 1100, 410)
-    org = d.icon(MGT, "organizations", "AWS Organizations<br>IAM Identity Center（MFA）", 870, 560)
+        "AWS Organization（4アカウント、東京リージョン、SCP）", 800, 60, 460, 710)
+    cw = d.icon(MGT, "cloudwatch_2", "CloudWatch<br>デッドマンスイッチ", 870, 255)
+    sns = d.icon(MGT, "sns", "SNS<br>メール通知", 1100, 255)
+    ra = d.icon(SEC, "identity_and_access_management", "IAM Roles Anywhere<br>長期アクセスキーなし", 870, 370)
+    s3b = d.icon(STO, "s3", "S3 バックアップ<br>Object Lock", 1100, 370)
+    la = d.icon(STO, "s3", "log-archive アカウント<br>CloudTrail、Piのログ", 870, 485)
+    rep = d.icon(STO, "s3", "backup-vault アカウント<br>バックアップの複製", 1100, 485)
+    org = d.v(ICON.format(c=MGT, r="organizations").replace("verticalLabelPosition=bottom;verticalAlign=top;align=center;",
+                                                            RIGHT_LABEL),
+              "AWS Organizations<br>IAM Identity Center（MFA）", 870, 630, 60, 60, "i")
 
-    d.e(bk, ra, "X.509証明書で認証<br>（aws_signing_helper）", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;",
-        pts=[(745, 200), (745, 190)])
-    d.e(ra, s3b, "暗号化した<br>バックアップ")
-    d.e(s3b, rep, "別アカウントへ<br>複製", extra="exitX=1;exitY=0.5;entryX=1;entryY=0.5;", pts=[(1210, 190), (1210, 320)])
-    d.e(pic, la, "セキュリティログ<br>（5分ごと）", extra="exitX=1;exitY=0.55;entryX=0;entryY=0.5;",
-        pts=[(745, 310), (745, 320)])
-    d.e(obs, cw, "ハートビート<br>（毎分）", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;",
-        pts=[(745, 365), (745, 440)])
+    d.e(obs, cw, "ハートビート（毎分）", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;")
     d.e(cw, sns, "8/10分<br>届かなければ")
-    d.e(lap, org, "Terraform<br>（SSO + MFA）", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;")
-    return d.xml("homepi-overview", "Overview (Qiita)", 1280, 700)
+    d.e(bk, ra, "X.509証明書で認証<br>（aws_signing_helper）", extra="exitX=1;exitY=0.5;entryX=0;entryY=0.5;")
+    d.e(ra, s3b, "暗号化した<br>バックアップ")
+    d.e(s3b, rep, "別アカウントへ<br>複製", extra="exitX=1;exitY=0.5;entryX=1;entryY=0.5;", pts=[(1210, 400), (1210, 515)])
+    d.e(pic, la, "セキュリティログ<br>（5分ごと）", extra="exitX=1;exitY=0.67;entryX=0;entryY=0.5;",
+        pts=[(745, 512), (745, 515)])
+    d.e(lap, org, "Terraform（SSO + MFA）", extra="exitX=0.5;exitY=1;entryX=0.5;entryY=1;",
+        pts=[(140, 745), (900, 745)])
+    return d.xml("homepi-overview", "Overview (Qiita)", 1280, 790)
 
 
 xml = '<mxfile host="app.diagrams.net">' + full() + overview() + '</mxfile>'
