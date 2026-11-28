@@ -26,7 +26,7 @@ import uuid
 
 from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
-from versions import same_version
+from versions import same_version, version_key
 import rollout
 import nilm_calibration
 import routines
@@ -160,6 +160,20 @@ _mqtt_lock = threading.Lock()
 TELEMETRY_KINDS = ("sensors", "status", "nilm")
 LAST_SEEN_MIN_INTERVAL = 30  # seconds between registry writes per device (NILM publishes several per second)
 _last_write: dict[str, tuple[float, str | None]] = {}
+# v1.5.0: Teensy behind a NILM bridge. Version (registry, written when it changes: rollouts of
+# homepi_nilm_teensy compare it) and the health flags of the last window (metrics, alerts).
+_teensy_fw: dict[str, str] = {}
+_teensy_health: dict[str, tuple[float, int, int, int]] = {}   # device -> (monotonic, ct1_fault, gave_up, self_restarts)
+TEENSY_HEALTH_MAX_AGE = 300
+
+
+def _teensy_version(fw_teensy) -> str | None:
+    """fw_teensy of the NILM data (major*100 + minor, 302) -> the catalog version (v3.2.0)."""
+    try:
+        n = int(fw_teensy)
+    except (TypeError, ValueError):
+        return None
+    return f"v{n // 100}.{n % 100}.0" if 100 <= n < 25600 else None
 
 
 def on_sensor_message(client, userdata, msg):
@@ -191,6 +205,31 @@ def on_sensor_message(client, userdata, msg):
                         rid = rollout.record_ack(conn, device_id, str(payload.get("version", ""))[:32])
                     audit(device_id, "ota_received",
                           f"{payload.get('version', '')} running={payload.get('running', '')}" + (f" rollout={rid}" if rid else " (no rollout waiting)"))
+                # v1.5.0: the same reports for the Teensy the NILM bridge relays an image to
+                elif parts[2] == "status" and payload.get("type") == "teensy_ota_failed":
+                    with db() as conn:
+                        conn.execute("INSERT INTO ota_events (device_id, reason, version, detail) VALUES (?, ?, ?, ?)",
+                                     (device_id, ("teensy_" + str(payload.get("reason", "unknown")))[:40],
+                                      str(payload.get("version", ""))[:32], str(payload.get("detail", ""))[:96]))
+                    audit(device_id, "teensy_ota_failed", f"{payload.get('reason')} {payload.get('detail', '')} "
+                          f"{payload.get('version', '')} running={payload.get('running', '')}")
+                elif parts[2] == "status" and payload.get("type") == "teensy_ota_received":
+                    with db() as conn:
+                        rid = rollout.record_ack(conn, device_id, str(payload.get("version", ""))[:32])
+                    audit(device_id, "teensy_ota_received", f"{payload.get('version', '')}" + (f" rollout={rid}" if rid else " (no rollout waiting)"))
+                elif parts[2] == "status" and payload.get("type") in ("teensy_ota_done", "teensy_reboot_done", "teensy_reboot_failed"):
+                    audit(device_id, str(payload["type"]), json.dumps({k: payload.get(k) for k in ("version", "previous", "down_ms", "reason") if k in payload})[:200])
+                elif parts[2] == "nilm":
+                    tv = _teensy_version(payload.get("fw_teensy"))
+                    if tv and _teensy_fw.get(device_id) != tv:
+                        with db() as conn:
+                            conn.execute("UPDATE devices SET teensy_fw=? WHERE device_id=?", (tv, device_id))
+                        if device_id in _teensy_fw:
+                            audit(device_id, "teensy_version", f"{_teensy_fw[device_id]} -> {tv}")
+                        _teensy_fw[device_id] = tv
+                    if "teensy_ct1_fault" in payload:
+                        _teensy_health[device_id] = (time.monotonic(), int(bool(payload.get("teensy_ct1_fault"))),
+                                                     int(bool(payload.get("teensy_gave_up"))), int(payload.get("teensy_self_restarts") or 0))
         except ValueError:
             pass
         now = time.monotonic()
@@ -607,6 +646,25 @@ async def set_device_project(device_id: str, req: ProjectRequest):
     return {"device_id": device_id, "project": req.project}
 
 
+@app.post("/api/admin/devices/{device_id}/teensy-reboot")
+async def admin_teensy_reboot(device_id: str):
+    """v1.5.0: restarts the Teensy behind a NILM bridge (bridge v2.6.0+, Teensy v3.3+), e.g. after a bad
+    start of its ADCs. The bridge reports teensy_reboot_done / teensy_reboot_failed (audit log)."""
+    with db() as conn:
+        row = conn.execute("SELECT project, fw_version, status FROM devices WHERE device_id=?", (device_id,)).fetchone()
+    if not row:
+        raise HTTPException(404, "Unknown device")
+    rel = rollout.RELAYED["homepi_nilm_teensy"]
+    if row["project"] != rel["carrier"] or row["status"] != "active":
+        raise HTTPException(409, f"{device_id} is not an active {rel['carrier']} device")
+    if version_key(row["fw_version"]) < rel["carrier_min"]:
+        raise HTTPException(409, f"bridge firmware {row['fw_version']} cannot restart the Teensy (v2.6.0+ needed)")
+    info = get_mqtt().publish(f"iot/{device_id}/commands", json.dumps({"type": "teensy_reboot"}), qos=1)
+    info.wait_for_publish(timeout=5)
+    audit(device_id, "teensy_reboot_commanded", operator="operator")
+    return {"status": "teensy_reboot_command_sent", "device_id": device_id}
+
+
 @app.post("/api/admin/devices/{device_id}/renew")
 async def admin_renew_cert(device_id: str):
     """Dashboard -> comande MQTT -> ESP32 do renewal itself."""
@@ -640,8 +698,11 @@ def _verify_manifest(manifest: str, signature_b64: str) -> dict:
         m = json.loads(manifest)
     except ValueError:
         raise HTTPException(422, "Manifest is not JSON")
-    if not (isinstance(m, dict) and m.get("project") in rollout.PROJECTS and _VERSION.match(str(m.get("version", "")))
-            and m.get("chip_target") in ("esp32c3", "esp32s3") and _SHA256.match(str(m.get("sha256", "")))):
+    project = m.get("project") if isinstance(m, dict) else None
+    # v1.5.0: a relayed image names its own chip (teensy40); a device image an ESP32 chip
+    chips = (rollout.RELAYED[project]["chip"],) if project in rollout.RELAYED else ("esp32c3", "esp32s3")
+    if not (isinstance(m, dict) and project in rollout.CATALOG_PROJECTS and _VERSION.match(str(m.get("version", "")))
+            and m.get("chip_target") in chips and _SHA256.match(str(m.get("sha256", "")))):
         raise HTTPException(422, "Manifest fields are invalid")
     return m
 
@@ -933,6 +994,20 @@ async def homepi_metrics():
         t = _parse_cert_expiry(r["created_at"])
         if t:
             lines.append(f'homepi_rollout_started_timestamp_seconds{{project="{r["project"]}",version="{r["version"]}",phase="{r["phase"]}"}} {int(t.timestamp())}')
+    # v1.5.0: health of the Teensy behind each NILM bridge (Teensy v3.3+), from the last NILM window.
+    # Alert: NilmCt1Fault (the bad-start signature present) / NilmTeensyGaveUp (3 self-restarts did not cure it).
+    lines += ["# HELP homepi_nilm_teensy_ct1_fault 1 when the CT1 bad-start signature is present on the Teensy",
+              "# TYPE homepi_nilm_teensy_ct1_fault gauge",
+              "# HELP homepi_nilm_teensy_gave_up 1 when the Teensy stopped restarting itself (3 in a row)",
+              "# TYPE homepi_nilm_teensy_gave_up gauge",
+              "# HELP homepi_nilm_teensy_self_restarts Self-restarts of the Teensy since its power-up",
+              "# TYPE homepi_nilm_teensy_self_restarts gauge"]
+    mono = time.monotonic()
+    for dev, (t, fault, gave_up, restarts) in sorted(_teensy_health.items()):
+        if mono - t <= TEENSY_HEALTH_MAX_AGE:
+            lines += [f'homepi_nilm_teensy_ct1_fault{{device_id="{dev}"}} {fault}',
+                      f'homepi_nilm_teensy_gave_up{{device_id="{dev}"}} {gave_up}',
+                      f'homepi_nilm_teensy_self_restarts{{device_id="{dev}"}} {restarts}']
     lines += ["# HELP homepi_rollouts_aborted Rollouts aborted in the last 24 hours",
               "# TYPE homepi_rollouts_aborted gauge", f'homepi_rollouts_aborted{{window="24h"}} {aborted}',
               "# HELP homepi_ota_failed_reports OTA failures reported by devices in the last 24 hours",

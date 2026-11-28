@@ -27,6 +27,13 @@ registers and then never confirms (the rollback test image does exactly that) wa
 once the bootloader had reverted it the phase could still pass the soak and the next phase start.
 A confirmed device that runs another version fails the rollout at every step.
 
+v1.5.0: relayed images. A project in RELAYED is not a device but a second chip behind one: the
+Teensy 4.0 of the NILM board is updated through its bridge (homepi_nilm firmware v2.6.0+, command
+teensy_ota). Its devices are the carrier project's devices, its running version is devices.teensy_fw
+(from fw_teensy in the NILM data), and the bridge acknowledges and reports like an ESP32 image:
+teensy_ota_received (acked_at), teensy_ota_failed (ota_events, reason prefixed teensy_). The same
+signing key, the same catalog, the same phases, soak and abort rules.
+
 Usage: rollout.py step   (homepi-ota-rollout.service)
 """
 import json
@@ -38,7 +45,10 @@ from datetime import datetime, timedelta, timezone
 from versions import same_version, version_key
 
 DB_PATH = "/var/lib/homepi/devices.db"
-PROJECTS = ("homepi_sensor", "homepi_led", "homepi_nilm")
+PROJECTS = ("homepi_sensor", "homepi_led", "homepi_nilm")      # device firmware projects
+# v1.5.0: images a device relays to a second chip: project -> carrier project, chip, carrier firmware
+RELAYED = {"homepi_nilm_teensy": {"carrier": "homepi_nilm", "chip": "teensy40", "carrier_min": (2, 6, 0)}}
+CATALOG_PROJECTS = PROJECTS + tuple(RELAYED)
 SILENT_AFTER = timedelta(minutes=10)     # DeviceSilent's threshold
 ACK_TIMEOUT = timedelta(minutes=2)       # ota_received, firmware v2.4.2+
 ACK_SINCE = (2, 4, 2)
@@ -103,6 +113,12 @@ def ensure_schema(conn):
     cols = {r[1] for r in conn.execute("PRAGMA table_info(devices)")}
     if "project" not in cols:
         conn.execute("ALTER TABLE devices ADD COLUMN project TEXT DEFAULT ''")
+    if "teensy_fw" not in cols:   # v1.5.0: version of the Teensy behind a NILM bridge (fw_teensy 302 -> v3.2.0)
+        try:
+            conn.execute("ALTER TABLE devices ADD COLUMN teensy_fw TEXT DEFAULT ''")
+        except sqlite3.OperationalError as e:
+            if "duplicate column" not in str(e):
+                raise
     rd = {r[1] for r in conn.execute("PRAGMA table_info(rollout_devices)")}
     if "acked_at" not in rd:
         try:
@@ -153,15 +169,25 @@ SOAK_DEFAULT = 15
 
 def create(conn, project, version, created_by="operator", soak_minutes=SOAK_DEFAULT, timeout_minutes=20):
     """Creates a rollout and its phases; the first step() sends the canary its command."""
-    if project not in PROJECTS:
+    if project not in CATALOG_PROJECTS:
         raise RolloutError(f"unknown project {project}")
     if not conn.execute("SELECT 1 FROM firmware_images WHERE project=? AND version=?", (project, version)).fetchone():
         raise RolloutError(f"no signed image {project} {version}")
     busy = conn.execute("SELECT id FROM rollouts WHERE project=? AND status='in_progress'", (project,)).fetchone()
     if busy:
         raise RolloutError(f"rollout {busy[0]} already in progress for {project}")
-    rows = conn.execute("SELECT device_id, fw_version FROM devices WHERE status='active' AND project=? "
-                        "ORDER BY enrolled_at ASC, device_id ASC", (project,)).fetchall()
+    rel = RELAYED.get(project)
+    if rel:
+        rows = conn.execute("SELECT device_id, teensy_fw, fw_version FROM devices WHERE status='active' AND project=? "
+                            "ORDER BY enrolled_at ASC, device_id ASC", (rel["carrier"],)).fetchall()
+        old = [f"{r[0]} ({r[2]})" for r in rows if version_key(r[2]) < rel["carrier_min"]]
+        if old:
+            need = "v%d.%d.%d" % rel["carrier_min"]
+            raise RolloutError(f"bridge firmware older than {need} cannot relay {project}: {', '.join(old)}")
+        rows = [(r[0], r[1] or "unknown") for r in rows]
+    else:
+        rows = conn.execute("SELECT device_id, fw_version FROM devices WHERE status='active' AND project=? "
+                            "ORDER BY enrolled_at ASC, device_id ASC", (project,)).fetchall()
     targets = [(r[0], r[1]) for r in rows if not same_version(r[1], version)]
     if not targets:
         raise RolloutError(f"every active {project} device already runs {version}")
@@ -181,7 +207,11 @@ def create(conn, project, version, created_by="operator", soak_minutes=SOAK_DEFA
 
 
 def command(image):
-    """OTA command: the signed manifest for firmware v2.4.1+, url and sha256 for v2.4.0 (first hop)."""
+    """OTA command: the signed manifest for firmware v2.4.1+, url and sha256 for v2.4.0 (first hop).
+    A relayed image (v1.5.0) gets teensy_ota: the bridge checks the same signature itself."""
+    if image["project"] in RELAYED:
+        return json.dumps({"type": "teensy_ota", "version": image["version"], "url": image["url"],
+                           "manifest": image["manifest"], "signature": image["signature"]})
     return json.dumps({"type": "ota", "version": image["version"], "url": image["url"], "sha256": image["sha256"],
                        "manifest": image["manifest"], "signature": image["signature"]})
 
@@ -209,7 +239,8 @@ def _step_one(conn, r, publish, now):
     if image is None:
         abort(conn, rid, f"image {r['project']} {r['version']} is no longer in the catalog", publish)
         return f"rollout {rid}: aborted (image gone)"
-    devices = conn.execute("SELECT d.*, v.fw_version, v.last_seen, v.status AS reg_status FROM rollout_devices d "
+    relayed = r["project"] in RELAYED
+    devices = conn.execute("SELECT d.*, v.fw_version, v.teensy_fw, v.last_seen, v.status AS reg_status FROM rollout_devices d "
                            "LEFT JOIN devices v ON v.device_id = d.device_id "
                            "WHERE d.rollout_id=? AND d.phase=? ORDER BY d.device_id", (rid, phase)).fetchall()
     timeout = timedelta(minutes=r["timeout_minutes"])
@@ -229,6 +260,7 @@ def _step_one(conn, r, publish, now):
         if d["status"] != "sent":
             continue
         sent = _parse(d["sent_at"])
+        running = d["teensy_fw"] if relayed else d["fw_version"]
         ev = conn.execute("SELECT reason, detail FROM ota_events WHERE device_id=? AND ts >= ? ORDER BY id DESC LIMIT 1",
                           (did, d["sent_at"])).fetchone()
         if ev:
@@ -236,26 +268,29 @@ def _step_one(conn, r, publish, now):
             conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
                          (detail, rid, did))
             failed.append(f"{did} {detail}")
-        elif same_version(d["fw_version"], r["version"]):
+        elif same_version(running, r["version"]):
             conn.execute("UPDATE rollout_devices SET status='confirmed', confirmed_at=? WHERE rollout_id=? AND device_id=?",
                          (_ts(now), rid, did))
             _audit(conn, did, "rollout_confirmed", f"rollout={rid} {r['version']}")
-        elif acknowledges(d["from_version"]) and not d["acked_at"] and now - sent > ACK_TIMEOUT:
+        elif (relayed or acknowledges(d["from_version"])) and not d["acked_at"] and now - sent > ACK_TIMEOUT:
             detail = (f"no ota_received {int(ACK_TIMEOUT.total_seconds() // 60)} min after the command "
                       f"(not delivered, or dropped by {d['from_version']})")
             conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
                          (detail, rid, did))
             failed.append(f"{did} {detail}")
         elif now - sent > timeout:
-            detail = (f"still on {d['fw_version']} {r['timeout_minutes']} min after the command "
-                      f"(rolled back by the bootloader, or offline)")
+            detail = (f"still on {running} {r['timeout_minutes']} min after the command "
+                      + ("(the bridge did not report teensy_ota_done, or offline)" if relayed
+                         else "(rolled back by the bootloader, or offline)"))
             conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
                          (detail, rid, did))
             failed.append(f"{did} {detail}")
-    for d in conn.execute("SELECT d.device_id, v.fw_version FROM rollout_devices d LEFT JOIN devices v ON v.device_id = d.device_id "
+    for d in conn.execute("SELECT d.device_id, v.fw_version, v.teensy_fw FROM rollout_devices d LEFT JOIN devices v ON v.device_id = d.device_id "
                           "WHERE d.rollout_id=? AND d.phase<=? AND d.status='confirmed'", (rid, phase)).fetchall():
-        if not same_version(d["fw_version"], r["version"]):
-            detail = f"reverted to {d['fw_version']} after confirming (bootloader rollback: the image never reached the broker)"
+        now_running = d["teensy_fw"] if relayed else d["fw_version"]
+        if not same_version(now_running, r["version"]):
+            detail = (f"runs {now_running} again after confirming" if relayed else
+                      f"reverted to {d['fw_version']} after confirming (bootloader rollback: the image never reached the broker)")
             conn.execute("UPDATE rollout_devices SET status='failed', detail=? WHERE rollout_id=? AND device_id=?",
                          (detail, rid, d["device_id"]))
             failed.append(f"{d['device_id']} {detail}")
