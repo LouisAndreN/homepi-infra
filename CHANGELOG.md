@@ -13,6 +13,7 @@ through the bridge (firmware v2.6.0+, command `teensy_ota`). The registry keeps 
 `/metrics/homepi` exposes its CT1 fault flag and self-restarts. Operator steps:
 docs/runbooks/ota-teensy.md.
 
+- `v1.5.2` 2026-11-28: Qiita overview: Pi services, sensor data path and admin access
 - `v1.5.1` 2026-11-28: Architecture diagram at v1.5.0; changelog summaries for 1.2 and 1.3
 - `v1.5.0` 2026-11-28: remote update and restart of the NILM Teensy
 
