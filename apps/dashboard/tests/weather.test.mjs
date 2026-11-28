@@ -36,6 +36,12 @@ const gapRuns = weatherRuns(hours.filter(h => h.t !== T0 + 2 * H), T0, T0 + 24 *
 ok(gapRuns[0].m1 === 120 && gapRuns[1].m0 === 180, 'a missing hour breaks the run')
 ok(hourAt(hours, T0 + 12 * H + 1800e3).kind === 'rain' && hourAt([], T0) === null && hourAt(hours.slice(0, 1), T0 + 3 * H) === null, 'hour under the cursor, none when stale')
 
+// A dry night hour has no code (cloud cover is not observed): kept for its temperature, never an icon
+const dry = parseWeather([{ _time: iso(T0 + 3 * H), _measurement: 'weather', _field: 'temp', _value: '4.2' },
+  { _time: iso(T0 + 3 * H), _measurement: 'weather', _field: 'dist_km', _value: '7.9' }]).hours
+ok(dry.length === 1 && !dry[0].kind && dry[0].temp === 4.2 && dry[0].distKm === 7.9, 'hour without a code kept, with temperature and station distance')
+ok(!dayKinds(dry).size && !weatherRuns(dry, T0, T0 + 24 * H).length && hourAt(dry, T0 + 3.5 * H).temp === 4.2, 'no icon, no run; the tooltip still finds the hour')
+
 // Tariff: monthly tiers, standing charge per day
 const contract = { utilities: { electricity: { enabled: true, standingChargePerDay: 30, tiers: [{ from: 0, to: 120, ratePerKwh: 30 }, { from: 120, to: 300, ratePerKwh: 36 }, { from: 300, to: null, ratePerKwh: 40 }] } } }
 ok(energyCost(100, 130, contract) === 20 * 30 + 10 * 36, 'a day that crosses into tier 2')

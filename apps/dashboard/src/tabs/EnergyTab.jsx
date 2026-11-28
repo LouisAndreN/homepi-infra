@@ -249,7 +249,8 @@ function CumulativeChart({ todayDay, nowMin, yesterday, pred, dayMs, weather, su
     hm <= nowMin && todayDay && { label: 'Today', value: fmtKwh(cumAt(todayDay, hm)), stroke: 'var(--accent)' },
     hm > nowMin && pred && { label: 'Prediction', value: fmtKwh(interpPred(pred.curve, hm)), stroke: 'var(--accent)', dash: '4 3' },
     yesterday && { label: 'Yesterday', value: fmtKwh(cumAt(yesterday, hm)), stroke: 'var(--text3)', dash: '4 3' },
-    hw && { label: `${iconOf(hw.kind, hw.isDay !== false)} ${WEATHER_KINDS[hw.kind].label}`, value: isNum(hw.temp) ? `${hw.temp.toFixed(1)} °C` : '', stroke: 'transparent' },
+    hw && { label: hw.kind ? `${iconOf(hw.kind, hw.isDay !== false)} ${WEATHER_KINDS[hw.kind].label}` : 'Dry (night: cloud cover not observed)',
+      value: [isNum(hw.temp) && `${hw.temp.toFixed(1)} °C`, hw.precip > 0 && `${hw.precip.toFixed(1)} mm`].filter(Boolean).join(' · '), stroke: 'transparent' },
     ...activeRoutines.map(r => ({ label: `${r.detail} (routine)`, value: r.instant ? fmtClock(r.start) : `${fmtClock(r.start)}–${fmtClock(r.end)}`, stroke: ROUTINE })),
   ].filter(Boolean)
 
@@ -605,9 +606,10 @@ function CalendarPanel({ legs, contract }) {
       </Section>
       <Section title="Data source" last>
         <div style={{ fontSize: 'var(--fs-2xs)', color: 'var(--text3)', lineHeight: 1.7 }}>
-          Energy: NILM daily totals (live readings for 30 days, then the daily archive). Weather: Open-Meteo (CC BY 4.0) through the Pi,
-          hourly, archived one year{weather.hours.length ? ` · ${weather.kinds.size} day${weather.kinds.size === 1 ? '' : 's'} with weather` : ' · no weather data yet'}.
-          A day shows every weather that lasted 2 hours or more (1 hour for rain, snow or storms).
+          Energy: NILM daily totals (live readings for 30 days, then the daily archive). Weather: observed by JMA AMeDAS (出典: 気象庁),
+          nearest stations picked on the Pi (the location is never sent), hourly, archived one year{weather.hours.length ? ` · ${weather.kinds.size} day${weather.kinds.size === 1 ? '' : 's'} with weather` : ' · no weather data yet'}.
+          A day shows every weather that lasted 2 hours or more (1 hour for rain or snow). Sunny, partly cloudy and cloudy come from
+          the measured sunshine, so they exist in daytime only; snow is rain at 1.5 °C or below.
         </div>
       </Section>
     </div>
@@ -857,7 +859,9 @@ export function EnergyTab({ sub = 0, onSub = () => {} }) {
             <CumulativeChart todayDay={todayDay} nowMin={nowMin} yesterday={yesterday} pred={pred}
               dayMs={todayMs} weather={weather.hours} sun={weather.sun.get(todayKey)} routines={routinesToday} />
             <div style={{ display: 'flex', gap: 'var(--sp-3)', alignItems: 'center', flexWrap: 'wrap', marginTop: 'var(--sp-1)', fontSize: 'var(--fs-2xs)', color: 'var(--text3)' }}>
-              <span>{weather.error ? `⚠ weather unavailable (${weather.error})` : weather.hours.length ? 'Weather by hour: Open-Meteo (CC BY 4.0), past hours only' : 'No weather data yet (collector added in v1.6.0)'}</span>
+              <span>{weather.error ? `⚠ weather unavailable (${weather.error})` : weather.hours.length
+                ? `Weather observed by JMA AMeDAS (出典: 気象庁), stations within ${(weather.hours.at(-1).distKm ?? 0).toFixed(0)} km · night: rain or snow only (cloud cover not observed)`
+                : 'No weather data yet (collector added in v1.6.1)'}</span>
               <button onClick={() => setEditRoutines(true)} className="hp-focus-visible" style={{ marginLeft: 'auto', padding: '2px 8px', borderRadius: 'var(--r-sm)',
                 fontSize: 'var(--fs-2xs)', fontWeight: 600, border: '0.5px solid var(--border)', background: 'var(--bg2)', color: 'var(--text2)', cursor: 'pointer' }}>
                 Routines{routines.length ? ` (${routines.filter(r => r.enabled !== false).length})` : ''}</button>

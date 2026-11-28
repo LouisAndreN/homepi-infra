@@ -87,6 +87,14 @@
     mode: "0755"
   register: telegraf_weather_tool
 
+- name: Weather collector state (hours already written, station table of the day)
+  ansible.builtin.file:
+    path: /var/lib/homepi/weather
+    state: directory
+    owner: telegraf
+    group: telegraf
+    mode: "0750"
+
 - name: NILM calibration state directory (API writes, Telegraf reads)
   ansible.builtin.file:
     path: /var/lib/homepi/nilm

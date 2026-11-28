@@ -1,4 +1,5 @@
-// Weather at home (Open-Meteo through the Pi, measurements weather and weather_daily, docs/runbooks/weather.md).
+// Weather at home (JMA AMeDAS observations picked on the Pi, measurements weather and weather_daily,
+// docs/runbooks/weather.md). A dry hour without daylight has no code: cloud cover is not observed.
 // Pure functions, unit-tested with node (tests/weather.test.mjs).
 //
 // WMO weather codes are folded into a few kinds, each with one icon. A day shows every kind it had
@@ -54,15 +55,18 @@ export function parseWeather(rows) {
     else if (r._field === 'is_day') h.isDay = v === 1
     else if (r._field === 'temp') h.temp = v
     else if (r._field === 'precip') h.precip = v
+    else if (r._field === 'sun') h.sun = v
+    else if (r._field === 'dist_km') h.distKm = v
     hours.set(t, h)
   }
-  return { hours: [...hours.values()].filter(h => h.kind).sort((a, b) => a.t - b.t), sun }
+  return { hours: [...hours.values()].sort((a, b) => a.t - b.t), sun }
 }
 
 // Kinds of each local day, in the order they first appeared (see the rule at the top)
 export function dayKinds(hours, maxIcons = 4) {
   const days = new Map()
   for (const h of hours) {
+    if (!h.kind) continue
     const k = dayKey(new Date(h.t))
     if (!days.has(k)) days.set(k, new Map())
     const m = days.get(k)
@@ -84,7 +88,7 @@ export function dayKinds(hours, maxIcons = 4) {
 export function weatherRuns(hours, fromMs, toMs) {
   const runs = []
   for (const h of hours) {
-    if (h.t < fromMs || h.t >= toMs) continue
+    if (!h.kind || h.t < fromMs || h.t >= toMs) continue
     const m0 = (h.t - fromMs) / 60000, m1 = Math.min((toMs - fromMs) / 60000, m0 + 60)
     const isDay = h.isDay !== false
     const last = runs.at(-1)

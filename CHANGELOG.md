@@ -10,10 +10,14 @@ Energy reorganised and weather at home (2026-11-28). Energy has three sub-tabs, 
 weather by hour, the night between sunset and sunrise and the declared routines; this week day by day
 against last week, dashed), Calendar (the month with its energy, cost and weather per day, then the
 year) and Per-device. The Timeline moved to Sensors, which now sits between Energy and the floor plan.
-Weather: Open-Meteo through Telegraf (`/usr/local/sbin/homepi-weather`), hourly, archived one year by
-the downsample task. New secret `ansible/secrets/weather.sops.yaml` (location); operator steps and the
-one-time backfill: docs/runbooks/weather.md.
+Weather: observed by JMA AMeDAS (`/usr/local/sbin/homepi-weather`, Telegraf exec), from national files
+only, the nearest stations picked on the Pi so the location is never sent; sunrise and sunset computed
+locally; archived one year by the downsample task, and every national file kept gzipped on the Pi
+(`--reprocess` recomputes from it, offline). New secret `ansible/secrets/weather.sops.yaml`.
+v1.6.0 used Open-Meteo and was never applied (the live downsample task had not been updated and its
+secret was missing: the precheck held it); v1.6.1 replaces the source. Operator steps and backfill: docs/runbooks/weather.md.
 
+- `v1.6.1` 2026-11-28: Weather observed by JMA AMeDAS, location never sent, national files archived locally
 - `v1.6.0` 2026-11-28: Energy sub-tabs with weather, week and month views; Timeline in Sensors; weather collector
 
 ## 1.5
